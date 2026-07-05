@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+    <link rel="stylesheet" href="/style.css"/>
+    <title>Brick</title>
+</head>
+<body>
+<main class="panel">
+    <header class="panel-header">
+        <span class="dot" id="state-dot"></span>
+        <span class="state-label" id="state-label">Checking…</span>
+    </header>
+
+    <p class="folder" id="folder"></p>
+    <p class="in-flight" id="in-flight"></p>
+    <p class="error" id="error"></p>
+
+    <div class="counters">
+        <div class="counter"><span class="counter-value" id="count-uploaded">0</span><span class="counter-label">Uploaded</span></div>
+        <div class="counter"><span class="counter-value" id="count-downloaded">0</span><span class="counter-label">Downloaded</span></div>
+        <div class="counter"><span class="counter-value" id="count-deleted">0</span><span class="counter-label">Removed</span></div>
+    </div>
+
+    <section class="activity">
+        <h2>Recent activity</h2>
+        <ul id="activity-list"></ul>
+    </section>
+
+    <footer class="panel-footer">
+        <button id="pause-btn" class="btn">Pause</button>
+        <button id="quit-btn" class="btn btn-quiet">Quit Brick</button>
+    </footer>
+</main>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>

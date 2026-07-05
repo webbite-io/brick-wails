@@ -1,0 +1,177 @@
+:root {
+    color-scheme: dark;
+}
+
+* {
+    box-sizing: border-box;
+}
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: transparent;
+}
+
+body {
+    font-family: -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+    font-size: 13px;
+    color: #e4e4e7;
+}
+
+.panel {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 14px 16px;
+    background: #18181b;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.panel-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #71717a;
+    flex-shrink: 0;
+}
+
+.dot.state-syncing { background: #3b82f6; }
+.dot.state-idle { background: #22c55e; }
+.dot.state-paused { background: #eab308; }
+.dot.state-error { background: #ef4444; }
+.dot.state-not-running { background: #52525b; }
+
+.state-label {
+    font-weight: 600;
+    font-size: 14px;
+}
+
+.folder {
+    margin: 0 0 4px;
+    color: #a1a1aa;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.in-flight {
+    margin: 0 0 4px;
+    color: #93c5fd;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.error {
+    margin: 0 0 8px;
+    color: #fca5a5;
+    font-size: 12px;
+}
+
+.counters {
+    display: flex;
+    justify-content: space-between;
+    margin: 8px 0 12px;
+    padding: 10px 0;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.counter {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+}
+
+.counter-value {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.counter-label {
+    font-size: 10px;
+    color: #a1a1aa;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.activity {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.activity h2 {
+    margin: 0 0 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: #a1a1aa;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+
+.activity ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.activity li {
+    padding: 4px 0;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.activity-empty {
+    color: #71717a;
+    font-style: italic;
+}
+
+.panel-footer {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.btn {
+    flex: 1;
+    padding: 7px 10px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: #27272a;
+    color: #e4e4e7;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+    background: #3f3f46;
+}
+
+.btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.btn-quiet {
+    background: transparent;
+}

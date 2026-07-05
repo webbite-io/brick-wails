@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Name=RequestBite Brick
+Comment=Tray companion for RequestBite Brick storage sync
+# The Exec line includes %u to pass the URL to the application
+Exec=/usr/local/bin/brick-wails %u
+Terminal=false
+Type=Application
+Icon=brick-wails
+Categories=Utility;
+StartupWMClass=brick-wails
+
+ 
