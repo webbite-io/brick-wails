@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=brick-wails
+Exec=brick-wails
+Icon=brick-wails
+Categories=Development;
+Terminal=false
+Keywords=wails
+Version=1.0
+StartupNotify=false
