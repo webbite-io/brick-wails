@@ -34,13 +34,12 @@ func main() {
 	})
 
 	// The popover window is attached to the tray icon (Dropbox-style): it
-	// starts hidden, has no frame/taskbar presence, and toggles open/closed
+	// starts hidden, has no taskbar presence, and toggles open/closed
 	// on tray click rather than behaving like an ordinary window.
 	window := app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:          "Brick",
 		Width:         360,
 		Height:        460,
-		Frameless:     true,
 		AlwaysOnTop:   true,
 		Hidden:        true,
 		DisableResize: true,
