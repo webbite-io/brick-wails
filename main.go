@@ -76,6 +76,14 @@ func main() {
 	openItem.OnClick(func(ctx *application.Context) {
 		tray.ShowWindow()
 	})
+	openFolderItem := menu.Add("Open Brick folder")
+	if folder := storageSyncFolder(); folder != "" {
+		openFolderItem.OnClick(func(ctx *application.Context) {
+			_ = app.Browser.OpenFile(folder)
+		})
+	} else {
+		openFolderItem.SetEnabled(false)
+	}
 	menu.AddSeparator()
 	pauseItem := menu.Add("Pause Sync")
 	pauseItem.OnClick(func(ctx *application.Context) {
