@@ -3,9 +3,11 @@ package main
 import (
 	"embed"
 	"log"
+	"os"
 	"runtime"
 	"time"
 
+	"github.com/joho/godotenv"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 	"github.com/wailsapp/wails/v3/pkg/icons"
@@ -15,6 +17,11 @@ import (
 var assets embed.FS
 
 func main() {
+	// .env.dev is only present in local dev checkouts (gitignored); production
+	// installs won't have it, so a missing-file error here is expected and safe
+	// to ignore — same pattern brick-cli uses for its own .env loading.
+	_ = godotenv.Load(".env.dev")
+
 	app := application.New(application.Options{
 		Name:        "Webbite Brick",
 		Description: "Tray companion for the Webbite Brick CLI",
@@ -83,6 +90,14 @@ func main() {
 		})
 	} else {
 		openFolderItem.SetEnabled(false)
+	}
+	openWebappItem := menu.Add("Open Brick webapp")
+	if webURL := os.Getenv("STORAGE_WEB_URL"); webURL != "" {
+		openWebappItem.OnClick(func(ctx *application.Context) {
+			_ = app.Browser.OpenURL(webURL)
+		})
+	} else {
+		openWebappItem.SetEnabled(false)
 	}
 	menu.AddSeparator()
 	pauseItem := menu.Add("Pause Sync")

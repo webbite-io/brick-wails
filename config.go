@@ -9,8 +9,15 @@ import (
 
 // brickConfig mirrors the relevant fields of brick-cli's Config (see
 // webbite-brick-cli/cmd/brick/config.go) — brick-wails only reads the
-// storage sync folder, not the whole schema.
+// storage sync folder, not the whole schema. brick-cli keys the sync folder
+// per-account (Accounts[ActiveAccountID].StorageSyncFolder) rather than at
+// the top level, so we mirror that nesting here.
 type brickConfig struct {
+	ActiveAccountID string                        `yaml:"activeAccountId"`
+	Accounts        map[string]brickAccountConfig `yaml:"accounts"`
+}
+
+type brickAccountConfig struct {
 	StorageSyncFolder string `yaml:"storageSyncFolder"`
 }
 
@@ -40,5 +47,5 @@ func storageSyncFolder() string {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return ""
 	}
-	return cfg.StorageSyncFolder
+	return cfg.Accounts[cfg.ActiveAccountID].StorageSyncFolder
 }
