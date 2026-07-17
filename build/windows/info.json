@@ -5,10 +5,10 @@
 	"info": {
 		"0000": {
 			"ProductVersion": "0.1.0",
-			"CompanyName": "RequestBite",
-			"FileDescription": "Tray companion for RequestBite Brick storage sync",
+			"CompanyName": "Webbite",
+			"FileDescription": "Tray companion for the Webbite Brick CLI",
 			"LegalCopyright": "© 2026, My Company",
-			"ProductName": "RequestBite Brick",
+			"ProductName": "Webbite Brick",
 			"Comments": "This is a comment"
 		}
 	}

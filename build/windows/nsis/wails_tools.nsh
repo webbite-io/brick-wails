@@ -8,10 +8,10 @@
     !define INFO_PROJECTNAME "brick-wails"
 !endif
 !ifndef INFO_COMPANYNAME
-    !define INFO_COMPANYNAME "RequestBite"
+    !define INFO_COMPANYNAME "Webbite"
 !endif
 !ifndef INFO_PRODUCTNAME
-    !define INFO_PRODUCTNAME "RequestBite Brick"
+    !define INFO_PRODUCTNAME "Webbite Brick"
 !endif
 !ifndef INFO_PRODUCTVERSION
     !define INFO_PRODUCTVERSION "0.1.0"

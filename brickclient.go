@@ -14,7 +14,7 @@ import (
 )
 
 // This file talks to brick's local control API (see
-// requestbite-brick-cli/cmd/brick/controlapi.go and that repo's
+// webbite-brick-cli/cmd/brick/controlapi.go and that repo's
 // openapi.yaml). The two repos are deliberately not sharing a Go module for
 // this — the coupling is the small, versioned HTTP/JSON protocol below, not
 // shared code, so brick-wails and brick-cli can ship independently. If this

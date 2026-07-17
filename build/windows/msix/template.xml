@@ -10,24 +10,24 @@
     <Installer
         Path="brick-wails"
         Arguments=""
-        InstallLocation="C:\Program Files\RequestBite\RequestBite Brick">
+        InstallLocation="C:\Program Files\Webbite\Webbite Brick">
     </Installer>
     <PackageInformation
-        PackageName="RequestBite Brick"
-        PackageDisplayName="RequestBite Brick"
-        PublisherName="CN=RequestBite"
-        PublisherDisplayName="RequestBite"
+        PackageName="Webbite Brick"
+        PackageDisplayName="Webbite Brick"
+        PublisherName="CN=Webbite"
+        PublisherDisplayName="Webbite"
         Version="0.1.0.0"
-        PackageDescription="Tray companion for RequestBite Brick storage sync">
+        PackageDescription="Tray companion for the Webbite Brick CLI">
         <Capabilities>
             <Capability Name="runFullTrust" />
-            
+
         </Capabilities>
         <Applications>
             <Application
                 Id="com.requestbite.brick"
-                Description="Tray companion for RequestBite Brick storage sync"
-                DisplayName="RequestBite Brick"
+                Description="Tray companion for the Webbite Brick CLI"
+                DisplayName="Webbite Brick"
                 ExecutableName="brick-wails"
                 EntryPoint="Windows.FullTrustApplication">
                 
@@ -41,9 +41,9 @@
         </Dependencies>
         <Properties>
             <Framework>false</Framework>
-            <DisplayName>RequestBite Brick</DisplayName>
-            <PublisherDisplayName>RequestBite</PublisherDisplayName>
-            <Description>Tray companion for RequestBite Brick storage sync</Description>
+            <DisplayName>Webbite Brick</DisplayName>
+            <PublisherDisplayName>Webbite</PublisherDisplayName>
+            <Description>Tray companion for the Webbite Brick CLI</Description>
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>

@@ -1,17 +1,16 @@
-# RequestBite Brick — tray companion
+# Webbite Brick — tray companion
 
 A native system-tray app that shows live sync status for
-[`brick`](https://github.com/requestbite/brick) — RequestBite's Storage Sync
-CLI — and lets you pause/resume/quit it without a terminal, similar to the
-Dropbox tray icon. Built with [Wails v3](https://v3.wails.io/) (currently
-alpha).
+[`brick`](https://github.com/requestbite/brick) — Webbite's Brick CLI — and
+lets you pause/resume/quit it without a terminal, similar to the Dropbox tray
+icon. Built with [Wails v3](https://v3.wails.io/) (currently alpha).
 
 ## How it talks to brick
 
 This app does not run the sync engine itself. It's a thin client for the
 local control API a running `brick` process exposes over a Unix domain
 socket (see `brickclient.go`, and
-[`openapi.yaml`](../requestbite-brick-cli/openapi.yaml) /the "Local
+[`openapi.yaml`](../webbite-brick-cli/openapi.yaml) /the "Local
 Status/Control API" section of brick-cli's README for the authoritative
 protocol). The two repos deliberately don't share a Go module — only the
 small HTTP/JSON protocol is duplicated between them, versioned via

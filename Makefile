@@ -1,6 +1,6 @@
-# RequestBite Brick (Wails) Makefile
+# Webbite Brick (Wails) Makefile
 # Thin `make` wrapper around the wails3/Task build system, mirroring the
-# target names used in ../requestbite-brick-cli/Makefile for a familiar
+# target names used in ../webbite-brick-cli/Makefile for a familiar
 # workflow across both repos.
 #
 # Unlike brick-cli (a plain Go CLI that cross-compiles trivially), this is a
@@ -143,7 +143,7 @@ version:
 
 # Show help
 help:
-	@echo "$(COLOR_BOLD)RequestBite Brick (Wails) - Build System$(COLOR_RESET)"
+	@echo "$(COLOR_BOLD)Webbite Brick (Wails) - Build System$(COLOR_RESET)"
 	@echo ""
 	@echo "$(COLOR_BOLD)Usage:$(COLOR_RESET)"
 	@echo "  make [target]"

@@ -16,8 +16,8 @@ var assets embed.FS
 
 func main() {
 	app := application.New(application.Options{
-		Name:        "RequestBite Brick",
-		Description: "Tray companion for RequestBite Brick storage sync",
+		Name:        "Webbite Brick",
+		Description: "Tray companion for the Webbite Brick CLI",
 		Services: []application.Service{
 			application.NewService(&BrickService{}),
 		},
@@ -58,7 +58,7 @@ func main() {
 	})
 
 	tray := app.SystemTray.New()
-	tray.SetTooltip("RequestBite Brick")
+	tray.SetTooltip("Webbite Brick")
 	if runtime.GOOS == "darwin" {
 		// Template icons adapt to the menu bar's light/dark mode automatically.
 		tray.SetTemplateIcon(icons.SystrayMacTemplate)

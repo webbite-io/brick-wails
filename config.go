@@ -8,7 +8,7 @@ import (
 )
 
 // brickConfig mirrors the relevant fields of brick-cli's Config (see
-// requestbite-brick-cli/cmd/brick/config.go) — brick-wails only reads the
+// webbite-brick-cli/cmd/brick/config.go) — brick-wails only reads the
 // storage sync folder, not the whole schema.
 type brickConfig struct {
 	StorageSyncFolder string `yaml:"storageSyncFolder"`
