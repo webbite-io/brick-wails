@@ -13,3 +13,5 @@ build/android/gen/
 .env
 .env.dev
 .env.prod
+
+wails-brick

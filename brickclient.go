@@ -50,6 +50,7 @@ type BrickCounters struct {
 	Uploaded   int64 `json:"uploaded"`
 	Downloaded int64 `json:"downloaded"`
 	Deleted    int64 `json:"deleted"`
+	Moved      int64 `json:"moved"`
 }
 
 // BrickStatus is brick's /v1/status response, plus Running (set locally:

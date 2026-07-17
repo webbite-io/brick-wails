@@ -25,6 +25,7 @@ export interface BrickCounters {
     "uploaded": number;
     "downloaded": number;
     "deleted": number;
+    "moved": number;
 }
 
 /**

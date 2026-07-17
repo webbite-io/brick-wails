@@ -146,6 +146,11 @@ body {
     font-style: italic;
 }
 
+.activity-icon {
+    vertical-align: -1px;
+    color: #a1a1aa;
+}
+
 .panel-footer {
     display: flex;
     gap: 8px;
