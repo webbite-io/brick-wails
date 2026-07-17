@@ -133,12 +133,30 @@ body {
 }
 
 .activity li {
+    display: flex;
+    align-items: center;
+    gap: 4px;
     padding: 4px 0;
     font-size: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.activity-icon-slot {
+    flex: 0 0 14px;
+    width: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #a1a1aa;
+    font-size: 11px;
+}
+
+.activity-text {
+    flex: 1;
+    min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .activity-empty {
@@ -147,7 +165,6 @@ body {
 }
 
 .activity-icon {
-    vertical-align: -1px;
     color: #a1a1aa;
 }
 
