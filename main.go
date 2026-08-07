@@ -79,11 +79,11 @@ func main() {
 	brick := &BrickService{}
 
 	menu := app.NewMenu()
-	openItem := menu.Add("Open Brick")
+	openItem := menu.Add("Open Brick Status")
 	openItem.OnClick(func(ctx *application.Context) {
 		tray.ShowWindow()
 	})
-	openFolderItem := menu.Add("Open Brick folder")
+	openFolderItem := menu.Add("Open Brick Folder")
 	if folder := storageSyncFolder(); folder != "" {
 		openFolderItem.OnClick(func(ctx *application.Context) {
 			_ = app.Browser.OpenFile(folder)
@@ -91,7 +91,7 @@ func main() {
 	} else {
 		openFolderItem.SetEnabled(false)
 	}
-	openWebappItem := menu.Add("Open Brick webapp")
+	openWebappItem := menu.Add("Open Brick App")
 	if webURL := os.Getenv("STORAGE_WEB_URL"); webURL != "" {
 		openWebappItem.OnClick(func(ctx *application.Context) {
 			_ = app.Browser.OpenURL(webURL)
