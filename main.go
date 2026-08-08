@@ -20,6 +20,11 @@ var trayIconLight []byte
 //go:embed build/tray/logo-wails-dark.png
 var trayIconDark []byte
 
+// defaultWebURL is used when STORAGE_WEB_URL isn't set in the environment.
+// .env.dev (which sets it in local checkouts) is gitignored and deliberately
+// absent from production installs, so packaged builds fall back to this.
+const defaultWebURL = "https://brick.webbite.io"
+
 func main() {
 	// .env.dev is only present in local dev checkouts (gitignored); production
 	// installs won't have it, so a missing-file error here is expected and safe
@@ -107,13 +112,13 @@ func main() {
 		openFolderItem.SetEnabled(false)
 	}
 	openWebappItem := menu.Add("Open Brick App")
-	if webURL := os.Getenv("STORAGE_WEB_URL"); webURL != "" {
-		openWebappItem.OnClick(func(ctx *application.Context) {
-			_ = app.Browser.OpenURL(webURL)
-		})
-	} else {
-		openWebappItem.SetEnabled(false)
+	webURL := os.Getenv("STORAGE_WEB_URL")
+	if webURL == "" {
+		webURL = defaultWebURL
 	}
+	openWebappItem.OnClick(func(ctx *application.Context) {
+		_ = app.Browser.OpenURL(webURL)
+	})
 	menu.AddSeparator()
 	pauseItem := menu.Add("Pause Sync")
 	pauseItem.OnClick(func(ctx *application.Context) {
