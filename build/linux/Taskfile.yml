@@ -152,27 +152,34 @@ tasks:
 
   generate:deb:
     summary: Creates a deb package
+    vars:
+      PACKAGE_NAME: 'webbite-brick'
     cmds:
-      - wails3 tool package -name "{{.APP_NAME}}" -format deb -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
+      - wails3 tool package -name "{{.PACKAGE_NAME}}" -format deb -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
 
   generate:rpm:
     summary: Creates a rpm package
+    vars:
+      PACKAGE_NAME: 'webbite-brick'
     cmds:
-      - wails3 tool package -name "{{.APP_NAME}}" -format rpm -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
+      - wails3 tool package -name "{{.PACKAGE_NAME}}" -format rpm -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
 
   generate:aur:
     summary: Creates a arch linux packager package
+    vars:
+      PACKAGE_NAME: 'webbite-brick'
     cmds:
-      - wails3 tool package -name "{{.APP_NAME}}" -format archlinux -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
+      - wails3 tool package -name "{{.PACKAGE_NAME}}" -format archlinux -config ./build/linux/nfpm/nfpm.yaml -out {{.ROOT_DIR}}/bin
 
   generate:dotdesktop:
     summary: Generates a `.desktop` file
     dir: build
     cmds:
       - mkdir -p {{.ROOT_DIR}}/build/linux/appimage
-      - wails3 generate .desktop -name "{{.APP_NAME}}" -exec "{{.EXEC}}" -icon "{{.ICON}}" -outputfile "{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop" -categories "{{.CATEGORIES}}"
+      - wails3 generate .desktop -name "{{.DISPLAY_NAME}}" -exec "{{.EXEC}}" -icon "{{.ICON}}" -outputfile "{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop" -categories "{{.CATEGORIES}}"
     vars:
       APP_NAME: '{{.APP_NAME}}'
+      DISPLAY_NAME: 'Webbite Brick'
       EXEC: '{{.APP_NAME}}'
       ICON: '{{.APP_NAME}}'
       CATEGORIES: 'Development;'

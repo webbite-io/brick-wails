@@ -5,11 +5,11 @@
     <key>CFBundleExecutable</key>
     <string>brick-wails</string>
     <key>CFBundleIdentifier</key>
-    <string>com.requestbite.brick.dev</string>
+    <string>io.webbite.brick</string>
     <key>CFBundleName</key>
-    <string>Webbite Brick (Dev)</string>
+    <string>Webbite Brick</string>
     <key>CFBundleDisplayName</key>
-    <string>Webbite Brick (Dev)</string>
+    <string>Brick</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -51,8 +51,7 @@
     <true/>
     
     <key>NSHumanReadableCopyright</key>
-    <string>© 2026, My Company</string>
-    
+    <string>© 2026, Västerås Konsulterna AB</string>
     
     <key>CFBundleGetInfoString</key>
     <string>This is a comment</string>
