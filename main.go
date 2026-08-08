@@ -4,17 +4,21 @@ import (
 	"embed"
 	"log"
 	"os"
-	"runtime"
 	"time"
 
 	"github.com/joho/godotenv"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
-	"github.com/wailsapp/wails/v3/pkg/icons"
 )
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+//go:embed build/tray/logo-wails-light.png
+var trayIconLight []byte
+
+//go:embed build/tray/logo-wails-dark.png
+var trayIconDark []byte
 
 func main() {
 	// .env.dev is only present in local dev checkouts (gitignored); production
@@ -66,15 +70,26 @@ func main() {
 
 	tray := app.SystemTray.New()
 	tray.SetTooltip("Webbite Brick")
-	if runtime.GOOS == "darwin" {
-		// Template icons adapt to the menu bar's light/dark mode automatically.
-		tray.SetTemplateIcon(icons.SystrayMacTemplate)
-	} else {
-		tray.SetIcon(icons.SystrayLight)
-		tray.SetDarkModeIcon(icons.SystrayDark)
+
+	// SetDarkModeIcon only auto-switches on Windows; macOS and Linux treat it
+	// as a no-op alias for SetIcon. Rather than rely on that per-platform
+	// split, react to theme changes explicitly so all three platforms behave
+	// the same way. IsDarkMode() isn't reliable until the app has finished
+	// starting (ApplicationStarted), so the initial icon is applied there
+	// rather than here.
+	applyTrayIcon := func() {
+		if app.Env.IsDarkMode() {
+			tray.SetIcon(trayIconDark)
+		} else {
+			tray.SetIcon(trayIconLight)
+		}
 	}
-	// TODO: swap the placeholder Wails icons above for a Brick-branded tray
-	// icon (idle/syncing/error/paused variants) once one is designed.
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+		applyTrayIcon()
+	})
+	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) {
+		applyTrayIcon()
+	})
 
 	brick := &BrickService{}
 
