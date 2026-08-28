@@ -37,6 +37,45 @@ export interface BrickInFlight {
 }
 
 /**
+ * BrickLocateResult reports whether the brick CLI binary could be found.
+ */
+export interface BrickLocateResult {
+    "found": boolean;
+    "path": string;
+}
+
+/**
+ * BrickRunResult is the outcome of running a brick subcommand to
+ * completion (setup or install) — for callers that need the final exit
+ * code rather than the live output stream.
+ */
+export interface BrickRunResult {
+    "exitCode": number;
+    "ok": boolean;
+}
+
+/**
+ * BrickSelfTestCheck is one entry in the "checks" array of `brick
+ * --self-test`'s JSON report.
+ */
+export interface BrickSelfTestCheck {
+    "id": string;
+    "status": string;
+    "message": string;
+}
+
+/**
+ * BrickSelfTestResult is the JSON brick prints for
+ * `brick --self-test --no-upgrade-check`.
+ */
+export interface BrickSelfTestResult {
+    "status": string;
+    "version": string;
+    "ready": boolean;
+    "checks": BrickSelfTestCheck[] | null;
+}
+
+/**
  * BrickStatus is brick's /v1/status response, plus Running (set locally:
  * false whenever brick couldn't be reached at all, rather than an HTTP
  * error).

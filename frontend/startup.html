@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+    <link rel="stylesheet" href="/style.css"/>
+    <link rel="stylesheet" href="/startup.css"/>
+    <title>Brick Setup</title>
+</head>
+<body>
+<main class="startup-panel">
+    <header class="startup-header">
+        <span class="spinner" id="stage-spinner"></span>
+        <span class="status-icon" id="stage-icon"></span>
+        <h1 id="stage-title">Checking Brick…</h1>
+    </header>
+
+    <p class="startup-message" id="stage-message"></p>
+    <p class="startup-detail" id="stage-detail"></p>
+
+    <ul class="checks-list" id="checks-list"></ul>
+
+    <section class="terminal" id="terminal">
+        <h2>Output</h2>
+        <pre class="terminal-output" id="terminal-output"></pre>
+    </section>
+
+    <footer class="startup-actions" id="startup-actions">
+        <button id="secondary-btn" class="btn btn-quiet"></button>
+        <button id="primary-btn" class="btn btn-primary"></button>
+    </footer>
+</main>
+
+<script type="module" src="/src/startup.js"></script>
+</body>
+</html>

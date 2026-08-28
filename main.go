@@ -32,11 +32,14 @@ func main() {
 	// to ignore — same pattern brick-cli uses for its own .env loading.
 	_ = godotenv.Load(".env.dev")
 
+	startupSvc := &StartupService{}
+
 	app := application.New(application.Options{
 		Name:        "Webbite Brick",
 		Description: "Tray companion for the Webbite Brick CLI",
 		Services: []application.Service{
 			application.NewService(&BrickService{}),
+			application.NewService(startupSvc),
 		},
 		Assets: application.AssetOptions{
 			Handler: application.AssetFileServerFS(assets),
@@ -49,6 +52,7 @@ func main() {
 			DisableQuitOnLastWindowClosed: true,
 		},
 	})
+	startupSvc.app = app
 
 	// The popover window is attached to the tray icon (Dropbox-style): it
 	// starts hidden, has no taskbar presence, and toggles open/closed
@@ -72,6 +76,23 @@ func main() {
 	window.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		window.Hide()
 		e.Cancel()
+	})
+
+	// The startup window checks whether brick is already running (talking
+	// to it through BrickService, same as the popover) and, if not, walks
+	// through self-test/setup/install to get it running — see startup.go
+	// and frontend/src/startup.ts. It's a real, closable window (unlike the
+	// popover above): once the frontend's startup flow gets brick running,
+	// it closes itself.
+	app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "Startup",
+		Title:            "Brick Setup",
+		Width:            440,
+		Height:           480,
+		AlwaysOnTop:      true,
+		DisableResize:    true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/startup.html",
 	})
 
 	tray := app.SystemTray.New()
