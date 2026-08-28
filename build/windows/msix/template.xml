@@ -8,7 +8,7 @@
         AllowPromptForPassword="false">
     </Settings>
     <Installer
-        Path="brick-wails"
+        Path="brick-ui"
         Arguments=""
         InstallLocation="C:\Program Files\Webbite\Webbite Brick">
     </Installer>
@@ -25,10 +25,10 @@
         </Capabilities>
         <Applications>
             <Application
-                Id="com.requestbite.brick"
+                Id="io.webbite.brick"
                 Description="Tray companion for the Webbite Brick CLI"
                 DisplayName="Webbite Brick"
-                ExecutableName="brick-wails"
+                ExecutableName="brick-ui"
                 EntryPoint="Windows.FullTrustApplication">
                 
             </Application>
@@ -47,7 +47,7 @@
             <Logo>Assets\AppIcon.png</Logo>
         </Properties>
     </PackageInformation>
-    <SaveLocation PackagePath="brick-wails.msix" />
+    <SaveLocation PackagePath="brick-ui.msix" />
     <PackageIntegrity>
         <CertificatePath></CertificatePath>
     </PackageIntegrity>

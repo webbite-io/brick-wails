@@ -19,7 +19,7 @@ Unicode true
 ####
 ## The following information is taken from the wails_tools.nsh file, but they can be overwritten here.
 ####
-## !define INFO_PROJECTNAME    "my-project" # Default "brick-wails"
+## !define INFO_PROJECTNAME    "my-project" # Default "brick-ui"
 ## !define INFO_COMPANYNAME    "My Company" # Default "Webbite"
 ## !define INFO_PRODUCTNAME    "My Product Name" # Default "Webbite Brick"
 ## !define INFO_PRODUCTVERSION "1.0.0"     # Default "0.1.0"

@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
 Name=Webbite Brick
-Exec=brick-wails
-Icon=brick-wails
+Exec=brick-ui
+Icon=brick-ui
 Categories=Development;
 Terminal=false
 Keywords=wails

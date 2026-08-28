@@ -1,4 +1,4 @@
-module github.com/requestbite/brick-wails
+module github.com/webbite-io/brick-wails
 
 go 1.25.0
 

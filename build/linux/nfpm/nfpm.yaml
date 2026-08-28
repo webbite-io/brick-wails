@@ -17,12 +17,12 @@ license: "MIT"
 release: "1"
 
 contents:
-  - src: "./bin/brick-wails"
-    dst: "/usr/local/bin/brick-wails"
+  - src: "./bin/brick-ui"
+    dst: "/usr/local/bin/brick-ui"
   - src: "./build/appicon.png"
-    dst: "/usr/share/icons/hicolor/128x128/apps/brick-wails.png"
-  - src: "./build/linux/brick-wails.desktop"
-    dst: "/usr/share/applications/brick-wails.desktop"
+    dst: "/usr/share/icons/hicolor/128x128/apps/brick-ui.png"
+  - src: "./build/linux/brick-ui.desktop"
+    dst: "/usr/share/applications/brick-ui.desktop"
 
 # Default dependencies for the GTK4 + WebKitGTK 6.0 stack (Ubuntu 24.04+ / Debian 13+)
 depends:

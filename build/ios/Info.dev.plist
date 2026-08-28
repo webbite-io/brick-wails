@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleExecutable</key>
-    <string>brick-wails</string>
+    <string>brick-ui</string>
     <key>CFBundleIdentifier</key>
     <string>io.webbite.brick</string>
     <key>CFBundleName</key>

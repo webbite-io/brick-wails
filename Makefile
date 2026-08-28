@@ -9,7 +9,7 @@
 # target — packaging for macOS/Windows needs those native toolchains (or CI),
 # see README.md's "Packaging" section.
 
-APP_NAME := brick-wails
+APP_NAME := brick-ui
 BIN_DIR := bin
 
 # Pin the wails3 CLI to the exact version this module depends on (go.mod),

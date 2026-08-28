@@ -1,7 +1,7 @@
 # Webbite Brick — tray companion
 
 A native system-tray app that shows live sync status for
-[`brick`](https://github.com/requestbite/brick) — Webbite's Brick CLI — and
+[`brick`](https://github.com/webbite-io/brick-cli) — Webbite's Brick CLI — and
 lets you pause/resume/quit it without a terminal, similar to the Dropbox tray
 icon. Built with [Wails v3](https://v3.wails.io/) (currently alpha).
 

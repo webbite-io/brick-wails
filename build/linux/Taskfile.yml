@@ -66,6 +66,11 @@ tasks:
       GOOS: linux
       CGO_ENABLED: 1
       GOARCH: '{{.ARCH | default ARCH}}'
+      # Wails' own linux_cgo.c still calls a couple of GDK4 X11 APIs
+      # (gdk_x11_display_get_xdisplay, gdk_x11_surface_get_xid) that GTK
+      # deprecated but hasn't removed; silence the resulting warnings since
+      # there's no replacement to migrate to from application code.
+      CGO_CFLAGS: "-Wno-deprecated-declarations"
 
   build:docker:
     summary: Builds for Linux using Docker (for non-Linux hosts or when no C compiler available)

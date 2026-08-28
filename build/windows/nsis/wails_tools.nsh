@@ -5,7 +5,7 @@
 !include "FileFunc.nsh"
 
 !ifndef INFO_PROJECTNAME
-    !define INFO_PROJECTNAME "brick-wails"
+    !define INFO_PROJECTNAME "brick-ui"
 !endif
 !ifndef INFO_COMPANYNAME
     !define INFO_COMPANYNAME "Webbite"

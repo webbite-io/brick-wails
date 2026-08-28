@@ -4,6 +4,7 @@ import (
 	"embed"
 	"log"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -138,6 +139,19 @@ func main() {
 	})
 	tray.SetMenu(menu)
 	tray.AttachWindow(window).WindowOffset(4)
+	if runtime.GOOS == "linux" {
+		// GNOME's AppIndicator/StatusNotifierItem support always reveals the
+		// menu on a tray click rather than emitting a distinct "activate"
+		// (that's only sent on double-click) — see
+		// https://github.com/ubuntu/gnome-shell-extension-appindicator. Wails'
+		// default click handler instead toggles the attached window, which
+		// races GNOME's own menu popup; under X11 specifically this shows
+		// both the window and the menu from a single click. Routing the
+		// click straight to the menu matches GNOME's own convention (and
+		// what already happens under Wayland) and avoids the double-open.
+		// "Open Brick Status" in the menu still reaches the window.
+		tray.OnClick(tray.OpenMenu)
+	}
 
 	// Poll brick's status every 2s (matches the phased rollout in brick-cli's
 	// control API plan: push via a /v1/events WebSocket is a later addition,

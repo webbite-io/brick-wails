@@ -1,5 +1,5 @@
 import {Events} from "@wailsio/runtime";
-import {BrickService} from "../bindings/github.com/requestbite/brick-wails";
+import {BrickService} from "../bindings/github.com/webbite-io/brick-wails";
 
 const stateDot = document.getElementById('state-dot')! as HTMLSpanElement;
 const stateLabel = document.getElementById('state-label')! as HTMLSpanElement;

@@ -7,8 +7,8 @@
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   IgnorableNamespaces="uap3">
   
-  <Identity 
-    Name="com.requestbite.brick"
+  <Identity
+    Name="io.webbite.brick"
     Publisher="CN=Webbite"
     Version="0.1.0.0" 
     ProcessorArchitecture="x64" />
@@ -29,7 +29,7 @@
   </Resources>
   
   <Applications>
-    <Application Id="com.requestbite.brick" Executable="brick-wails" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="io.webbite.brick" Executable="brick-ui" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Webbite Brick"
         Description="Tray companion for the Webbite Brick CLI"
@@ -41,7 +41,7 @@
       </uap:VisualElements>
       
       <Extensions>
-        <desktop:Extension Category="windows.fullTrustProcess" Executable="brick-wails" />
+        <desktop:Extension Category="windows.fullTrustProcess" Executable="brick-ui" />
         
         
       </Extensions>

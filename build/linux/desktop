@@ -3,11 +3,11 @@ Version=1.0
 Name=Webbite Brick
 Comment=Tray companion for the Webbite Brick CLI
 # The Exec line includes %u to pass the URL to the application
-Exec=/usr/local/bin/brick-wails %u
+Exec=/usr/local/bin/brick-ui %u
 Terminal=false
 Type=Application
-Icon=brick-wails
+Icon=brick-ui
 Categories=Utility;
-StartupWMClass=brick-wails
+StartupWMClass=brick-ui
 
  

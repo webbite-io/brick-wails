@@ -6,7 +6,7 @@
         <key>CFBundleName</key>
             <string>Webbite Brick</string>
         <key>CFBundleExecutable</key>
-            <string>brick-wails</string>
+            <string>brick-ui</string>
         <key>CFBundleIdentifier</key>
             <string>io.webbite.brick</string>
         <key>CFBundleVersion</key>
