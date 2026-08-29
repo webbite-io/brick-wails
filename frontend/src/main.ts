@@ -12,7 +12,6 @@ const countDeleted = document.getElementById('count-deleted')! as HTMLSpanElemen
 const countMoved = document.getElementById('count-moved')! as HTMLSpanElement;
 const activityList = document.getElementById('activity-list')! as HTMLUListElement;
 const pauseBtn = document.getElementById('pause-btn')! as HTMLButtonElement;
-const quitBtn = document.getElementById('quit-btn')! as HTMLButtonElement;
 
 const STATE_LABELS: Record<string, string> = {
     'not-running': 'Brick is not running',
@@ -110,8 +109,7 @@ function renderStatus(status: any) {
 
     const running = state !== 'not-running';
     pauseBtn.disabled = !running;
-    quitBtn.disabled = !running;
-    pauseBtn.innerText = state === 'paused' ? 'Resume' : 'Pause';
+    pauseBtn.innerText = state === 'paused' ? 'Resume Sync' : 'Pause Sync';
 }
 
 function renderActivity(events: any[]) {
@@ -169,14 +167,6 @@ pauseBtn.addEventListener('click', async () => {
         } else {
             await BrickService.Pause();
         }
-    } catch (err) {
-        console.error(err);
-    }
-});
-
-quitBtn.addEventListener('click', async () => {
-    try {
-        await BrickService.QuitBrick();
     } catch (err) {
         console.error(err);
     }

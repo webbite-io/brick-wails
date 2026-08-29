@@ -152,11 +152,11 @@ func main() {
 		}
 	})
 	menu.AddSeparator()
-	menu.Add("Quit Brick (stop syncing)").OnClick(func(ctx *application.Context) {
-		_ = brick.QuitBrick()
-	})
-	menu.Add("Quit").OnClick(func(ctx *application.Context) {
+	menu.Add("Quit Brick").OnClick(func(ctx *application.Context) {
 		app.Quit()
+	})
+	menu.Add("Quit Brick and Stop Sync").OnClick(func(ctx *application.Context) {
+		_ = brick.QuitBrick()
 	})
 	tray.SetMenu(menu)
 	tray.AttachWindow(window).WindowOffset(4)
