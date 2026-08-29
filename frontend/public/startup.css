@@ -1,24 +1,79 @@
 .startup-panel {
     display: flex;
     flex-direction: column;
+    align-items: center;
     height: 100vh;
-    padding: 18px 20px;
+    padding: 16px 16px 14px;
     background: #18181b;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
     overflow: hidden;
 }
 
-.startup-header {
+.brand {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    flex-shrink: 0;
+    gap: 4px;
+    margin-bottom: 21px;
+}
+
+.brand-logo {
+    width: 51px;
+    height: 51px;
+    margin-bottom: 2px;
+}
+
+.brand-title {
+    margin: 0;
+    font-family: "Noto Sans Condensed", "Segoe UI", sans-serif;
+    font-weight: 700;
+    font-size: 19px;
+    letter-spacing: 0.01em;
+    color: #ffffff;
+}
+
+.brand-subtitle {
+    margin: 0;
+    font-family: "Inter", -apple-system, "Segoe UI", sans-serif;
+    font-size: 12px;
+    color: #a1a1aa;
+}
+
+.status-indicator {
     display: flex;
     align-items: center;
     gap: 10px;
-    margin-bottom: 10px;
+    width: 100%;
+    flex-shrink: 0;
+    padding: 10px 12px;
+    background: #202024;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
 }
 
-.startup-header h1 {
+.status-text {
+    min-width: 0;
+    flex: 1;
+}
+
+.status-title {
     margin: 0;
-    font-size: 15px;
+    font-size: 13px;
     font-weight: 600;
     color: #e4e4e7;
+}
+
+.status-message {
+    margin: 2px 0 0;
+    font-size: 12px;
+    color: #a1a1aa;
+    line-height: 1.35;
+}
+
+.status-message:empty {
+    display: none;
 }
 
 .spinner {
@@ -72,17 +127,11 @@
     color: #2b1f02;
 }
 
-.startup-message {
-    margin: 0 0 4px;
-    font-size: 13px;
-    color: #e4e4e7;
-    line-height: 1.4;
-}
-
 .startup-detail {
     display: none;
-    margin: 0 0 10px;
-    font-size: 12px;
+    align-self: stretch;
+    margin: 8px 0 0;
+    font-size: 11.5px;
     color: #a1a1aa;
     line-height: 1.4;
 }
@@ -94,8 +143,9 @@
 .checks-list {
     display: none;
     flex-direction: column;
+    align-self: stretch;
     gap: 4px;
-    margin: 0 0 10px;
+    margin: 10px 0 0;
     padding: 0;
     list-style: none;
 }
@@ -132,8 +182,9 @@
     display: none;
     flex: 1;
     min-height: 0;
+    align-self: stretch;
     flex-direction: column;
-    margin-bottom: 10px;
+    margin: 10px 0 0;
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 6px;
     background: #0b0b0d;
@@ -172,19 +223,22 @@
 
 .startup-actions {
     display: flex;
+    flex-direction: column;
+    align-self: stretch;
     justify-content: flex-end;
     gap: 8px;
+    margin-top: 18px;
     flex-shrink: 0;
 }
 
 .startup-actions .btn {
     display: none;
     flex: 0 0 auto;
-    min-width: 92px;
+    width: 100%;
 }
 
 .startup-actions .btn.visible {
-    display: inline-block;
+    display: block;
 }
 
 .btn-primary {
@@ -194,5 +248,16 @@
 }
 
 .btn-primary:hover:not(:disabled) {
+    background: #2563eb;
+}
+
+.btn-cta {
+    padding: 12px 16px;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+}
+
+.btn-cta:hover:not(:disabled) {
     background: #2563eb;
 }

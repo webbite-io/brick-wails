@@ -3,19 +3,30 @@
 <head>
     <meta charset="UTF-8"/>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+    <link rel="preconnect" href="https://fonts.googleapis.com"/>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+Condensed:wght@700&display=swap" rel="stylesheet"/>
     <link rel="stylesheet" href="/style.css"/>
     <link rel="stylesheet" href="/startup.css"/>
     <title>Brick Setup</title>
 </head>
 <body>
 <main class="startup-panel">
-    <header class="startup-header">
+    <div class="brand">
+        <img class="brand-logo" src="/appicon.png" alt=""/>
+        <h1 class="brand-title">Webbite Brick</h1>
+        <p class="brand-subtitle">Storage for all your devices</p>
+    </div>
+
+    <div class="status-indicator" id="status-indicator">
         <span class="spinner" id="stage-spinner"></span>
         <span class="status-icon" id="stage-icon"></span>
-        <h1 id="stage-title">Checking Brick…</h1>
-    </header>
+        <div class="status-text">
+            <p class="status-title" id="stage-title"></p>
+            <p class="status-message" id="stage-message"></p>
+        </div>
+    </div>
 
-    <p class="startup-message" id="stage-message"></p>
     <p class="startup-detail" id="stage-detail"></p>
 
     <ul class="checks-list" id="checks-list"></ul>
@@ -26,8 +37,8 @@
     </section>
 
     <footer class="startup-actions" id="startup-actions">
-        <button id="secondary-btn" class="btn btn-quiet"></button>
-        <button id="primary-btn" class="btn btn-primary"></button>
+        <button id="primary-btn" class="btn"></button>
+        <button id="secondary-btn" class="btn"></button>
     </footer>
 </main>
 

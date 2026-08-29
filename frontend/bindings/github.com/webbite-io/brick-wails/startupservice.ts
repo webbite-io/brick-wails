@@ -35,6 +35,14 @@ export function LocateBrick(): $CancellablePromise<$models.BrickLocateResult> {
 }
 
 /**
+ * QuitApp exits the whole app — used by the startup window's "Close Brick"
+ * action, when the user declines to install the CLI.
+ */
+export function QuitApp(): $CancellablePromise<void> {
+    return $Call.ByID(835856990);
+}
+
+/**
  * RunSetup runs `brick --setup-and-exit` inside a new native terminal
  * window — brick's guided setup is interactive (it can prompt for login,
  * confirmations, etc.), so it needs a real TTY rather than the captured

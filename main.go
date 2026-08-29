@@ -87,8 +87,8 @@ func main() {
 	app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "Startup",
 		Title:            "Brick Setup",
-		Width:            440,
-		Height:           480,
+		Width:            360,
+		Height:           460,
 		AlwaysOnTop:      true,
 		DisableResize:    true,
 		BackgroundColour: application.NewRGB(24, 24, 27),

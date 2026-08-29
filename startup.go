@@ -249,3 +249,11 @@ func (s *StartupService) InstallBrick() (BrickRunResult, error) {
 	}
 	return BrickRunResult{ExitCode: code, Ok: code == 0}, nil
 }
+
+// QuitApp exits the whole app — used by the startup window's "Close Brick"
+// action, when the user declines to install the CLI.
+func (s *StartupService) QuitApp() {
+	if s.app != nil {
+		s.app.Quit()
+	}
+}
