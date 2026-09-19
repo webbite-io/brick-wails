@@ -1,369 +1,512 @@
-import { Events, Window } from "@wailsio/runtime";
-import { BrickService, StartupService } from "../bindings/github.com/webbite-io/brick-wails";
-import type { BrickSelfTestCheck } from "../bindings/github.com/webbite-io/brick-wails";
+// Setup window: startup routing + the onboarding wizard (the graphical
+// counterpart of brick-cli's interactive setup). The window starts hidden:
+// on load this routes, and a fully configured machine goes straight to
+// syncing without ever showing it. Anything needing the user shows the
+// window. The Go side emits "setup:open" (tray "Set Up Brick…", popover
+// buttons, or an expired session) to run the flow again.
+
+import { Events } from "@wailsio/runtime";
+import { OnboardingService } from "../bindings/github.com/webbite-io/brick-wails";
+import type { Route, ScopeInfo } from "../bindings/github.com/webbite-io/brick-wails/internal/onboarding/models";
+import {
+  CONFLICT_OPTIONS,
+  REMOTE_OPTIONS,
+  describeError,
+  displayPath,
+  folderOptions,
+  needsWindow,
+  remoteRootOptions,
+  scopeOptions,
+  screenForRoute,
+  type Icon,
+  type Option,
+  type Screen,
+} from "./wizard";
 
 const spinnerEl = document.getElementById("stage-spinner")! as HTMLSpanElement;
 const iconEl = document.getElementById("stage-icon")! as HTMLSpanElement;
-const titleEl = document.getElementById("stage-title")! as HTMLHeadingElement;
+const titleEl = document.getElementById("stage-title")! as HTMLParagraphElement;
 const messageEl = document.getElementById("stage-message")! as HTMLParagraphElement;
 const detailEl = document.getElementById("stage-detail")! as HTMLParagraphElement;
-const checksListEl = document.getElementById("checks-list")! as HTMLUListElement;
-const terminalEl = document.getElementById("terminal")! as HTMLElement;
-const terminalOutputEl = document.getElementById("terminal-output")! as HTMLPreElement;
+const checklistEl = document.getElementById("checklist")! as HTMLOListElement;
+const bodyEl = document.getElementById("step-body")! as HTMLElement;
 const primaryBtn = document.getElementById("primary-btn")! as HTMLButtonElement;
 const secondaryBtn = document.getElementById("secondary-btn")! as HTMLButtonElement;
 
-type Icon = "spinner" | "ok" | "error" | "warn";
+let home = "";
+
+// --- rendering helpers ---
 
 interface Action {
   label: string;
   onClick: () => void;
   cta?: boolean;
   variant?: "primary" | "quiet";
+  disabled?: boolean;
 }
 
-// Renders the header (spinner/icon + title) and the primary/secondary
-// message lines. Every stage transition goes through this, so the panel
-// never ends up with stale text from a previous stage.
-function render(opts: { icon: Icon; title: string; message: string; detail?: string }) {
-  spinnerEl.classList.toggle("hidden", opts.icon !== "spinner");
-  iconEl.classList.toggle("visible", opts.icon !== "spinner");
+function render(s: Screen) {
+  const icon: Icon = s.icon;
+  spinnerEl.classList.toggle("hidden", icon !== "spinner");
+  iconEl.classList.toggle("visible", icon !== "spinner");
   iconEl.classList.remove("icon-ok", "icon-error", "icon-warn");
-  iconEl.textContent = "";
-  if (opts.icon === "ok") {
-    iconEl.classList.add("icon-ok");
-    iconEl.textContent = "✓";
-  } else if (opts.icon === "error") {
-    iconEl.classList.add("icon-error");
-    iconEl.textContent = "!";
-  } else if (opts.icon === "warn") {
-    iconEl.classList.add("icon-warn");
-    iconEl.textContent = "!";
-  }
-
-  titleEl.textContent = opts.title;
-  messageEl.textContent = opts.message;
-
-  if (opts.detail) {
-    detailEl.textContent = opts.detail;
-    detailEl.classList.add("visible");
-  } else {
-    detailEl.textContent = "";
-    detailEl.classList.remove("visible");
-  }
+  iconEl.textContent = icon === "ok" ? "✓" : icon === "spinner" ? "" : "!";
+  if (icon !== "spinner") iconEl.classList.add(`icon-${icon}`);
+  titleEl.textContent = s.title;
+  messageEl.textContent = s.message;
+  detailEl.textContent = s.detail ?? "";
+  detailEl.classList.toggle("visible", !!s.detail);
 }
 
-function showChecks(checks: BrickSelfTestCheck[] | null | undefined) {
-  checksListEl.innerHTML = "";
-  if (!checks || checks.length === 0) {
-    checksListEl.classList.remove("visible");
-    return;
-  }
-  for (const check of checks) {
-    const li = document.createElement("li");
-    const dot = document.createElement("span");
-    dot.className = "dot " + (check.status === "ok" ? "status-ok" : "status-error");
-    li.appendChild(dot);
-    const label = document.createElement("span");
-    label.textContent = `${check.id}: ${check.message}`;
-    li.appendChild(label);
-    checksListEl.appendChild(li);
-  }
-  checksListEl.classList.add("visible");
+function busy(title: string, message = "") {
+  render({ icon: "spinner", title, message });
+  setActions();
+  bodyEl.innerHTML = "";
 }
 
-function clearTerminal() {
-  terminalOutputEl.textContent = "";
-}
-
-function showTerminal(visible: boolean) {
-  terminalEl.classList.toggle("visible", visible);
-}
-
-function appendTerminalLine(line: string) {
-  terminalOutputEl.textContent += (terminalOutputEl.textContent ? "\n" : "") + line;
-  terminalOutputEl.scrollTop = terminalOutputEl.scrollHeight;
-}
-
-function applyButtonAction(btn: HTMLButtonElement, action: Action | undefined, defaultVariant: "primary" | "quiet") {
-  if (!action) {
+function applyButton(btn: HTMLButtonElement, a: Action | undefined, def: "primary" | "quiet") {
+  if (!a) {
     btn.onclick = null;
     btn.classList.remove("visible", "btn-cta", "btn-primary", "btn-quiet");
     return;
   }
-  btn.textContent = action.label;
-  btn.onclick = action.onClick;
-  const variant = action.variant ?? defaultVariant;
-  btn.classList.toggle("btn-primary", variant === "primary");
-  btn.classList.toggle("btn-quiet", variant === "quiet");
-  btn.classList.toggle("btn-cta", !!action.cta);
+  btn.textContent = a.label;
+  btn.disabled = !!a.disabled;
+  btn.onclick = a.onClick;
+  const v = a.variant ?? def;
+  btn.classList.toggle("btn-primary", v === "primary");
+  btn.classList.toggle("btn-quiet", v === "quiet");
+  btn.classList.toggle("btn-cta", !!a.cta);
   btn.classList.add("visible");
 }
 
 function setActions(primary?: Action, secondary?: Action) {
-  applyButtonAction(primaryBtn, primary, "primary");
-  applyButtonAction(secondaryBtn, secondary, "quiet");
+  applyButton(primaryBtn, primary, "primary");
+  applyButton(secondaryBtn, secondary, "quiet");
 }
 
-function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
+async function refreshChecklist() {
+  const items = (await OnboardingService.Checklist().catch(() => [])) ?? [];
+  checklistEl.innerHTML = "";
+  items.forEach((text, i) => {
+    const li = document.createElement("li");
+    const mark = document.createElement("span");
+    mark.className = "check";
+    mark.textContent = `${i + 1}. ✓`;
+    const label = document.createElement("span");
+    label.textContent = text;
+    li.append(mark, label);
+    checklistEl.appendChild(li);
+  });
+  checklistEl.classList.toggle("visible", items.length > 0);
 }
 
-async function closeWindow() {
-  try {
-    await Window.Close();
-  } catch (err) {
-    console.error("failed to close startup window", err);
+// radioGroup renders options as radio rows and returns a getter for the
+// selected value.
+function radioGroup(name: string, options: Option[], selected?: string, onChange?: (v: string) => void): () => string {
+  const group = document.createElement("div");
+  group.style.display = "contents";
+  for (const [i, o] of options.entries()) {
+    const label = document.createElement("label");
+    label.className = "option";
+    const input = document.createElement("input");
+    input.type = "radio";
+    input.name = name;
+    input.value = o.value;
+    input.checked = selected ? o.value === selected : i === 0;
+    input.onchange = () => onChange?.(o.value);
+    const text = document.createElement("span");
+    text.textContent = o.label;
+    if (o.hint) {
+      const hint = document.createElement("span");
+      hint.className = "option-hint";
+      hint.textContent = o.hint;
+      text.appendChild(hint);
+    }
+    label.append(input, text);
+    group.appendChild(label);
   }
+  bodyEl.appendChild(group);
+  return () => (group.querySelector<HTMLInputElement>("input:checked")?.value ?? "");
 }
 
-// Step 1: is brick already running? Reuses BrickService (the same call the
-// popover polls) rather than duplicating the control-API probe here.
-async function checkRunning() {
-  render({ icon: "spinner", title: "Checking Brick…", message: "Looking for a running Brick process." });
-  setActions();
-  showTerminal(false);
-  showChecks(null);
-
-  let running = false;
-  try {
-    const status = await BrickService.Status();
-    running = status.running;
-  } catch (err) {
-    // BrickService.Status() treats "not running" as a normal, non-error
-    // result — a thrown error here means something else went wrong
-    // talking to the control API. Either way, self-test is the next
-    // useful step: it'll surface a clearer reason.
-    console.error("BrickService.Status() failed", err);
+function checkboxGroup(options: string[], checked: string[]): () => string[] {
+  const group = document.createElement("div");
+  group.style.display = "contents";
+  for (const name of options) {
+    const label = document.createElement("label");
+    label.className = "option";
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = name;
+    input.checked = checked.includes(name);
+    const text = document.createElement("span");
+    text.textContent = name;
+    label.append(input, text);
+    group.appendChild(label);
   }
+  bodyEl.appendChild(group);
+  return () => Array.from(group.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.value);
+}
 
-  if (running) {
-    render({ icon: "ok", title: "Brick is running", message: "" });
-    await closeWindow();
+function stepLabel(text: string) {
+  const p = document.createElement("p");
+  p.className = "step-label";
+  p.textContent = text;
+  bodyEl.appendChild(p);
+}
+
+function fieldError(text: string) {
+  const p = document.createElement("p");
+  p.className = "field-error";
+  p.textContent = text;
+  bodyEl.appendChild(p);
+}
+
+function link(text: string, onClick: () => void) {
+  const b = document.createElement("button");
+  b.className = "link";
+  b.textContent = text;
+  b.onclick = onClick;
+  bodyEl.appendChild(b);
+}
+
+async function showWindow() {
+  await OnboardingService.ShowWindow().catch(console.error);
+}
+
+// --- routing ---
+
+let generation = 0; // bumps on every restart so stale async steps bail out
+
+async function boot() {
+  const gen = ++generation;
+  busy("Starting Brick…");
+  checklistEl.innerHTML = "";
+  checklistEl.classList.remove("visible");
+  home = await OnboardingService.HomeDir().catch(() => "");
+  const route = await OnboardingService.Route();
+  if (gen !== generation) return;
+  await handleRoute(route);
+}
+
+async function reroute() {
+  const gen = generation;
+  busy("Checking Brick…");
+  const route = await OnboardingService.Route();
+  if (gen !== generation) return;
+  await handleRoute(route);
+}
+
+async function handleRoute(route: Route) {
+  if (route.step === "ready") {
+    await startSync(false);
     return;
   }
+  if (needsWindow(route.step)) await showWindow();
+  await refreshChecklist();
+  bodyEl.innerHTML = "";
+  render(screenForRoute(route));
 
-  await locateAndTest();
+  switch (route.step) {
+    case "welcome":
+      setActions(
+        { label: "Log in", onClick: () => void doLogin(), cta: true },
+        { label: "Not now", onClick: () => void OnboardingService.HideWindow() },
+      );
+      break;
+    case "login":
+      setActions(
+        { label: "Log in again", onClick: () => void doLogin(), cta: true },
+        { label: "Not now", onClick: () => void OnboardingService.HideWindow() },
+      );
+      break;
+    case "account":
+      await accountStep();
+      break;
+    case "folder":
+      await folderStep();
+      break;
+    case "locked":
+    case "connect-error":
+    default:
+      setActions({ label: "Retry", onClick: () => void reroute(), cta: true }, { label: "Close", onClick: () => void OnboardingService.HideWindow() });
+      break;
+  }
 }
 
-// Step 2: find the brick binary; if it's missing, offer to install it.
-async function locateAndTest() {
-  render({ icon: "spinner", title: "Checking Brick…", message: "Looking for the Brick CLI…" });
-  setActions();
+async function startSync(fromWizard: boolean) {
+  busy("Starting Brick…", "Starting to sync your files…");
+  const res = await OnboardingService.StartSync();
+  if (res.ok) {
+    render({ icon: "ok", title: "Brick is syncing", message: "" });
+    if (fromWizard) await new Promise((r) => setTimeout(r, 600));
+    await OnboardingService.HideWindow();
+    return;
+  }
+  await handleRoute({ step: res.step ?? "connect-error", firstRun: false, message: res.message ?? "", detail: undefined } as Route);
+}
 
-  let found = false;
+// --- login ---
+
+async function doLogin() {
+  busy("Opening browser for login…");
+  let url: string;
   try {
-    const result = await StartupService.LocateBrick();
-    found = result.found;
+    url = await OnboardingService.BeginLogin();
   } catch (err) {
-    render({
-      icon: "error",
-      title: "Brick setup",
-      message: "Could not check for the Brick CLI.",
-      detail: describeError(err),
-    });
-    setActions({ label: "Retry", onClick: () => void locateAndTest() });
+    render({ icon: "error", title: "Login failed", message: describeError(err) });
+    setActions({ label: "Try again", onClick: () => void doLogin(), cta: true });
     return;
   }
+  render({ icon: "spinner", title: "Waiting for authorization…", message: "Complete the login in your browser. If the browser did not open, use the link below." });
+  bodyEl.innerHTML = "";
+  link("Open the login page again", () => void OnboardingService.OpenURL(url));
+  setActions(undefined, {
+    label: "Cancel",
+    onClick: () => void OnboardingService.CancelLogin(),
+  });
 
-  if (!found) {
-    promptInstall();
-    return;
+  try {
+    const res = await OnboardingService.AwaitLogin();
+    render({ icon: "ok", title: res?.greeting ?? "Login successful 🎉", message: "" });
+    bodyEl.innerHTML = "";
+    await refreshChecklist();
+    await new Promise((r) => setTimeout(r, 700));
+    await reroute();
+  } catch (err) {
+    render({ icon: "error", title: "Login did not complete", message: describeError(err) });
+    bodyEl.innerHTML = "";
+    setActions({ label: "Try again", onClick: () => void doLogin(), cta: true }, { label: "Not now", onClick: () => void OnboardingService.HideWindow() });
   }
-
-  await runSelfTest();
 }
 
-function promptInstall() {
+// --- account ---
+
+async function accountStep() {
+  const accounts = (await OnboardingService.Accounts()) ?? [];
+  stepLabel("Select an account");
+  const get = radioGroup("account", accounts.map((a) => ({ value: a.id, label: a.name })));
+  setActions({
+    label: "Continue",
+    cta: true,
+    onClick: async () => {
+      try {
+        await OnboardingService.SelectAccount(get());
+        await reroute();
+      } catch (err) {
+        fieldError(describeError(err));
+      }
+    },
+  });
+}
+
+// --- sync folder (promptForSyncFolder) ---
+
+async function folderStep(error?: string) {
+  const def = await OnboardingService.DefaultSyncFolder();
+  render({ icon: "ok", title: "Sync folder", message: "You have no sync folder configured. Choose a sync folder." });
+  bodyEl.innerHTML = "";
+  stepLabel("Choose a sync folder");
+  const get = radioGroup("folder", folderOptions(def, home));
+  if (error) fieldError(error);
+  setActions({
+    label: "Continue",
+    cta: true,
+    onClick: async () => {
+      switch (get()) {
+        case "default":
+          await chooseFolder(def);
+          break;
+        case "pick": {
+          const picked = await OnboardingService.PickDirectory(home, "Pick a folder to sync");
+          if (picked) await chooseFolder(picked); // cancelled: stay here
+          break;
+        }
+        case "create":
+          createFolderStep();
+          break;
+      }
+    },
+  });
+}
+
+function createFolderStep(error?: string) {
+  render({ icon: "ok", title: "Create folder", message: `Create folder in ${displayPath(home, home)}` });
+  bodyEl.innerHTML = "";
+  const input = document.createElement("input");
+  input.className = "text-input";
+  input.placeholder = "folder or folder1/folder2";
+  bodyEl.appendChild(input);
+  if (error) fieldError(error);
+  const submit = async () => {
+    if (!input.value.trim()) {
+      void folderStep(); // empty = back, like brick-cli
+      return;
+    }
+    try {
+      const created = await OnboardingService.CreateFolderInHome(input.value);
+      await chooseFolder(created);
+    } catch (err) {
+      createFolderStep(describeError(err));
+    }
+  };
+  input.onkeydown = (e) => {
+    if (e.key === "Enter") void submit();
+    if (e.key === "Escape") void folderStep();
+  };
+  setActions({ label: "Create", cta: true, onClick: () => void submit() }, { label: "Back", onClick: () => void folderStep() });
+  input.focus();
+}
+
+async function chooseFolder(path: string) {
+  try {
+    const choice = await OnboardingService.ChooseSyncFolder(path);
+    if (choice?.hasFiles) {
+      conflictStep(choice.display);
+      return;
+    }
+    await OnboardingService.ConfirmSyncFolder("");
+    await refreshChecklist();
+    await connectStep();
+  } catch (err) {
+    await folderStep(describeError(err));
+  }
+}
+
+// --- conflicts (promptConflictMode) ---
+
+function conflictStep(display: string) {
   render({
     icon: "warn",
-    title: "Brick CLI",
-    message: "The Brick CLI is required to sync your files but it's not installed. Would you like to install it now?",
+    title: "Conflict resolution",
+    message: `${display} contains files. How should possible conflicts be handled on first sync?`,
   });
+  bodyEl.innerHTML = "";
+  const get = radioGroup("conflict", CONFLICT_OPTIONS);
   setActions(
-    { label: "Install Brick CLI", onClick: () => void doInstall(), cta: true },
     {
-      label: "Close Brick",
-      onClick: () => void StartupService.QuitApp(),
+      label: "Continue",
       cta: true,
-      variant: "primary",
+      onClick: async () => {
+        try {
+          await OnboardingService.ConfirmSyncFolder(get());
+          await refreshChecklist();
+          await connectStep();
+        } catch (err) {
+          fieldError(describeError(err));
+        }
+      },
     },
+    { label: "Back", onClick: () => void folderStep() },
   );
 }
 
-async function doInstall() {
-  render({ icon: "spinner", title: "Installing Brick…", message: "Running the Brick installer…" });
-  setActions();
-  clearTerminal();
-  showTerminal(true);
+// --- connect + scope (runSyncScopeOnboarding) ---
 
-  const offInstall = Events.On("brick:install-output", (e) => appendTerminalLine(String(e.data)));
+async function connectStep() {
+  busy("Connecting to Brick…");
+  let info: ScopeInfo | null;
   try {
-    const result = await StartupService.InstallBrick();
-    if (result.ok) {
-      await locateAndTest();
-      return;
+    info = await OnboardingService.Connect();
+  } catch (err) {
+    render({ icon: "error", title: "Can't reach Brick", message: describeError(err) });
+    setActions({ label: "Retry", onClick: () => void connectStep(), cta: true });
+    return;
+  }
+  if (info?.showScope) {
+    scopeStep(info);
+  } else if (info?.showRemote) {
+    remoteStep();
+  } else {
+    await doneStep();
+  }
+}
+
+function scopeStep(info: ScopeInfo) {
+  render({ icon: "ok", title: "Sync scope", message: "One last decision to make:" });
+  bodyEl.innerHTML = "";
+  let picking = false;
+  let getExcluded: () => string[] = () => [];
+  const get = radioGroup("scope", scopeOptions(info.totalHuman), "all", (v) => {
+    if (v === "pick" && !picking) {
+      picking = true;
+      stepLabel("Select the folders to EXCLUDE from sync");
+      getExcluded = checkboxGroup(info.folders ?? [], info.alreadyExcluded ?? []);
     }
-    render({
-      icon: "error",
-      title: "Install failed",
-      message: `The installer exited with code ${result.exitCode}. See the output above for details.`,
-    });
-    setActions(
-      { label: "Try again", onClick: () => void doInstall() },
-      {
-        label: "Cancel",
-        onClick: () => {
-          render({
-            icon: "error",
-            title: "Brick setup",
-            message: "Brick needs to be installed to continue.",
-          });
-          setActions({ label: "Check again", onClick: () => void locateAndTest() });
-        },
-      },
-    );
-  } catch (err) {
-    render({ icon: "error", title: "Install failed", message: describeError(err) });
-    setActions({ label: "Try again", onClick: () => void doInstall() });
-  } finally {
-    offInstall();
-  }
-}
-
-// Step 3: run brick's self-test and branch on the result.
-async function runSelfTest() {
-  render({ icon: "spinner", title: "Checking Brick…", message: "Running Brick self-test…" });
-  setActions();
-  showTerminal(false);
-  showChecks(null);
-
-  let result;
-  try {
-    result = await StartupService.SelfTest();
-  } catch (err) {
-    render({
-      icon: "error",
-      title: "Self-test failed",
-      message: "Could not run the Brick self-test.",
-      detail: describeError(err),
-    });
-    setActions({ label: "Retry", onClick: () => void runSelfTest() });
-    return;
-  }
-
-  const checks = result.checks ?? [];
-  showChecks(checks);
-
-  const instanceLock = checks.find((c) => c.id === "instance_lock");
-  if (instanceLock && instanceLock.status !== "ok") {
-    render({
-      icon: "error",
-      title: "Brick setup",
-      message: "Another instance of Brick is running with the IPC API turned off.",
-      detail: instanceLock.message,
-    });
-    setActions({ label: "Retry", onClick: () => void runSelfTest() });
-    return;
-  }
-
-  const failing = checks.find((c) => c.id !== "instance_lock" && c.status !== "ok");
-  if (failing) {
-    await runSetup(failing.message);
-    return;
-  }
-
-  await launchBrick();
-}
-
-// Step 4a: everything checked out except brick just wasn't running — start
-// it via `brick -d --json`, which reports back a single JSON status line
-// once the handoff to the detached daemon either succeeds or fails (see
-// StartupService.StartBrick / startup.go) rather than leaving us to assume
-// success just because the OS could exec the binary.
-async function launchBrick() {
-  render({ icon: "spinner", title: "Starting Brick…", message: "Starting the Brick sync process…" });
-  setActions();
-  showTerminal(false);
-
-  let result;
-  try {
-    result = await StartupService.StartBrick();
-  } catch (err) {
-    render({ icon: "error", title: "Could not start Brick", message: describeError(err) });
-    setActions({ label: "Retry", onClick: () => void launchBrick() });
-    return;
-  }
-
-  if (result.status !== "ok") {
-    if (result.code === "already_running") {
-      // Some other brick process (started outside this app, or left over
-      // from an earlier session) already holds the lock — that's a running
-      // brick either way, so treat it as success rather than a failure.
-      render({ icon: "ok", title: "Brick is running", message: "" });
-      setTimeout(() => void closeWindow(), 500);
-      return;
-    }
-    render({
-      icon: "error",
-      title: "Could not start Brick",
-      message: result.message || `brick -d --json failed (${result.code ?? "unknown error"}).`,
-    });
-    setActions({ label: "Retry", onClick: () => void launchBrick() });
-    return;
-  }
-
-  render({ icon: "ok", title: "Brick is starting", message: "" });
-  setTimeout(() => void closeWindow(), 500);
-}
-
-// Step 4b: a check other than instance_lock failed — brick's guided setup
-// is interactive (it can prompt for login, confirmations, etc.), so the Go
-// side opens it in a real native terminal window rather than piping its
-// output into this UI (see StartupService.RunSetup / terminal.go). This
-// call just waits for that terminal to finish and reacts to the exit code.
-async function runSetup(detail?: string) {
-  render({
-    icon: "spinner",
-    title: "Brick setup",
-    message:
-      "Brick needs to be properly set up to continue. Follow the instructions in the terminal window that just opened — this will continue automatically once it's done.",
-    detail,
   });
-  setActions();
-  showTerminal(false);
-
-  try {
-    const result = await StartupService.RunSetup();
-    if (result.ok) {
-      await launchBrick();
-      return;
-    }
-    render({
-      icon: "error",
-      title: "Setup didn't finish",
-      message: `brick --setup-and-exit exited with code ${result.exitCode}. Try running it again?`,
-    });
-    setActions(
-      { label: "Run setup again", onClick: () => void runSetup() },
-      {
-        label: "Cancel",
-        onClick: () => {
-          render({
-            icon: "error",
-            title: "Brick setup",
-            message:
-              "Brick setup did not complete. Reopen this window from the tray menu once you're ready to try again.",
-          });
-          setActions({ label: "Retry", onClick: () => void runSelfTest() });
-        },
-      },
-    );
-  } catch (err) {
-    render({ icon: "error", title: "Setup failed", message: describeError(err) });
-    setActions({ label: "Retry", onClick: () => void runSetup() });
-  }
+  setActions({
+    label: "Continue",
+    cta: true,
+    onClick: async () => {
+      try {
+        const all = get() === "all";
+        await OnboardingService.SetSyncScope(all, all ? [] : getExcluded());
+        await refreshChecklist();
+        remoteStep();
+      } catch (err) {
+        fieldError(describeError(err));
+      }
+    },
+  });
 }
 
-void checkRunning();
+// --- remote access (promptForRemoteControl) ---
+
+function remoteStep(custom?: string) {
+  render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
+  bodyEl.innerHTML = "";
+  let getRoot: (() => string) | null = null;
+  const showRoots = () => {
+    if (getRoot) return;
+    stepLabel("Which folder should be accessible remotely?");
+    getRoot = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
+  };
+  const getYesNo = radioGroup("remote", REMOTE_OPTIONS, "yes", (v) => {
+    if (v === "yes") showRoots();
+  });
+  showRoots();
+  setActions({
+    label: "Continue",
+    cta: true,
+    onClick: async () => {
+      try {
+        if (getYesNo() === "no") {
+          await OnboardingService.SetRemoteAccess(false, "");
+        } else if (getRoot?.() === "custom") {
+          const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
+          if (!picked) return; // cancelled: stay
+          if (!custom) {
+            remoteStep(picked); // show the choice before saving
+            return;
+          }
+          await OnboardingService.SetRemoteAccess(true, picked);
+        } else {
+          await OnboardingService.SetRemoteAccess(true, home);
+        }
+        await doneStep();
+      } catch (err) {
+        fieldError(describeError(err));
+      }
+    },
+  });
+}
+
+// --- done ---
+
+async function doneStep() {
+  await OnboardingService.FinishOnboarding();
+  await refreshChecklist();
+  bodyEl.innerHTML = "";
+  render({ icon: "ok", title: "Done and ready to go!", message: "Brick will now keep your sync folder up to date." });
+  setActions({ label: "Start syncing", cta: true, onClick: () => void startSync(true) });
+}
+
+// --- entry ---
+
+Events.On("setup:open", () => void boot());
+void boot().catch((err) => {
+  void showWindow();
+  render({ icon: "error", title: "Brick setup", message: describeError(err) });
+  setActions({ label: "Retry", onClick: () => void boot(), cta: true });
+});

@@ -3,6 +3,10 @@ module github.com/webbite-io/brick-wails
 go 1.25.0
 
 require (
+	github.com/fsnotify/fsnotify v1.10.1
+	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
+	github.com/hashicorp/yamux v0.1.2
 	github.com/joho/godotenv v1.5.1
 	github.com/wailsapp/wails/v3 v3.0.0-alpha2.113
 	golang.org/x/sys v0.43.0

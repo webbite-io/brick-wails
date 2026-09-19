@@ -50,6 +50,11 @@ body {
 .dot.state-paused { background: #eab308; }
 .dot.state-error { background: #ef4444; }
 .dot.state-not-running { background: #52525b; }
+.dot.state-not-configured,
+.dot.state-stopped { background: #52525b; }
+.dot.state-auth-required,
+.dot.state-locked { background: #f97316; }
+.dot.state-starting { background: #a1a1aa; }
 
 .state-label {
     font-weight: 600;

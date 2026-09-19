@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Noto+Sans+Condensed:wght@700&display=swap" rel="stylesheet"/>
     <link rel="stylesheet" href="/style.css"/>
     <link rel="stylesheet" href="/startup.css"/>
-    <title>Brick Setup</title>
+    <title>Webbite Brick</title>
 </head>
 <body>
 <main class="startup-panel">
@@ -29,12 +29,11 @@
 
     <p class="startup-detail" id="stage-detail"></p>
 
-    <ul class="checks-list" id="checks-list"></ul>
+    <!-- Completed onboarding steps (brick-cli's numbered ✅ checklist). -->
+    <ol class="checks-list" id="checklist"></ol>
 
-    <section class="terminal" id="terminal">
-        <h2>Output</h2>
-        <pre class="terminal-output" id="terminal-output"></pre>
-    </section>
+    <!-- Per-step form: options, inputs, links. Filled by startup.ts. -->
+    <section class="step-body" id="step-body"></section>
 
     <footer class="startup-actions" id="startup-actions">
         <button id="primary-btn" class="btn"></button>

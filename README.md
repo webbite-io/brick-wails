@@ -1,105 +1,157 @@
-# Webbite Brick — tray companion
+# Webbite Brick — desktop app
 
-A native system-tray app that shows live sync status for
-[`brick`](https://github.com/webbite-io/brick-cli) — Webbite's Brick CLI — and
-lets you pause/resume/quit it without a terminal, similar to the Dropbox tray
-icon. Built with [Wails v3](https://v3.wails.io/) (currently alpha).
+A native system-tray app that keeps a local folder in two-way sync with
+Webbite Brick, similar to the Dropbox tray app. Built with
+[Wails v3](https://v3.wails.io/) (currently alpha).
 
-## How it talks to brick
+The app runs the sync engine itself. It does **not** need the
+[`brick`](https://github.com/webbite-io/brick-cli) CLI, but it is fully
+compatible with it: both use the same config file, the same sync state and the
+same OAuth client, and only one of them syncs at a time.
 
-This app does not run the sync engine itself. It's a thin client for the
-local control API a running `brick` process exposes over a Unix domain
-socket (see `brickclient.go`, and
-[`openapi.yaml`](../webbite-brick-cli/openapi.yaml) /the "Local
-Status/Control API" section of brick-cli's README for the authoritative
-protocol). The two repos deliberately don't share a Go module — only the
-small HTTP/JSON protocol is duplicated between them, versioned via
-`protocolVersion` in brick's discovery file, so each can ship on its own
-release cadence with its own (heavier, multi-OS) native-packaging pipeline.
+## How sync works
 
-If `brick` isn't running, `BrickService.Status()` returns
-`{state: "not-running"}` rather than an error — the UI is expected to render
-that as a normal state, not a fault.
+The sync engine is a port of brick-cli's (`cmd/brick/sync.go` @ `f3ef7bd`),
+kept semantically identical — see [`internal/PARITY.md`](internal/PARITY.md):
 
-## Getting brick running
+- A full two-way reconcile of the remote tree against the local folder, with a
+  per-file index (`sync-state-<accountId>.json`) that tells a new file apart
+  from a deleted one. Deletions propagate both ways (to Brick's trash);
+  server-side moves/renames are mirrored as local renames; when both sides
+  changed a file, Brick's copy wins.
+- Driven by a filesystem watcher (debounced), a `check-updates` poll every 20s,
+  and a forced full reconcile every ~30 min (catches purged files).
+- `excludeDirs` (selective sync) are never created, uploaded or downloaded.
+- The first sync into a folder that already has files applies the conflict
+  mode chosen during onboarding (overwrite this device / overwrite Brick / keep
+  both copies).
+- The remote-file agent registers the device with Brick Online and, only if
+  remote access is enabled, serves the chosen folders to the same user.
 
-On every launch, a second "Startup" window (see below) checks whether a
-`brick` process is already answering the control API and, if not, drives it
-to a running state:
+## Onboarding
 
-1. Locate the `brick` binary (`PATH`, falling back to `~/.local/bin/brick`).
-   If it can't be found, offer to install it — `curl -fsSL
-   https://webbite.io/cli/install.sh | bash` on Linux/macOS, `winget install
-   --id Webbite.Brick -e` on Windows — then retry.
-2. Run `brick --self-test --no-upgrade-check` and branch on its JSON report:
-   - all checks `ok` → start it via `brick -d --json --no-upgrade-check`,
-     the mode brick-cli documents for a companion app: brick starts the
-     actual sync as a detached grandchild and prints one JSON line
-     (`{"status": "ok", ...}` or `{"status": "error", "code": ...}`) before
-     exiting, so a failed handoff (e.g. `already_running` because another
-     instance started outside this app) is reported rather than assumed
-     away by a plain `cmd.Start()`.
-   - `instance_lock` failing → another `brick` is already running with its
-     IPC API disabled; this is reported as an error, not auto-resolved.
-   - any other check failing → run `brick --setup-and-exit` in a new native
-     terminal window (it's interactive — it can prompt for login — so it
-     can't just be captured and mirrored into the app's own UI) and, once
-     it exits 0, start `brick` as above. A non-zero exit offers to run
-     setup again.
+The setup window (`frontend/startup.html` + `src/startup.ts`) is the graphical
+version of brick-cli's interactive setup. On launch it routes:
 
-Once brick is confirmed running, the Startup window closes itself and the
-tray popover behaves as normal.
+| Situation | Screen |
+|---|---|
+| The Brick CLI is already syncing (holds the lock) | "Brick CLI is running" + Retry |
+| Not logged in | Welcome → **Log in** (opens the browser; OIDC + PKCE with a loopback callback) |
+| Session expired | "Authentication failed" → Log in again |
+| Several accounts, none chosen | Account picker |
+| No sync folder | Wizard: sync folder (`~/Brick` / pick existing / create) → conflict mode (only if the folder has files) → which folders to sync → remote access → done |
+| Can't reach the API | Error + Retry |
+| All set | Starts syncing; the window never shows |
+
+A machine already set up by the CLI goes straight to syncing. If the session
+expires while syncing, the setup window opens at the login step.
+
+## Coexisting with brick-cli
+
+- **Shared files**: `config.yaml`, `sync-state-*.json` and `brick.lock` in
+  `~/.config/brick` (`%AppData%\brick` on Windows). Config writes are
+  read-modify-write and keep keys this app doesn't know about, so neither app
+  erases the other's settings.
+- **One engine at a time**: both take the same instance lock. If the CLI is
+  syncing, the app says so and waits for Retry.
+- **Shared tokens**: the app must use the CLI's OAuth client
+  (`OAUTH_CLIENT_ID`), since a refresh token can only be refreshed by the
+  client it was issued to. Token rotation re-reads the config first, so a
+  refresh done by the CLI is adopted rather than replayed.
+- **CLI commands still work**: while syncing, the app serves brick's local
+  control API (the server side only — the app never calls it), so `brick sync
+  -s` pauses the app's engine before deleting newly excluded folders, and
+  `brick switch-accounts` / `brick restart` stop it. The app then shows
+  "Not syncing" with a *Start Syncing* button.
+
+## Configuration
+
+Settings use the same keys as brick-cli — see [`.env.example`](.env.example).
+
+- **Development**: copy `.env.example` to `.env.local` (gitignored). Dev builds
+  load `.env.local` (then `.env.dev`) at startup.
+- **Production**: values are baked in at compile time via `-ldflags` (see
+  `BRICK_LDFLAGS` in `Taskfile.yml`). `make build-prod` reads them from
+  `.env.prod` (gitignored) or the environment, and refuses to build if
+  `ACC_API_URL`, `STORAGE_API_URL` or `OAUTH_CLIENT_ID` is missing. Production
+  builds never read `.env` files.
+- `BRICK_CONFIG_DIR` (dev/test only) points the app at a separate config
+  directory, which also moves its runtime files — useful to try the app
+  without touching a real brick setup.
+
+Logs go to `<config dir>/brick-ui.log` (plus stderr with `DEBUG=true`).
 
 ## Project layout
 
-- `main.go` — creates the tray icon, an attached popover window (hidden
-  until the tray icon is clicked), the Startup window (shown on launch),
-  and the tray menu (Open, Pause/Resume, Quit Brick, Quit). Polls brick's
-  `/v1/status` every 2s and both updates the tray tooltip and emits a
-  `brick:status` event the frontend listens for.
-- `brickclient.go` — the `BrickService`, bound to the frontend. Finds
-  brick's discovery file, dials its control socket, and exposes
-  `Status`/`Activity`/`Account`/`Pause`/`Resume`/`QuitBrick` — each callable
-  from TypeScript via the generated bindings in `frontend/bindings/`.
-- `startup.go` — the `StartupService`, bound to the frontend. Locates the
-  `brick` binary, runs `--self-test` and the platform install command
-  (streaming the installer's output as `brick:install-output` events), and
-  starts brick's sync daemon.
-- `terminal.go` — opens a command in a new native terminal window (used for
-  `brick --setup-and-exit`, which is interactive) and waits for it to
-  finish. Works by writing a small wrapper script that records the
-  command's exit code to a file, then polling for that file rather than
-  relying on the terminal-launching process's own exit — several terminal
-  emulators (`gnome-terminal` chief among them) hand off to an
-  already-running server process and return immediately, so there'd be
-  nothing meaningful to wait on otherwise.
-- `process_unix.go` / `process_windows.go` — per-OS "is this pid alive"
-  check, used to treat a discovery file left behind by a crashed `brick` as
-  stale.
-- `frontend/` — Vanilla + TypeScript + Vite, with two windows/entry points:
-  `index.html` + `src/main.ts` render the status popover (state dot,
-  folder, in-flight transfer, counters, recent activity, pause/resume and
-  quit buttons); `startup.html` + `src/startup.ts` render the startup flow
-  described above.
+- `main.go` — tray icon and menu, the status popover and setup windows, event
+  wiring, compile-time defaults.
+- `services_sync.go` — `SyncService` (status, activity, pause/resume) for the
+  popover.
+- `services_onboarding.go` — `OnboardingService`: a thin Wails adapter
+  (native folder dialogs, browser, window control) over `internal/onboarding`.
+- `internal/` — everything else, with no Wails dependency (so it tests without
+  GTK/WebKit):
+  - `brickcfg` — config file + env resolution
+  - `auth` — OIDC login, token refresh/rotation, authenticated requests
+  - `storage` — Storage API client
+  - `syncengine` — the sync engine
+  - `lock` — the per-user instance lock (shared with brick-cli)
+  - `agent` — the remote-file agent
+  - `controlapi` — brick's local control API (server side)
+  - `runner` — lifecycle: lock + engine + agent + control API, app-level state
+  - `onboarding` — startup routing and wizard steps
+  - `testutil` — fake accounts/OIDC and Storage APIs, test helpers, and
+    `cmd/brick-fakes` to run the fakes as real servers
+- `integration/` — end-to-end tests (build tag `integration`).
+- `frontend/` — Vanilla TypeScript + Vite: `index.html`/`src/main.ts` (popover),
+  `startup.html`/`src/startup.ts` (setup window), `src/wizard.ts` and
+  `src/status.ts` (pure view logic, unit tested).
 
 ## Development
 
 ```bash
-wails3 dev            # hot-reload, both frontend and backend
-wails3 generate bindings -clean=true -ts -i   # regenerate frontend/bindings after changing BrickService's methods/types
-wails3 build           # production build for the current platform
+make doctor           # check build prerequisites
+make setup            # install wails3 + frontend deps
+make dev              # hot reload (uses .env.local)
+make build-dev        # dev build → bin/brick-ui
+wails3 generate bindings -clean=true -ts -i   # after changing a service's methods/types
 ```
 
-The tray icon currently uses Wails' placeholder logo assets
-(`pkg/icons.SystrayLight`/`SystrayDark`/`SystrayMacTemplate` — see the TODO
-in `main.go`); swap these for a Brick-branded icon (with idle/syncing/error/
-paused variants) before shipping.
+Trying the app without the real backend:
+
+```bash
+go run ./internal/testutil/cmd/brick-fakes -seed      # fake API on :18080/:18081; login auto-approves
+BRICK_CONFIG_DIR=/tmp/brick-dev ACC_API_URL=http://127.0.0.1:18080 \
+  STORAGE_API_URL=http://127.0.0.1:18081 OAUTH_CLIENT_ID=test-client ./bin/brick-ui
+```
+
+## Tests
+
+```bash
+make test               # Go unit tests (-race) + frontend typecheck and vitest
+make test-integration   # end-to-end sync/onboarding tests
+make test-all
+```
+
+- **Unit** (`internal/...`): config round-trips (unknown keys, read-modify-write,
+  Windows path), login/PKCE/refresh (including a single refresh under concurrent
+  401s, and adopting a CLI-rotated token), the Storage API client, a reconcile
+  matrix covering every create/update/delete/move/conflict/exclude case, pause
+  semantics, cursor and state-file compatibility, a cross-process lock test,
+  the agent's path sandboxing and tunnel, the control API, the runner lifecycle
+  and every onboarding step.
+- **Integration** (`integration/`): onboarding → live two-way sync on a real
+  filesystem, session expiry → re-login → resume, incremental restarts, and
+  first-sync conflict handling. When a brick-cli checkout is available
+  (`BRICK_CLI_DIR`, default `../brick-cli`) it also builds the real `brick` and
+  checks `--self-test` accepts an app-onboarded config, the instance lock is
+  shared both ways, `brick switch-accounts` stops the app's engine, and the app
+  reuses sync state written by the CLI.
 
 ## Packaging
 
 Not yet set up. `wails3 package` targets native installers per OS (`.dmg` on
-macOS, `.msi`/NSIS on Windows, AppImage/`.deb` on Linux) — see
-`build/darwin`, `build/windows`, `build/linux` for the per-platform Taskfiles
-Wails generated, and the [Wails v3 packaging
-docs](https://v3.wails.io/) for what each needs (e.g. an Apple Developer ID
-for macOS signing/notarization) before a real release can be cut.
+macOS, `.msi`/NSIS on Windows, AppImage/`.deb` on Linux) — see `build/darwin`,
+`build/windows`, `build/linux` and the [Wails v3 packaging
+docs](https://v3.wails.io/). The tray icon still uses Wails' placeholder logo
+(see `build/tray`).

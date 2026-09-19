@@ -1,5 +1,6 @@
 import {Events} from "@wailsio/runtime";
-import {BrickService} from "../bindings/github.com/webbite-io/brick-wails";
+import {SyncService} from "../bindings/github.com/webbite-io/brick-wails";
+import {actionForState, STATE_LABELS} from "./status";
 
 const stateDot = document.getElementById('state-dot')! as HTMLSpanElement;
 const stateLabel = document.getElementById('state-label')! as HTMLSpanElement;
@@ -12,15 +13,7 @@ const countDeleted = document.getElementById('count-deleted')! as HTMLSpanElemen
 const countMoved = document.getElementById('count-moved')! as HTMLSpanElement;
 const activityList = document.getElementById('activity-list')! as HTMLUListElement;
 const pauseBtn = document.getElementById('pause-btn')! as HTMLButtonElement;
-
-const STATE_LABELS: Record<string, string> = {
-    'not-running': 'Brick is not running',
-    starting: 'Starting…',
-    syncing: 'Syncing…',
-    idle: 'Up to date',
-    paused: 'Paused',
-    error: 'Error',
-};
+const setupBtn = document.getElementById('setup-btn')! as HTMLButtonElement;
 
 // Path data copied from lucide icons (arrow-up, arrow-down, arrow-right, trash).
 const ARROW_UP_PATHS = ['m5 12 7-7 7 7', 'M12 19V5'];
@@ -107,9 +100,15 @@ function renderStatus(status: any) {
     countDeleted.innerText = String(counters.deleted ?? 0);
     countMoved.innerText = String(counters.moved ?? 0);
 
-    const running = state !== 'not-running';
+    const running = !!status.running;
     pauseBtn.disabled = !running;
+    pauseBtn.style.display = running ? '' : 'none';
     pauseBtn.innerText = state === 'paused' ? 'Resume Sync' : 'Pause Sync';
+
+    // When nothing is syncing, offer the way back (set up / log in / start).
+    const action = actionForState(state);
+    setupBtn.style.display = action ? '' : 'none';
+    setupBtn.innerText = action ?? '';
 }
 
 function renderActivity(events: any[]) {
@@ -146,34 +145,38 @@ function renderActivity(events: any[]) {
 
 async function refreshActivity() {
     try {
-        renderActivity(await BrickService.Activity(20));
+        renderActivity((await SyncService.Activity(20)) ?? []);
     } catch (err) {
         console.error(err);
     }
 }
 
-// The Go side already polls brick's control API every 2s and emits the
-// result as a "brick:status" event, so the frontend just listens rather
-// than polling brick itself a second time.
+// The Go side pushes "brick:status" whenever the engine's status changes
+// (and every 2s), and "brick:activity" for each sync event.
 Events.On('brick:status', (event) => {
     renderStatus(event.data);
+});
+Events.On('brick:activity', () => {
+    void refreshActivity();
+});
+
+setupBtn.addEventListener('click', () => {
+    SyncService.OpenSetup().catch(console.error);
 });
 
 pauseBtn.addEventListener('click', async () => {
     try {
-        const status = await BrickService.Status();
+        const status = await SyncService.Status();
         if (status.state === 'paused') {
-            await BrickService.Resume();
+            await SyncService.Resume();
         } else {
-            await BrickService.Pause();
+            await SyncService.Pause();
         }
     } catch (err) {
         console.error(err);
     }
 });
 
-// Initial paint before the first status event arrives, plus a periodic
-// activity refresh (the activity feed isn't pushed the way status is).
-BrickService.Status().then(renderStatus).catch(console.error);
+// Initial paint before the first status event arrives.
+SyncService.Status().then(renderStatus).catch(console.error);
 refreshActivity();
-setInterval(refreshActivity, 5000);

@@ -12,6 +12,14 @@
 APP_NAME := brick-ui
 BIN_DIR := bin
 
+# Production builds bake ACC_API_URL, STORAGE_API_URL, OAUTH_* and
+# STORAGE_*_URL in at compile time (see BRICK_LDFLAGS in Taskfile.yml and the
+# Default* vars in main.go). Like brick-cli, load them from .env.prod when it
+# exists (gitignored); CI sets them as real env vars instead. Dev builds
+# (make dev / build-dev) don't bake anything and read .env.local at runtime.
+-include .env.prod
+export ACC_API_URL STORAGE_API_URL OAUTH_CLIENT_ID OAUTH_SCOPES OAUTH_CALLBACK_URL STORAGE_WEB_URL STORAGE_HELP_URL
+
 # Pin the wails3 CLI to the exact version this module depends on (go.mod),
 # rather than `go install .../wails3@latest`, so the CLI never drifts ahead
 # of what the app is actually built against.
@@ -38,7 +46,7 @@ COLOR_YELLOW := \033[33m
 # installed automatically.
 LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev
 
-.PHONY: all setup doctor dev build build-dev build-prod run package clean install version help
+.PHONY: all setup doctor dev build build-dev build-prod check-release-env run package clean install version help test test-go test-frontend test-integration test-all
 
 # Default target
 all: build-prod
@@ -98,13 +106,46 @@ build-dev:
 	wails3 task build DEV=true
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
-# Production build: stripped, trimmed, -tags production.
-build-prod:
+# Production build: stripped, trimmed, -tags production, with the values
+# from .env.prod (or the environment) baked in.
+build-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (production)...$(COLOR_RESET)"
 	wails3 task build
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
 build: build-prod
+
+# Fail fast rather than silently baking empty values into a production build,
+# which would then fall back to the localhost dev URLs at runtime.
+check-release-env:
+	@missing=""; \
+	[ -n "$(ACC_API_URL)" ] || missing="$$missing ACC_API_URL"; \
+	[ -n "$(STORAGE_API_URL)" ] || missing="$$missing STORAGE_API_URL"; \
+	[ -n "$(OAUTH_CLIENT_ID)" ] || missing="$$missing OAUTH_CLIENT_ID"; \
+	if [ -n "$$missing" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) missing required production env vars:$$missing"; \
+		echo "Add them to .env.prod (see .env.example), or export them in your shell (as CI does)."; \
+		exit 1; \
+	fi
+
+# --- Tests ---
+# Go unit tests live under internal/ and never import Wails, so they need no
+# GTK/WebKit headers. Integration tests (real fsnotify, fake auth + storage
+# servers, optionally a real brick-cli build) are behind the "integration"
+# build tag; set BRICK_CLI_DIR to a brick-cli checkout (default ../brick-cli)
+# to include the cross-CLI compatibility tests.
+test: test-go test-frontend
+
+test-go:
+	go test -race ./internal/...
+
+test-frontend:
+	cd frontend && npm run typecheck && npm test
+
+test-integration:
+	go test -race -tags integration -count=1 ./integration/...
+
+test-all: test test-integration
 
 # Run the last build.
 run:
@@ -153,7 +194,10 @@ help:
 	@echo "  setup      - Install wails3 CLI and frontend (npm) dependencies"
 	@echo "  dev        - Run with hot reload (frontend + backend)"
 	@echo "  build-dev  - Build for current platform, unstripped (dev)"
-	@echo "  build-prod - Build for current platform, stripped (production)"
+	@echo "  build-prod - Build for current platform, stripped (production; needs .env.prod)"
+	@echo "  test       - Go unit tests (-race) + frontend typecheck and unit tests"
+	@echo "  test-integration - End-to-end sync/onboarding tests (+ brick-cli compat if available)"
+	@echo "  test-all   - test + test-integration"
 	@echo "  run        - Run the last build"
 	@echo "  package    - Build native packages for this OS (.deb/.rpm/AppImage on Linux)"
 	@echo "  clean      - Remove build artifacts (bin/, frontend/dist, .task)"
