@@ -41,8 +41,7 @@ type Server struct {
 	n             int
 	failRefreshes bool
 
-	RefreshCalls  atomic.Int32
-	ExchangeCalls atomic.Int32
+	RefreshCalls atomic.Int32
 }
 
 // New starts a fake with one account on a random loopback port.
@@ -208,7 +207,6 @@ func (s *Server) handler() http.Handler {
 		defer s.mu.Unlock()
 		switch r.Form.Get("grant_type") {
 		case "authorization_code":
-			s.ExchangeCalls.Add(1)
 			challenge, ok := s.pending[r.Form.Get("code")]
 			delete(s.pending, r.Form.Get("code"))
 			sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))

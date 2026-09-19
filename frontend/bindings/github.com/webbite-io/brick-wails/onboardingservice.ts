@@ -133,20 +133,6 @@ export function PickDirectory(startDir: string, title: string): $CancellableProm
 }
 
 /**
- * QuitApp exits the app.
- */
-export function QuitApp(): $CancellablePromise<void> {
-    return $Call.ByID(2644828598);
-}
-
-/**
- * Restart clears in-memory wizard progress (a fresh session).
- */
-export function Restart(): $CancellablePromise<void> {
-    return $Call.ByID(2116026559);
-}
-
-/**
  * Route decides which screen the setup window should show. When syncing is
  * already running it returns "ready".
  */

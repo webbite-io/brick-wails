@@ -44,7 +44,6 @@ func (r *recSink) has(kind string) bool {
 	}
 	return false
 }
-func (r *recSink) reset() { r.mu.Lock(); r.kinds = nil; r.mu.Unlock() }
 
 type fixture struct {
 	t      *testing.T
@@ -686,7 +685,7 @@ func TestHelpers(t *testing.T) {
 	if DupPath("a/b.txt") != "a/b (copy).txt" || DupPath("x") != "x (copy)" {
 		t.Error("DupPath")
 	}
-	if !IsExcludedPath("a/b/c", []string{"a/b"}) || IsExcludedPath("a/bc", []string{"a/b"}) || !IsExcludedPath("a", []string{"/a/"}) {
+	if !isExcludedPath("a/b/c", []string{"a/b"}) || isExcludedPath("a/bc", []string{"a/b"}) || !isExcludedPath("a", []string{"/a/"}) {
 		t.Error("IsExcludedPath")
 	}
 }

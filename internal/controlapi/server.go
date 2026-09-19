@@ -164,15 +164,6 @@ func Start(opts Options, h Hooks) (*Server, error) {
 	return s, nil
 }
 
-// SocketPath is the unix socket address.
-func (s *Server) SocketPath() string { return s.socketPath }
-
-// DiscoveryPath is the discovery file.
-func (s *Server) DiscoveryPath() string { return s.discoveryPath }
-
-// Token is the shared secret.
-func (s *Server) Token() string { return s.token }
-
 // Close stops serving and removes the socket and discovery file — brick-cli's
 // stopRunningInstance waits for the discovery file to disappear.
 func (s *Server) Close() {

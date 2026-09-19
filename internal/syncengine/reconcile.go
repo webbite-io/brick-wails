@@ -498,9 +498,7 @@ func isUnderAny(rel string, handled map[string]bool) bool {
 	return false
 }
 
-// IsExcludedPath reports whether rel is one of excludeDirs or nested under one.
-func IsExcludedPath(rel string, excludeDirs []string) bool { return isExcludedPath(rel, excludeDirs) }
-
+// isExcludedPath reports whether rel is one of excludeDirs or nested under one.
 func isExcludedPath(rel string, excludeDirs []string) bool {
 	for _, dir := range excludeDirs {
 		dir = strings.Trim(filepath.ToSlash(dir), "/")

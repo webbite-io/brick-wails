@@ -162,22 +162,6 @@
     color: #d4d4d8;
 }
 
-.checks-list .dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    background: #71717a;
-    flex-shrink: 0;
-}
-
-.checks-list .dot.status-ok {
-    background: #22c55e;
-}
-
-.checks-list .dot.status-error {
-    background: #ef4444;
-}
-
 .startup-actions {
     display: flex;
     flex-direction: column;

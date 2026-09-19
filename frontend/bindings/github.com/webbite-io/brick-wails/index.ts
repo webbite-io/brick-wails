@@ -9,6 +9,5 @@ export {
 };
 
 export type {
-    BrickAccount,
     StartResult
 } from "./models.js";

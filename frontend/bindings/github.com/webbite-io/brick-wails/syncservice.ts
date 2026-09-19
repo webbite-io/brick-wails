@@ -3,9 +3,8 @@
 
 /**
  * SyncService exposes the in-process sync engine to the status popover. It
- * replaces the old control-API client (BrickService) with the same method
- * names and JSON shapes, so the popover barely changed. Bound via
- * application.NewService in main.go.
+ * replaces the old control-API client with the same method names and JSON
+ * shapes. Bound via application.NewService in main.go.
  * @module
  */
 
@@ -18,21 +17,7 @@ import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wails
 import * as runner$0 from "./internal/runner/models.js";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import * as storage$0 from "./internal/storage/models.js";
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
 import * as syncengine$0 from "./internal/syncengine/models.js";
-
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore: Unused imports
-import * as $models from "./models.js";
-
-/**
- * Account returns the synced account.
- */
-export function Account(): $CancellablePromise<$models.BrickAccount> {
-    return $Call.ByID(588438861);
-}
 
 /**
  * Activity returns up to limit recent sync events, newest first.
@@ -61,13 +46,6 @@ export function OpenSetup(): $CancellablePromise<void> {
  */
 export function Pause(): $CancellablePromise<void> {
     return $Call.ByID(3371829380);
-}
-
-/**
- * Quota returns the cached storage quota, or nil before the first fetch.
- */
-export function Quota(): $CancellablePromise<storage$0.Quota | null> {
-    return $Call.ByID(1793828554);
 }
 
 /**

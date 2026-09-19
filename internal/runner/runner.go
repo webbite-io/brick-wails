@@ -107,8 +107,8 @@ func (r *Runner) Running() bool {
 	return r.eng != nil
 }
 
-// SetState records an app-level state while no engine runs.
-func (r *Runner) SetState(state, lastError string) {
+// setState records an app-level state while no engine runs.
+func (r *Runner) setState(state, lastError string) {
 	r.mu.Lock()
 	r.state, r.lastError = state, lastError
 	r.mu.Unlock()
@@ -143,18 +143,6 @@ func (r *Runner) Activity(limit int) []syncengine.ActivityEvent {
 	return eng.RecentActivity(limit)
 }
 
-// Quota returns the cached quota, if any.
-func (r *Runner) Quota() *storage.Quota {
-	r.mu.Lock()
-	eng := r.eng
-	r.mu.Unlock()
-	if eng == nil {
-		return nil
-	}
-	q, _ := eng.Quota()
-	return q
-}
-
 // Account returns (accountId, clientId) of the running engine.
 func (r *Runner) Account() (string, string) {
 	r.mu.Lock()
@@ -185,7 +173,7 @@ func (r *Runner) Start(p StartParams) error {
 	r.mu.Unlock()
 
 	fail := func(state string, err error) error {
-		r.SetState(state, err.Error())
+		r.setState(state, err.Error())
 		return err
 	}
 
@@ -330,17 +318,6 @@ func (r *Runner) stop(state, msg string) {
 	case <-time.After(15 * time.Second):
 		r.logf("timed out waiting for sync to stop")
 	}
-}
-
-// Done returns a channel closed when the current engine run ends (nil when
-// nothing runs).
-func (r *Runner) Done() <-chan struct{} {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.eng == nil {
-		return nil
-	}
-	return r.done
 }
 
 // emitStatus pushes status, throttled to ~10/s with a trailing emit.

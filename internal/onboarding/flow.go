@@ -63,10 +63,8 @@ type Route struct {
 
 // LoginResult is returned by AwaitLogin.
 type LoginResult struct {
-	GivenName  string         `json:"givenName"`
-	FamilyName string         `json:"familyName"`
-	Greeting   string         `json:"greeting"`
-	Accounts   []auth.Account `json:"accounts"`
+	Greeting string         `json:"greeting"`
+	Accounts []auth.Account `json:"accounts"`
 	// AccountSelected is true when there was exactly one account and it was
 	// selected automatically (brick-cli's selectAccount).
 	AccountSelected bool `json:"accountSelected"`
@@ -83,7 +81,6 @@ type FolderChoice struct {
 type ScopeInfo struct {
 	ShowScope       bool     `json:"showScope"`
 	ShowRemote      bool     `json:"showRemote"`
-	TotalBytes      int64    `json:"totalBytes"`
 	TotalHuman      string   `json:"totalHuman"`
 	Folders         []string `json:"folders"`
 	AlreadyExcluded []string `json:"alreadyExcluded"`
@@ -279,7 +276,6 @@ func (f *Flow) AwaitLogin(ctx context.Context) (*LoginResult, error) {
 
 	res := &LoginResult{Greeting: "Login successful 🎉"}
 	if u, err := f.client.UserInfo(ctx); err == nil {
-		res.GivenName, res.FamilyName = u.GivenName, u.FamilyName
 		if u.GivenName != "" && u.FamilyName != "" {
 			res.Greeting = fmt.Sprintf("Hello %s %s 👋", u.GivenName, u.FamilyName)
 		}
@@ -484,7 +480,7 @@ func (f *Flow) Connect(ctx context.Context) (*ScopeInfo, error) {
 		info.Folders = append(info.Folders, n.Name)
 	}
 	info.ShowScope = len(top) > 0
-	info.TotalBytes, info.TotalHuman = total, storage.HumanSize(total)
+	info.TotalHuman = storage.HumanSize(total)
 	if ac := cfg.ActiveAccount(); ac != nil {
 		info.AlreadyExcluded = append([]string{}, ac.ExcludeDirs...)
 	}

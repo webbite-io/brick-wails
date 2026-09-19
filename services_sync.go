@@ -4,20 +4,12 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 
 	"github.com/webbite-io/brick-wails/internal/runner"
-	"github.com/webbite-io/brick-wails/internal/storage"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
 )
 
-// BrickAccount identifies the account being synced.
-type BrickAccount struct {
-	AccountID string `json:"accountId"`
-	ClientID  string `json:"clientId"`
-}
-
 // SyncService exposes the in-process sync engine to the status popover. It
-// replaces the old control-API client (BrickService) with the same method
-// names and JSON shapes, so the popover barely changed. Bound via
-// application.NewService in main.go.
+// replaces the old control-API client with the same method names and JSON
+// shapes. Bound via application.NewService in main.go.
 type SyncService struct {
 	app    *application.App
 	runner *runner.Runner
@@ -35,15 +27,6 @@ func (s *SyncService) Activity(limit int) []syncengine.ActivityEvent {
 	}
 	return s.runner.Activity(limit)
 }
-
-// Account returns the synced account.
-func (s *SyncService) Account() BrickAccount {
-	a, c := s.runner.Account()
-	return BrickAccount{AccountID: a, ClientID: c}
-}
-
-// Quota returns the cached storage quota, or nil before the first fetch.
-func (s *SyncService) Quota() *storage.Quota { return s.runner.Quota() }
 
 // Pause pauses syncing (the watcher keeps running, so resuming is instant).
 func (s *SyncService) Pause() { s.runner.SetPaused(true) }

@@ -36,7 +36,7 @@ func start(t *testing.T) (*Server, *syncengine.Engine, chan struct{}) {
 
 func client(s *Server) *http.Client {
 	return &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{
-		DialContext: func(context.Context, string, string) (net.Conn, error) { return net.Dial("unix", s.SocketPath()) },
+		DialContext: func(context.Context, string, string) (net.Conn, error) { return net.Dial("unix", s.socketPath) },
 	}}
 }
 
@@ -61,7 +61,7 @@ func call(t *testing.T, s *Server, method, path string, token string, out any) i
 // pauseRunningInstance read, at the path they look in.
 func TestDiscoveryFileCompatibleWithCLI(t *testing.T) {
 	s, _, _ := start(t)
-	data, err := os.ReadFile(s.DiscoveryPath())
+	data, err := os.ReadFile(s.discoveryPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,19 +69,19 @@ func TestDiscoveryFileCompatibleWithCLI(t *testing.T) {
 	if err := json.Unmarshal(data, &d); err != nil {
 		t.Fatal(err)
 	}
-	if d.PID != os.Getpid() || d.ProtocolVersion != 1 || d.Transport != "unix" || d.Address != s.SocketPath() || d.Token != s.Token() || d.Background {
+	if d.PID != os.Getpid() || d.ProtocolVersion != 1 || d.Transport != "unix" || d.Address != s.socketPath || d.Token != s.token || d.Background {
 		t.Errorf("discovery %+v", d)
 	}
 	dir, _ := RuntimeDir("")
-	if s.DiscoveryPath() != dir+"/agent.json" {
-		t.Errorf("discovery path %s not in runtime dir %s", s.DiscoveryPath(), dir)
+	if s.discoveryPath != dir+"/agent.json" {
+		t.Errorf("discovery path %s not in runtime dir %s", s.discoveryPath, dir)
 	}
-	info, _ := os.Stat(s.SocketPath())
+	info, _ := os.Stat(s.socketPath)
 	if info.Mode().Perm() != 0o600 {
 		t.Errorf("socket mode %v", info.Mode().Perm())
 	}
 	s.Close()
-	if _, err := os.Stat(s.DiscoveryPath()); !os.IsNotExist(err) {
+	if _, err := os.Stat(s.discoveryPath); !os.IsNotExist(err) {
 		t.Error("discovery file not removed on Close")
 	}
 }
@@ -102,37 +102,37 @@ func TestAuthAndEndpoints(t *testing.T) {
 		t.Fatal(err)
 	}
 	var st syncengine.Status
-	call(t, s, "GET", "/v1/status", s.Token(), &st)
+	call(t, s, "GET", "/v1/status", s.token, &st)
 	if st.State != "idle" || st.Counters.Downloaded != 1 {
 		t.Errorf("status %+v", st)
 	}
 	var act []syncengine.ActivityEvent
-	call(t, s, "GET", "/v1/activity?limit=5", s.Token(), &act)
+	call(t, s, "GET", "/v1/activity?limit=5", s.token, &act)
 	if len(act) != 1 || act[0].Kind != "download" {
 		t.Errorf("activity %+v", act)
 	}
 	var acct map[string]string
-	call(t, s, "GET", "/v1/account", s.Token(), &acct)
+	call(t, s, "GET", "/v1/account", s.token, &acct)
 	if acct["accountId"] != "acct-1" || acct["clientId"] != "client-1" {
 		t.Errorf("account %+v", acct)
 	}
 	var q map[string]any
-	if code := call(t, s, "GET", "/v1/quota", s.Token(), &q); code != 200 || q["usedBytes"] == nil || q["fetchedAt"] == nil {
+	if code := call(t, s, "GET", "/v1/quota", s.token, &q); code != 200 || q["usedBytes"] == nil || q["fetchedAt"] == nil {
 		t.Errorf("quota %d %+v", code, q)
 	}
 
-	if code := call(t, s, "GET", "/v1/pause", s.Token(), nil); code != 405 {
+	if code := call(t, s, "GET", "/v1/pause", s.token, nil); code != 405 {
 		t.Errorf("GET pause %d", code)
 	}
-	call(t, s, "POST", "/v1/pause", s.Token(), &st)
-	if st.State != "paused" || !eng.Paused() {
+	call(t, s, "POST", "/v1/pause", s.token, &st)
+	if st.State != "paused" || eng.Status().State != "paused" {
 		t.Errorf("after pause %+v", st)
 	}
-	call(t, s, "POST", "/v1/resume", s.Token(), &st)
-	if eng.Paused() {
+	call(t, s, "POST", "/v1/resume", s.token, &st)
+	if eng.Status().State == "paused" {
 		t.Error("still paused after resume")
 	}
-	call(t, s, "POST", "/v1/quit", s.Token(), nil)
+	call(t, s, "POST", "/v1/quit", s.token, nil)
 	select {
 	case <-quit:
 	case <-time.After(2 * time.Second):

@@ -42,9 +42,6 @@ func (s *OnboardingService) Route(ctx context.Context) onboarding.Route {
 	return s.flow.Route(ctx)
 }
 
-// Restart clears in-memory wizard progress (a fresh session).
-func (s *OnboardingService) Restart() { s.flow.Reset() }
-
 // BeginLogin starts the login callback server, opens the browser and returns
 // the authorization URL (shown in the UI as a fallback link).
 func (s *OnboardingService) BeginLogin(ctx context.Context) (string, error) {
@@ -189,12 +186,5 @@ func (s *OnboardingService) HideWindow() {
 func (s *OnboardingService) OpenURL(url string) {
 	if s.app != nil {
 		_ = s.app.Browser.OpenURL(url)
-	}
-}
-
-// QuitApp exits the app.
-func (s *OnboardingService) QuitApp() {
-	if s.app != nil {
-		s.app.Quit()
 	}
 }

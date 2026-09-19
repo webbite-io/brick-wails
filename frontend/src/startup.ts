@@ -41,8 +41,6 @@ interface Action {
   label: string;
   onClick: () => void;
   cta?: boolean;
-  variant?: "primary" | "quiet";
-  disabled?: boolean;
 }
 
 function render(s: Screen) {
@@ -64,18 +62,16 @@ function busy(title: string, message = "") {
   bodyEl.innerHTML = "";
 }
 
-function applyButton(btn: HTMLButtonElement, a: Action | undefined, def: "primary" | "quiet") {
+function applyButton(btn: HTMLButtonElement, a: Action | undefined, variant: "primary" | "quiet") {
   if (!a) {
     btn.onclick = null;
     btn.classList.remove("visible", "btn-cta", "btn-primary", "btn-quiet");
     return;
   }
   btn.textContent = a.label;
-  btn.disabled = !!a.disabled;
   btn.onclick = a.onClick;
-  const v = a.variant ?? def;
-  btn.classList.toggle("btn-primary", v === "primary");
-  btn.classList.toggle("btn-quiet", v === "quiet");
+  btn.classList.toggle("btn-primary", variant === "primary");
+  btn.classList.toggle("btn-quiet", variant === "quiet");
   btn.classList.toggle("btn-cta", !!a.cta);
   btn.classList.add("visible");
 }

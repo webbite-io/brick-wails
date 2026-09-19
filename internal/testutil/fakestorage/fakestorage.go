@@ -17,7 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -48,8 +47,6 @@ type Server struct {
 	Authorize func(token string) bool
 	// OnDownload, if set, runs before each file download is served.
 	OnDownload func(id string)
-	// ChildrenPageSize caps each children page (default: the requested limit).
-	ChildrenPageSize int
 
 	mu       sync.Mutex
 	nodes    map[string]*node
@@ -58,8 +55,7 @@ type Server struct {
 	quota    int64
 	failNext map[string]int // "METHOD /suffix" prefix → remaining failures
 
-	Deregistered atomic.Int32
-	requests     map[string]int
+	requests map[string]int
 }
 
 // New starts a fake for accountID with an empty root ("root").
@@ -372,9 +368,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		if limit <= 0 {
 			limit = 200
 		}
-		if s.ChildrenPageSize > 0 && s.ChildrenPageSize < limit {
-			limit = s.ChildrenPageSize
-		}
 		s.mu.Lock()
 		var kids []Node
 		for _, n := range s.nodes {
@@ -477,7 +470,6 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 
 	case r.Method == "DELETE" && strings.HasPrefix(rest, "/clients/"):
-		s.Deregistered.Add(1)
 		w.WriteHeader(204)
 
 	default:

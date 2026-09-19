@@ -59,21 +59,11 @@ func (ts *TokenSource) Reload() error {
 	return nil
 }
 
-// APIURL is the auth/accounts API base URL.
-func (ts *TokenSource) APIURL() string { return ts.apiURL }
-
 // Current returns the access token to present.
 func (ts *TokenSource) Current() string {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
 	return ts.access
-}
-
-// HasCredentials reports whether any token is held.
-func (ts *TokenSource) HasCredentials() bool {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	return ts.access != "" || ts.refresh != ""
 }
 
 // HasRefresh reports whether a refresh token is held.
@@ -103,18 +93,6 @@ func (ts *TokenSource) setLocked(t Tokens) error {
 	access, refresh, id := ts.access, ts.refresh, ts.id
 	_, err := ts.store.Update(func(c *brickcfg.Config) error {
 		c.AccessToken, c.RefreshToken, c.IDToken = access, refresh, id
-		return nil
-	})
-	return err
-}
-
-// Clear forgets all tokens (in memory and on disk).
-func (ts *TokenSource) Clear() error {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	ts.access, ts.refresh, ts.id = "", "", ""
-	_, err := ts.store.Update(func(c *brickcfg.Config) error {
-		c.AccessToken, c.RefreshToken, c.IDToken = "", "", ""
 		return nil
 	})
 	return err

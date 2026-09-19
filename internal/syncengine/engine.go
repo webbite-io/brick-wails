@@ -193,15 +193,6 @@ func New(cfg Config) *Engine {
 
 func (e *Engine) logf(format string, args ...any) { e.sink.Logf(format, args...) }
 
-// Folder returns the sync folder.
-func (e *Engine) Folder() string { return e.folder }
-
-// AccountID returns the account being synced.
-func (e *Engine) AccountID() string { return e.accountID }
-
-// Storage returns the engine's storage client.
-func (e *Engine) Storage() *storage.Client { return e.sc }
-
 // Notify wakes the debounced reconcile worker.
 func (e *Engine) Notify() {
 	select {
@@ -274,9 +265,6 @@ func (e *Engine) RecentActivity(limit int) []ActivityEvent {
 	}
 	return out
 }
-
-// Paused reports whether sync is paused.
-func (e *Engine) Paused() bool { return e.paused.Load() }
 
 // SetPaused pauses or resumes. Resuming wakes the reconcile worker at once.
 // A pass already in flight stops between files (see checkInterrupted).
@@ -403,31 +391,6 @@ func (e *Engine) saveState() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.saveStateLocked()
-}
-
-// FirstSyncPending reports whether the first full pass hasn't completed yet.
-func (e *Engine) FirstSyncPending() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.firstSync
-}
-
-// State returns a deep-ish copy of the index (tests/diagnostics).
-func (e *Engine) State() SyncState {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	cp := SyncState{Folder: e.state.Folder, ServerTime: e.state.ServerTime,
-		Entries: map[string]SyncEntry{}, Folders: map[string]bool{}, FolderIDs: map[string]string{}}
-	for k, v := range e.state.Entries {
-		cp.Entries[k] = v
-	}
-	for k, v := range e.state.Folders {
-		cp.Folders[k] = v
-	}
-	for k, v := range e.state.FolderIDs {
-		cp.FolderIDs[k] = v
-	}
-	return cp
 }
 
 // Summary is a one-line counter summary for the log.

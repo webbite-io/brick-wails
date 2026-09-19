@@ -18,8 +18,6 @@ export interface FolderChoice {
  * LoginResult is returned by AwaitLogin.
  */
 export interface LoginResult {
-    "givenName": string;
-    "familyName": string;
     "greeting": string;
     "accounts": auth$0.Account[] | null;
 
@@ -51,7 +49,6 @@ export interface Route {
 export interface ScopeInfo {
     "showScope": boolean;
     "showRemote": boolean;
-    "totalBytes": number;
     "totalHuman": string;
     "folders": string[] | null;
     "alreadyExcluded": string[] | null;
