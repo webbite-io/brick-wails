@@ -49,7 +49,11 @@ COLOR_YELLOW := \033[33m
 # installed automatically.
 LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev
 
-.PHONY: all setup doctor dev build build-dev build-prod check-release-env run package clean install version help test test-go test-frontend test-integration test-all
+# Webfonts for `make fonts`. Bunny serves woff2 only to browser-like agents.
+FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
+FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
+
+.PHONY: all setup doctor dev build build-dev build-prod check-release-env run package clean install version help test test-go test-frontend test-integration test-all fonts
 
 # Default target
 all: build-prod
@@ -156,6 +160,33 @@ test-integration:
 	go test -race -tags integration -count=1 ./integration/...
 
 test-all: test test-integration
+
+# Re-download the self-hosted webfonts from fonts.bunny.net and regenerate
+# frontend/public/fonts.css. Only needed when changing families or weights;
+# the woff2 files are committed so normal builds never hit the network.
+# Note: Bunny's /css2 endpoint silently honours only the first family=, so
+# this uses the v1 pipe syntax to get both families in one stylesheet.
+fonts:
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Fetching webfonts from fonts.bunny.net...$(COLOR_RESET)"
+	@rm -rf frontend/public/fonts && mkdir -p frontend/public/fonts
+	@curl -sSf -A "$(FONTS_UA)" "$(FONTS_URL)" -o /tmp/brick-fonts.css
+	@grep -oE 'https://fonts\.bunny\.net/[^)]+\.woff2' /tmp/brick-fonts.css \
+		| sort -u > /tmp/brick-fonts-urls.txt
+	@cd frontend/public/fonts && xargs -n1 -P8 curl -sSfO < /tmp/brick-fonts-urls.txt
+	@{ \
+		echo "/* Self-hosted Inter (400/500/600) and Roboto Condensed (700)."; \
+		echo " * Generated from fonts.bunny.net; woff2 files live in /fonts."; \
+		echo " * Regenerate with: make fonts"; \
+		echo " * font-display:swap + unicode-range preserved, so each subset loads lazily."; \
+		echo " */"; \
+		echo; \
+		sed -E \
+			-e "s#, url\(https://fonts\.bunny\.net/[^)]+\.woff\) format\('woff'\)##" \
+			-e 's#url\(https://fonts\.bunny\.net/[^/]+/files/([^)]+\.woff2)\)#url(/fonts/\1)#' \
+			-e 's/[[:space:]]+$$//' \
+			/tmp/brick-fonts.css; \
+	} > frontend/public/fonts.css
+	@echo "$(COLOR_GREEN)✓ $$(ls frontend/public/fonts | wc -l) woff2 files, $$(du -sh frontend/public/fonts | cut -f1)$(COLOR_RESET)"
 
 # Run the last build.
 run:

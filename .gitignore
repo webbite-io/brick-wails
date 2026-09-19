@@ -15,5 +15,6 @@ build/android/gen/
 .env.prod
 
 brick-ui
+brick-wails
 
 .env.local

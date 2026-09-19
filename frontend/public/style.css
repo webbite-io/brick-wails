@@ -14,7 +14,7 @@ html, body {
 }
 
 body {
-    font-family: -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+    font-family: "Inter", -apple-system, "Segoe UI", system-ui, sans-serif;
     font-size: 13px;
     color: #e4e4e7;
 }
