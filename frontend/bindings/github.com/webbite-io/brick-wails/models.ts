@@ -29,6 +29,22 @@ export interface BrickCounters {
 }
 
 /**
+ * BrickDaemonResult mirrors daemonJSONOutput from brick-cli's
+ * `-d --json` output (see brick-cli's cmd/brick/daemon_json.go) — the one
+ * JSON line brick prints for a companion app starting it in daemon mode.
+ * Status is "ok" or "error"; Code is only set on error ("already_running",
+ * "setup_required", "start_failed", ...).
+ */
+export interface BrickDaemonResult {
+    "status": string;
+    "pid"?: number;
+    "logPath"?: string;
+    "folder"?: string;
+    "code"?: string;
+    "message"?: string;
+}
+
+/**
  * BrickInFlight is the file transfer currently in progress, if any.
  */
 export interface BrickInFlight {

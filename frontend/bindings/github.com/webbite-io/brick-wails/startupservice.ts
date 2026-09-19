@@ -62,9 +62,10 @@ export function SelfTest(): $CancellablePromise<$models.BrickSelfTestResult> {
 }
 
 /**
- * StartBrick launches brick's sync daemon in the background so it keeps
- * running independently of this app.
+ * StartBrick starts brick's sync daemon via `-d --json` so it keeps running
+ * independently of this app, and reports back whether the handoff actually
+ * succeeded (see startBrickDaemon) rather than the caller having to guess.
  */
-export function StartBrick(): $CancellablePromise<void> {
+export function StartBrick(): $CancellablePromise<$models.BrickDaemonResult> {
     return $Call.ByID(2888731709);
 }

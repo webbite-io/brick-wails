@@ -12,6 +12,7 @@ export type {
     BrickAccount,
     BrickActivityEvent,
     BrickCounters,
+    BrickDaemonResult,
     BrickInFlight,
     BrickLocateResult,
     BrickRunResult,

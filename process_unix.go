@@ -3,7 +3,6 @@
 package main
 
 import (
-	"os/exec"
 	"syscall"
 )
 
@@ -14,11 +13,4 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return syscall.Kill(pid, 0) == nil
-}
-
-// detachProcess configures cmd to start in its own session, detached from
-// this app's process group, so it isn't killed by a signal (e.g. SIGHUP,
-// SIGINT from a terminal) sent to this app rather than to it directly.
-func detachProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }

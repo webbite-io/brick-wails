@@ -125,14 +125,26 @@ func main() {
 	openItem.OnClick(func(ctx *application.Context) {
 		tray.ShowWindow()
 	})
+	// Starts disabled and with no configured folder: on a fresh install this
+	// runs before the Startup window's guided setup has written brick's
+	// config, so a one-time check here would leave the item permanently
+	// disabled. It's kept live instead — see updateOpenFolderItem, called
+	// once now and then again on every status poll below.
 	openFolderItem := menu.Add("Open Brick Folder")
-	if folder := storageSyncFolder(); folder != "" {
+	openFolderItem.SetEnabled(false)
+	openFolderPath := ""
+	updateOpenFolderItem := func() {
+		folder := storageSyncFolder()
+		if folder == "" || folder == openFolderPath {
+			return
+		}
+		openFolderPath = folder
 		openFolderItem.OnClick(func(ctx *application.Context) {
 			_ = app.Browser.OpenFile(folder)
 		})
-	} else {
-		openFolderItem.SetEnabled(false)
+		openFolderItem.SetEnabled(true)
 	}
+	updateOpenFolderItem()
 	openWebappItem := menu.Add("Open Brick App")
 	webURL := os.Getenv("STORAGE_WEB_URL")
 	if webURL == "" {
@@ -185,6 +197,7 @@ func main() {
 			status, err := brick.Status()
 			if err == nil {
 				app.Event.Emit("brick:status", status)
+				updateOpenFolderItem()
 				switch status.State {
 				case "not-running":
 					tray.SetTooltip("Brick — not running")

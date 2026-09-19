@@ -50,6 +50,20 @@ type BrickRunResult struct {
 	Ok       bool `json:"ok"`
 }
 
+// BrickDaemonResult mirrors daemonJSONOutput from brick-cli's
+// `-d --json` output (see brick-cli's cmd/brick/daemon_json.go) — the one
+// JSON line brick prints for a companion app starting it in daemon mode.
+// Status is "ok" or "error"; Code is only set on error ("already_running",
+// "setup_required", "start_failed", ...).
+type BrickDaemonResult struct {
+	Status  string `json:"status"`
+	PID     int    `json:"pid,omitempty"`
+	LogPath string `json:"logPath,omitempty"`
+	Folder  string `json:"folder,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 // locateBrick looks for the brick binary on PATH first (this also finds
 // brick.exe on Windows, since exec.LookPath consults PATHEXT there), then
 // falls back to the well-known ~/.local/bin/brick location that brick's
@@ -145,19 +159,27 @@ func runStreamed(cmd *exec.Cmd, onLine func(string)) (int, error) {
 	return -1, err
 }
 
-// startBrickDaemon launches brick's long-running sync process, detached
-// from this app (see detachProcess) so it keeps running independently of
-// the tray UI's lifetime. It doesn't wait for brick to exit; a background
-// goroutine reaps the process once it eventually does, to avoid leaving a
-// zombie behind.
-func startBrickDaemon(binPath string) error {
-	cmd := exec.Command(binPath, "--no-upgrade-check")
-	detachProcess(cmd)
-	if err := cmd.Start(); err != nil {
-		return err
+// startBrickDaemon runs `brick -d --json --no-upgrade-check` — the mode
+// brick-cli documents for a companion app starting it in daemon mode (see
+// runAsDaemonJSON/emitDaemonJSON in brick-cli's cmd/brick/daemon_unix.go and
+// daemon_json.go). Unlike a plain foreground run, this command starts the
+// actual long-running sync as a detached grandchild and then exits quickly
+// itself after printing exactly one JSON status line, so it can be run to
+// completion and gives a definite success/failure signal (including
+// "already_running" when another instance holds the lock) instead of a
+// bare `cmd.Start()` that only proves the OS could exec the binary.
+func startBrickDaemon(binPath string) (BrickDaemonResult, error) {
+	cmd := exec.Command(binPath, "-d", "--json", "--no-upgrade-check")
+	out, runErr := cmd.Output()
+
+	var result BrickDaemonResult
+	if err := json.Unmarshal(bytes.TrimSpace(out), &result); err != nil {
+		if runErr != nil {
+			return BrickDaemonResult{}, fmt.Errorf("running brick -d --json: %w", runErr)
+		}
+		return BrickDaemonResult{}, fmt.Errorf("parsing brick -d --json output: %w", err)
 	}
-	go cmd.Wait()
-	return nil
+	return result, nil
 }
 
 // installCommand returns the platform-specific command used to install the
@@ -227,12 +249,13 @@ func (s *StartupService) RunSetup() (BrickRunResult, error) {
 	return BrickRunResult{ExitCode: code, Ok: code == 0}, nil
 }
 
-// StartBrick launches brick's sync daemon in the background so it keeps
-// running independently of this app.
-func (s *StartupService) StartBrick() error {
+// StartBrick starts brick's sync daemon via `-d --json` so it keeps running
+// independently of this app, and reports back whether the handoff actually
+// succeeded (see startBrickDaemon) rather than the caller having to guess.
+func (s *StartupService) StartBrick() (BrickDaemonResult, error) {
 	binPath, err := locateBrick()
 	if err != nil {
-		return err
+		return BrickDaemonResult{}, err
 	}
 	return startBrickDaemon(binPath)
 }

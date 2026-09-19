@@ -3,9 +3,6 @@
 package main
 
 import (
-	"os/exec"
-	"syscall"
-
 	"golang.org/x/sys/windows"
 )
 
@@ -28,14 +25,4 @@ func processAlive(pid int) bool {
 		return false
 	}
 	return code == stillActive
-}
-
-// detachProcess configures cmd to start detached from this app: in its own
-// process group, without inheriting a console window, so it keeps running
-// independently of this app's lifetime and doesn't flash a console.
-func detachProcess(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		CreationFlags: windows.CREATE_NEW_PROCESS_GROUP | windows.DETACHED_PROCESS,
-		HideWindow:    true,
-	}
 }

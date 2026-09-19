@@ -32,7 +32,13 @@ to a running state:
    https://webbite.io/cli/install.sh | bash` on Linux/macOS, `winget install
    --id Webbite.Brick -e` on Windows — then retry.
 2. Run `brick --self-test --no-upgrade-check` and branch on its JSON report:
-   - all checks `ok` → just start it (`brick --no-upgrade-check`).
+   - all checks `ok` → start it via `brick -d --json --no-upgrade-check`,
+     the mode brick-cli documents for a companion app: brick starts the
+     actual sync as a detached grandchild and prints one JSON line
+     (`{"status": "ok", ...}` or `{"status": "error", "code": ...}`) before
+     exiting, so a failed handoff (e.g. `already_running` because another
+     instance started outside this app) is reported rather than assumed
+     away by a plain `cmd.Start()`.
    - `instance_lock` failing → another `brick` is already running with its
      IPC API disabled; this is reported as an error, not auto-resolved.
    - any other check failing → run `brick --setup-and-exit` in a new native
@@ -68,9 +74,8 @@ tray popover behaves as normal.
   already-running server process and return immediately, so there'd be
   nothing meaningful to wait on otherwise.
 - `process_unix.go` / `process_windows.go` — per-OS "is this pid alive"
-  check (used to treat a discovery file left behind by a crashed `brick` as
-  stale) and `detachProcess`, which starts a subprocess detached from this
-  app's process/console so it outlives it.
+  check, used to treat a discovery file left behind by a crashed `brick` as
+  stale.
 - `frontend/` — Vanilla + TypeScript + Vite, with two windows/entry points:
   `index.html` + `src/main.ts` render the status popover (state dot,
   folder, in-flight transfer, counters, recent activity, pause/resume and

@@ -277,16 +277,39 @@ async function runSelfTest() {
   await launchBrick();
 }
 
-// Step 4a: everything checked out except brick just wasn't running — start it.
+// Step 4a: everything checked out except brick just wasn't running — start
+// it via `brick -d --json`, which reports back a single JSON status line
+// once the handoff to the detached daemon either succeeds or fails (see
+// StartupService.StartBrick / startup.go) rather than leaving us to assume
+// success just because the OS could exec the binary.
 async function launchBrick() {
   render({ icon: "spinner", title: "Starting Brick…", message: "Starting the Brick sync process…" });
   setActions();
   showTerminal(false);
 
+  let result;
   try {
-    await StartupService.StartBrick();
+    result = await StartupService.StartBrick();
   } catch (err) {
     render({ icon: "error", title: "Could not start Brick", message: describeError(err) });
+    setActions({ label: "Retry", onClick: () => void launchBrick() });
+    return;
+  }
+
+  if (result.status !== "ok") {
+    if (result.code === "already_running") {
+      // Some other brick process (started outside this app, or left over
+      // from an earlier session) already holds the lock — that's a running
+      // brick either way, so treat it as success rather than a failure.
+      render({ icon: "ok", title: "Brick is running", message: "" });
+      setTimeout(() => void closeWindow(), 500);
+      return;
+    }
+    render({
+      icon: "error",
+      title: "Could not start Brick",
+      message: result.message || `brick -d --json failed (${result.code ?? "unknown error"}).`,
+    });
     setActions({ label: "Retry", onClick: () => void launchBrick() });
     return;
   }
