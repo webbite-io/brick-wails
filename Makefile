@@ -17,8 +17,11 @@ BIN_DIR := bin
 # Default* vars in main.go). Like brick-cli, load them from .env.prod when it
 # exists (gitignored); CI sets them as real env vars instead. Dev builds
 # (make dev / build-dev) don't bake anything and read .env.local at runtime.
+#
+# They are only exported for build-prod (target-specific exports below):
+# exporting them globally would hand `make dev` *empty* env vars when there's
+# no .env.prod, which would hide the values in .env.local.
 -include .env.prod
-export ACC_API_URL STORAGE_API_URL OAUTH_CLIENT_ID OAUTH_SCOPES OAUTH_CALLBACK_URL STORAGE_WEB_URL STORAGE_HELP_URL
 
 # Pin the wails3 CLI to the exact version this module depends on (go.mod),
 # rather than `go install .../wails3@latest`, so the CLI never drifts ahead
@@ -108,6 +111,13 @@ build-dev:
 
 # Production build: stripped, trimmed, -tags production, with the values
 # from .env.prod (or the environment) baked in.
+build-prod: export ACC_API_URL := $(ACC_API_URL)
+build-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
+build-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
+build-prod: export OAUTH_SCOPES := $(OAUTH_SCOPES)
+build-prod: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
+build-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
+build-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (production)...$(COLOR_RESET)"
 	wails3 task build

@@ -3,6 +3,8 @@ package brickcfg
 import (
 	"os"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 // Fallbacks used when neither the environment nor compile-time defaults set a
@@ -70,3 +72,22 @@ var DevEnvFiles = []string{".env.local", ".env.dev"}
 
 // ShouldLoadDevEnv reports whether dev env files should be loaded.
 func ShouldLoadDevEnv(d Defaults) bool { return d.APIURL == "" }
+
+// LoadDevEnv loads files (in order; an earlier file wins) into the process
+// environment. A variable already set to a non-empty value is kept, but an
+// *empty* one is treated as unset — plain godotenv.Load skips any existing
+// key, so e.g. `export ACC_API_URL=` (as a Makefile can do) would otherwise
+// silently hide the value in .env.local. Missing files are ignored.
+func LoadDevEnv(files ...string) {
+	for _, f := range files {
+		vals, err := godotenv.Read(f)
+		if err != nil {
+			continue
+		}
+		for k, v := range vals {
+			if strings.TrimSpace(os.Getenv(k)) == "" {
+				_ = os.Setenv(k, v)
+			}
+		}
+	}
+}

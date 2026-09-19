@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/joho/godotenv"
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/events"
 
@@ -93,9 +92,7 @@ func main() {
 	if brickcfg.ShouldLoadDevEnv(defaults()) {
 		// Dev checkouts only (gitignored, absent from installs). Loaded in
 		// order; a value from an earlier file wins.
-		for _, f := range brickcfg.DevEnvFiles {
-			_ = godotenv.Load(f)
-		}
+		brickcfg.LoadDevEnv(brickcfg.DevEnvFiles...)
 	}
 	env := brickcfg.ResolveEnv(defaults())
 

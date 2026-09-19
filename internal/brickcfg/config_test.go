@@ -249,3 +249,28 @@ func TestIsolated(t *testing.T) {
 		t.Error("override elsewhere: isolated")
 	}
 }
+
+func TestLoadDevEnv(t *testing.T) {
+	dir := t.TempDir()
+	local := filepath.Join(dir, ".env.local")
+	dev := filepath.Join(dir, ".env.dev")
+	os.WriteFile(local, []byte("ACC_API_URL=https://from-local\nSTORAGE_API_URL=https://storage-local\n"), 0o600)
+	os.WriteFile(dev, []byte("ACC_API_URL=https://from-dev\nSTORAGE_WEB_URL=https://web-dev\nOAUTH_CLIENT_ID=from-dev\n"), 0o600)
+
+	t.Setenv("ACC_API_URL", "")                  // exported but empty (e.g. by make): must not block .env.local
+	t.Setenv("STORAGE_API_URL", "https://shell") // a real value wins over the files
+	t.Setenv("STORAGE_WEB_URL", "")
+	t.Setenv("OAUTH_CLIENT_ID", "")
+	LoadDevEnv(local, dev, filepath.Join(dir, "missing"))
+
+	for k, want := range map[string]string{
+		"ACC_API_URL":     "https://from-local", // earlier file wins
+		"STORAGE_API_URL": "https://shell",
+		"STORAGE_WEB_URL": "https://web-dev", // falls through to the later file
+		"OAUTH_CLIENT_ID": "from-dev",
+	} {
+		if got := os.Getenv(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+}
