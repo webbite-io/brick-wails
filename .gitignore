@@ -1,5 +1,8 @@
 .task
 bin
+
+# macOS Finder droppings
+.DS_Store
 frontend/dist
 frontend/node_modules
 build/linux/appimage/build

@@ -12,6 +12,18 @@
 APP_NAME := brick-ui
 BIN_DIR := bin
 
+# Host OS. The app is a native GUI (CGO + per-OS webview/tray libraries), so
+# prerequisites, the install location and the packages produced all differ
+# per OS; the targets below branch on this.
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+HOST_OS := darwin
+else ifeq ($(UNAME_S),Linux)
+HOST_OS := linux
+else
+HOST_OS := $(UNAME_S)
+endif
+
 # Production builds bake ACC_API_URL, STORAGE_API_URL, OAUTH_* and
 # STORAGE_*_URL in at compile time (see BRICK_LDFLAGS in Taskfile.yml and the
 # Default* vars in main.go). Like brick-cli, load them from .env.prod when it
@@ -28,11 +40,27 @@ BIN_DIR := bin
 # of what the app is actually built against.
 WAILS_VERSION := $(shell awk '/github.com\/wailsapp\/wails\/v3 /{print $$3; exit}' go.mod)
 
+# `go install` drops wails3 in $(go env GOPATH)/bin, which isn't on PATH by
+# default (notably in a fresh macOS shell). Prefer the one on PATH, and fall
+# back to GOPATH/bin so `make dev`/`make build` work either way; `make setup`
+# prints a hint when only the fallback is usable.
+GOBIN_DIR := $(shell go env GOBIN 2>/dev/null)
+ifeq ($(GOBIN_DIR),)
+GOBIN_DIR := $(shell go env GOPATH 2>/dev/null)/bin
+endif
+WAILS3 := $(shell command -v wails3 2>/dev/null || echo $(GOBIN_DIR)/wails3)
+
+# Node version required by the frontend toolchain (Vite: ^20.19 || >=22.12).
+# Checked by `make doctor` — the macOS system Node is often far older.
+NODE_VERSION_CHECK := const [a,b]=process.versions.node.split('.').map(Number); \
+	process.exit(((a==20&&b>=19)||(a==22&&b>=12)||a>=23)?0:1)
+
 # Extract version from git tag (strip 'v' prefix), fallback to "dev"
 VERSION := $(shell if git describe --tags --exact-match 2>/dev/null >/dev/null; then \
 	git describe --tags --exact-match | sed 's/^v//'; \
 else \
-	git describe --tags 2>/dev/null | sed 's/^v//' | sed 's/-[0-9]\+-g/-/' || echo "dev"; \
+	v=$$(git describe --tags 2>/dev/null | sed 's/^v//' | sed 's/-[0-9]\+-g/-/'); \
+	echo "$${v:-dev}"; \
 fi)
 
 # Colors for output
@@ -49,6 +77,11 @@ COLOR_YELLOW := \033[33m
 # installed automatically.
 LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev
 
+# macOS needs no third-party libraries: the webview (WKWebView) and the tray
+# (NSStatusItem) are system frameworks. All it needs is the Xcode command
+# line tools for clang/the SDK, since the build is CGO. Builds target
+# macOS 12+ (see build/darwin/Taskfile.yml).
+
 # Webfonts for `make fonts`. Bunny serves woff2 only to browser-like agents.
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
 FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
@@ -59,37 +92,65 @@ FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Geck
 all: build-prod
 
 # Check that the tools/libraries needed to build are present (no installs).
+# The native-GUI prerequisites differ per OS: GTK4/WebKitGTK/AppIndicator dev
+# packages on Linux, just the Xcode command line tools on macOS.
 doctor:
-	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Checking build prerequisites...$(COLOR_RESET)"
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Checking build prerequisites ($(HOST_OS))...$(COLOR_RESET)"
 	@ok=1; \
 	command -v go >/dev/null 2>&1 && echo "  [ok] go: $$(go version)" || { echo "  [missing] go — https://go.dev/dl/"; ok=0; }; \
-	command -v node >/dev/null 2>&1 && echo "  [ok] node: $$(node --version)" || { echo "  [missing] node — https://nodejs.org/en/download/"; ok=0; }; \
-	command -v npm >/dev/null 2>&1 && echo "  [ok] npm: $$(npm --version)" || { echo "  [missing] npm (bundled with Node.js)"; ok=0; }; \
-	command -v wails3 >/dev/null 2>&1 && echo "  [ok] wails3: $$(wails3 version 2>/dev/null || echo installed)" || { echo "  [missing] wails3 — run 'make setup' (installs via go install)"; ok=0; }; \
-	command -v task >/dev/null 2>&1 && echo "  [ok] task: $$(task --version)" || echo "  [missing] task — https://taskfile.dev/installation/ (wails3 shells out to it)"; \
-	if command -v pkg-config >/dev/null 2>&1; then \
-		for lib in gtk4 webkitgtk-6.0 ayatana-appindicator3-0.1; do \
-			pkg-config --exists $$lib 2>/dev/null && echo "  [ok] $$lib" || { echo "  [missing] $$lib"; ok=0; }; \
-		done; \
+	if command -v node >/dev/null 2>&1; then \
+		if node -e "$(NODE_VERSION_CHECK)" 2>/dev/null; then \
+			echo "  [ok] node: $$(node --version)"; \
+		else \
+			echo "  [too old] node: $$(node --version) — Vite needs ^20.19 or >=22.12"; ok=0; \
+		fi; \
 	else \
-		echo "  [missing] pkg-config"; ok=0; \
+		echo "  [missing] node — https://nodejs.org/en/download/"; ok=0; \
+	fi; \
+	command -v npm >/dev/null 2>&1 && echo "  [ok] npm: $$(npm --version)" || { echo "  [missing] npm (bundled with Node.js)"; ok=0; }; \
+	if [ -x "$(WAILS3)" ] || command -v wails3 >/dev/null 2>&1; then \
+		echo "  [ok] wails3: $$($(WAILS3) version 2>&1 || echo installed) ($(WAILS3))"; \
+		command -v wails3 >/dev/null 2>&1 || echo "       note: not on PATH — add $(GOBIN_DIR) to it (the targets here use the full path)"; \
+	else \
+		echo "  [missing] wails3 — run 'make setup' (installs via go install)"; ok=0; \
+	fi; \
+	command -v task >/dev/null 2>&1 && echo "  [ok] task: $$(task --version)" || echo "  [missing] task — https://taskfile.dev/installation/ (wails3 shells out to it)"; \
+	if [ "$(HOST_OS)" = "darwin" ]; then \
+		xcode-select -p >/dev/null 2>&1 && echo "  [ok] Xcode command line tools: $$(xcode-select -p)" || { echo "  [missing] Xcode command line tools"; ok=0; }; \
+		command -v clang >/dev/null 2>&1 && echo "  [ok] clang: $$(clang --version | head -1)" || { echo "  [missing] clang"; ok=0; }; \
+	elif [ "$(HOST_OS)" = "linux" ]; then \
+		if command -v pkg-config >/dev/null 2>&1; then \
+			for lib in gtk4 webkitgtk-6.0 ayatana-appindicator3-0.1; do \
+				pkg-config --exists $$lib 2>/dev/null && echo "  [ok] $$lib" || { echo "  [missing] $$lib"; ok=0; }; \
+			done; \
+		else \
+			echo "  [missing] pkg-config"; ok=0; \
+		fi; \
 	fi; \
 	if [ $$ok -ne 1 ]; then \
 		echo ""; \
-		echo "$(COLOR_YELLOW)On Debian/Ubuntu, install missing system libraries with:$(COLOR_RESET)"; \
-		echo "  sudo apt install $(LINUX_APT_DEPS)"; \
-		echo "Then install Node.js (https://nodejs.org/en/download/) if missing."; \
+		if [ "$(HOST_OS)" = "darwin" ]; then \
+			echo "$(COLOR_YELLOW)On macOS, install the missing pieces with:$(COLOR_RESET)"; \
+			echo "  xcode-select --install        # compiler + SDK (CGO build)"; \
+			echo "  brew install node             # or download from https://nodejs.org/en/download/"; \
+		else \
+			echo "$(COLOR_YELLOW)On Debian/Ubuntu, install missing system libraries with:$(COLOR_RESET)"; \
+			echo "  sudo apt install $(LINUX_APT_DEPS)"; \
+			echo "Then install Node.js (https://nodejs.org/en/download/) if missing."; \
+		fi; \
 	else \
 		echo ""; \
 		echo "$(COLOR_GREEN)✓ All prerequisites found$(COLOR_RESET)"; \
 	fi
 
 # Install the wails3 CLI (if missing) and frontend dependencies.
-# Requires pkg-config + the GTK/WebKit dev headers up front: `go install`ing
-# wails3 itself shells out to pkg-config during its build, so without these
-# it fails with a confusing "pkg-config: executable file not found" instead
-# of a clear message.
+# The native toolchain has to be in place first, so the failure is a clear
+# message rather than a confusing one from deep inside a build:
+# on Linux `go install`ing wails3 shells out to pkg-config (without the
+# GTK/WebKit headers it dies with "pkg-config: executable file not found"),
+# and on macOS the CGO build needs the Xcode command line tools.
 setup:
+ifeq ($(HOST_OS),linux)
 	@if ! command -v pkg-config >/dev/null 2>&1 || ! pkg-config --exists gtk4 webkitgtk-6.0 ayatana-appindicator3-0.1 2>/dev/null; then \
 		echo "$(COLOR_YELLOW)Missing system libraries required to build wails3.$(COLOR_RESET)"; \
 		echo "On Debian/Ubuntu, install them first with:"; \
@@ -97,20 +158,42 @@ setup:
 		echo "Then re-run 'make setup'."; \
 		exit 1; \
 	fi
+endif
+ifeq ($(HOST_OS),darwin)
+	@if ! xcode-select -p >/dev/null 2>&1; then \
+		echo "$(COLOR_YELLOW)The Xcode command line tools are required to build (CGO).$(COLOR_RESET)"; \
+		echo "Install them first with:"; \
+		echo "  xcode-select --install"; \
+		echo "Then re-run 'make setup'."; \
+		exit 1; \
+	fi
+	@if command -v node >/dev/null 2>&1 && ! node -e "$(NODE_VERSION_CHECK)" 2>/dev/null; then \
+		echo "$(COLOR_YELLOW)Node $$(node --version) is too old for the frontend toolchain (Vite needs ^20.19 or >=22.12).$(COLOR_RESET)"; \
+		echo "macOS often has an old Node from a system-wide installer ahead of a newer one on PATH."; \
+		echo "Install a current Node (brew install node, or https://nodejs.org/en/download/) and re-run 'make setup'."; \
+		exit 1; \
+	fi
+endif
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Installing wails3 CLI v$(WAILS_VERSION) (pinned to go.mod)...$(COLOR_RESET)"
 	@go install github.com/wailsapp/wails/v3/cmd/wails3@$(WAILS_VERSION)
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Installing frontend dependencies...$(COLOR_RESET)"
 	@cd frontend && npm install
 	@echo "$(COLOR_GREEN)✓ Setup complete$(COLOR_RESET) (run 'make doctor' to check system libraries)"
+	@command -v wails3 >/dev/null 2>&1 || { \
+		echo ""; \
+		echo "$(COLOR_YELLOW)Note:$(COLOR_RESET) wails3 was installed to $(GOBIN_DIR), which is not on your PATH."; \
+		echo "The targets in this Makefile call it by full path, but to run it yourself add:"; \
+		echo "  export PATH=\"$(GOBIN_DIR):$$PATH\"        # fish: fish_add_path -g $(GOBIN_DIR)"; \
+	}
 
 # Run with hot reload (frontend + backend), like brick-cli's `make dev`.
 dev:
-	wails3 dev
+	$(WAILS3) dev
 
 # Development build: unstripped, faster iteration, matches brick-cli's build-dev.
 build-dev:
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (dev)...$(COLOR_RESET)"
-	wails3 task build DEV=true
+	$(WAILS3) task build DEV=true
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
 # Production build: stripped, trimmed, -tags production, with the values
@@ -124,7 +207,7 @@ build-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
 build-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (production)...$(COLOR_RESET)"
-	wails3 task build
+	$(WAILS3) task build
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
 build: build-prod
@@ -190,11 +273,12 @@ fonts:
 
 # Run the last build.
 run:
-	wails3 task run
+	$(WAILS3) task run
 
-# Build native packages for this OS (.deb/.rpm/AppImage on Linux).
+# Build native packages for this OS: .deb/.rpm/AppImage on Linux, a
+# (ad-hoc signed) bin/$(APP_NAME).app bundle on macOS.
 package:
-	wails3 task package
+	$(WAILS3) task package
 
 # Clean build artifacts (mirrors brick-cli's clean; keeps node_modules).
 clean:
@@ -204,8 +288,22 @@ clean:
 	@rm -rf .task
 	@echo "$(COLOR_GREEN)✓ Clean complete$(COLOR_RESET)"
 
-# Install locally for testing (to ~/.local/bin).
+# Install locally for testing: ~/.local/bin on Linux; on macOS a tray app
+# needs to run from an .app bundle (that's what carries the icon, the bundle
+# identifier and the accessory activation policy), so install that to
+# ~/Applications instead of dropping a bare binary on PATH.
 install: build-prod
+ifeq ($(HOST_OS),darwin)
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Bundling $(APP_NAME).app...$(COLOR_RESET)"
+	@$(WAILS3) task darwin:create:app:bundle
+	@mkdir -p ~/Applications
+	@rm -rf "$$HOME/Applications/$(APP_NAME).app"
+	@cp -R "$(BIN_DIR)/$(APP_NAME).app" ~/Applications/
+	@echo "$(COLOR_GREEN)✓ Installed to ~/Applications/$(APP_NAME).app$(COLOR_RESET)"
+	@echo ""
+	@echo "Start it with: open -a \"$$HOME/Applications/$(APP_NAME).app\""
+	@echo "It runs as a menu bar app — no Dock icon, look for the tray icon."
+else
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Installing $(APP_NAME) to ~/.local/bin...$(COLOR_RESET)"
 	@mkdir -p ~/.local/bin
 	@cp $(BIN_DIR)/$(APP_NAME) ~/.local/bin/
@@ -218,6 +316,7 @@ install: build-prod
 		echo "$(COLOR_YELLOW)Warning:$(COLOR_RESET) ~/.local/bin is not in your PATH"; \
 		echo "Add to PATH: export PATH=\"$$HOME/.local/bin:$$PATH\";"; \
 	fi
+endif
 
 # Show version
 version:
@@ -240,9 +339,10 @@ help:
 	@echo "  test-integration - End-to-end sync/onboarding tests (+ brick-cli compat if available)"
 	@echo "  test-all   - test + test-integration"
 	@echo "  run        - Run the last build"
-	@echo "  package    - Build native packages for this OS (.deb/.rpm/AppImage on Linux)"
+	@echo "  package    - Build native packages for this OS (.deb/.rpm/AppImage on Linux, .app on macOS)"
 	@echo "  clean      - Remove build artifacts (bin/, frontend/dist, .task)"
-	@echo "  install    - Build using build-prod and install to ~/.local/bin (for testing)"
+	@echo "  install    - Build using build-prod and install for testing"
+	@echo "               (~/.local/bin on Linux, ~/Applications/$(APP_NAME).app on macOS)"
 	@echo "  version    - Show version information"
 	@echo "  help       - Show this help message"
 	@echo ""
@@ -252,6 +352,8 @@ help:
 	@echo "  make dev                                       # Run with hot reload"
 	@echo "  make build-dev                                 # Quick dev build"
 	@echo "  make install                                   # Build + install locally"
+	@echo ""
+	@echo "$(COLOR_BOLD)Host OS:$(COLOR_RESET) $(HOST_OS)"
 	@echo ""
 	@echo "$(COLOR_BOLD)Note:$(COLOR_RESET) unlike brick-cli, there is no build-all/release target."
 	@echo "This is a native GUI app (CGO + per-OS webview/tray libs), so builds"

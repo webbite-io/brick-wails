@@ -109,13 +109,35 @@ Logs go to `<config dir>/brick-ui.log` (plus stderr with `DEBUG=true`).
 
 ## Development
 
+Prerequisites: Go, Node (Vite needs **^20.19 or >=22.12** — a system Node from
+an old installer is a common trap), and the native GUI toolchain for your OS:
+
+| OS | Needs |
+|---|---|
+| Linux | `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev` (GTK4 + WebKitGTK 6.0 + AppIndicator) |
+| macOS | Only the Xcode command line tools (`xcode-select --install`) — WKWebView and the status-bar item are system frameworks. Builds target macOS 12+. |
+
+`make doctor` checks all of this for the OS you're on and says what's missing.
+
 ```bash
 make doctor           # check build prerequisites
 make setup            # install wails3 + frontend deps
 make dev              # hot reload (uses .env.local)
 make build-dev        # dev build → bin/brick-ui
+make run              # run the last build (on macOS: wrapped in a .dev.app bundle)
 wails3 generate bindings -clean=true -ts -i   # after changing a service's methods/types
 ```
+
+`make setup` installs the wails3 CLI with `go install`, i.e. into
+`$(go env GOPATH)/bin`. The Makefile calls it by full path, so the targets work
+whether or not that directory is on your PATH; add it if you want to run
+`wails3` yourself.
+
+On macOS the app runs as a menu bar (accessory) app: no Dock icon, no menu bar
+of its own — look for the tray icon. `make run` and `make install` build a
+`.app` bundle for it, since that is what carries the bundle identifier, the
+icon and the activation policy; the bare `bin/brick-ui` binary works too, but
+macOS treats it as an unbundled process.
 
 Trying the app without the real backend:
 
@@ -150,8 +172,16 @@ make test-all
 
 ## Packaging
 
-Not yet set up. `wails3 package` targets native installers per OS (`.dmg` on
-macOS, `.msi`/NSIS on Windows, AppImage/`.deb` on Linux) — see `build/darwin`,
-`build/windows`, `build/linux` and the [Wails v3 packaging
-docs](https://v3.wails.io/). The tray icon still uses Wails' placeholder logo
-(see `build/tray`).
+Installers are not set up yet. `make package` (= `wails3 task package`) builds
+what the OS you're on can build natively: an ad-hoc signed `bin/brick-ui.app`
+bundle on macOS, AppImage/`.deb`/`.rpm` on Linux. `make install` then puts it
+where you can run it for testing — `~/Applications` on macOS, `~/.local/bin`
+on Linux.
+
+Still missing for real distribution: a `.dmg` and Developer ID signing +
+notarization on macOS (`wails3 task darwin:sign:notarize` after
+`wails3 setup`), `.msi`/NSIS on Windows, and CI to build each OS on its own
+runner — this is a CGO app with per-OS webview/tray libraries, so it does not
+cross-compile. See `build/darwin`, `build/windows`, `build/linux` and the
+[Wails v3 packaging docs](https://v3.wails.io/). The tray icon still uses
+Wails' placeholder logo (see `build/tray`).
