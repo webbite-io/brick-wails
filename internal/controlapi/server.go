@@ -16,8 +16,10 @@ package controlapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -95,6 +97,33 @@ func platformRuntimeDir() string {
 	return base
 }
 
+// maxUnixSocketPath is the kernel's limit on sun_path: 104 bytes on macOS and
+// the BSDs, 108 on Linux. Take the smaller one — the margin costs nothing.
+const maxUnixSocketPath = 104
+
+// socketPathIn returns the control socket's path inside the runtime dir, or a
+// short per-user path under TMPDIR when that would exceed the sun_path limit
+// (a deep home or an overridden config dir does, and net.Listen then fails
+// with a bare "invalid argument"). Only the socket moves: the discovery file
+// stays in the runtime dir where brick-cli looks for it, and carries the
+// socket's address, so the CLI still finds it.
+//
+// The fallback name is derived from the runtime dir, so it is stable for a
+// given instance (Start clears its own stale socket) while two instances on
+// different config dirs never land on the same path.
+func socketPathIn(dir string) string {
+	p := filepath.Join(dir, "control.sock")
+	if runtime.GOOS == "windows" || len(p) < maxUnixSocketPath {
+		return p
+	}
+	short := filepath.Join(os.TempDir(), fmt.Sprintf("brick-%d", os.Getuid()))
+	if err := os.MkdirAll(short, 0o700); err != nil {
+		return p
+	}
+	sum := sha256.Sum256([]byte(dir))
+	return filepath.Join(short, hex.EncodeToString(sum[:6])+".sock")
+}
+
 // Hooks connect the server to the app.
 type Hooks struct {
 	Engine *syncengine.Engine
@@ -129,7 +158,7 @@ func Start(opts Options, h Hooks) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	socketPath := filepath.Join(dir, "control.sock")
+	socketPath := socketPathIn(dir)
 	_ = os.Remove(socketPath)
 	ln, err := net.Listen("unix", socketPath)
 	if err != nil {

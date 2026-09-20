@@ -136,14 +136,23 @@ func writeOSError(w http.ResponseWriter, err error) {
 
 // evalSafe resolves symlinks on the longest existing prefix of p so that the
 // containment check below cannot be defeated by a symlinked leaf or parent.
+// It walks up until a component resolves, then re-appends the rest: stopping
+// at the parent isn't enough for a path several levels below what exists (a
+// download into <root>/new/dir/file), which on macOS, where /tmp and /var are
+// themselves symlinks, left the path unresolved while the root resolved to
+// /private/... — and the mismatch rejected a path that was in fact inside.
 func evalSafe(p string) string {
-	if rp, err := filepath.EvalSymlinks(p); err == nil {
-		return rp
+	cur, rest := p, ""
+	for {
+		if rp, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(rp, rest)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p
+		}
+		cur, rest = parent, filepath.Join(filepath.Base(cur), rest)
 	}
-	if rp, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
-		return filepath.Join(rp, filepath.Base(p))
-	}
-	return p
 }
 
 // resolveSafe expands ~, makes p absolute, and verifies it stays within one of
