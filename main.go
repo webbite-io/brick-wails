@@ -223,10 +223,14 @@ func main() {
 	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
 	tray.AttachWindow(popover).WindowOffset(4)
-	if runtime.GOOS == "linux" {
-		// GNOME's AppIndicator support always reveals the menu on click;
-		// Wails' default toggle of the attached window races it (under X11
-		// both open). Route the click to the menu, GNOME's own convention.
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		// Route the click to the menu, which is what both desktops expect of
+		// a tray icon — on Linux, GNOME's AppIndicator support always reveals
+		// the menu on click and Wails' default toggle of the attached window
+		// races it (under X11 both open); on macOS, Wails' smart default
+		// binds the click to the attached window and leaves the menu on
+		// right-click alone, but a menu bar item should drop its menu on a
+		// plain click. The popover stays one item away ("Open Brick Status").
 		tray.OnClick(tray.OpenMenu)
 	}
 
