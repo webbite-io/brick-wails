@@ -178,10 +178,12 @@ func main() {
 		setupWindow.Hide()
 		e.Cancel()
 	})
+	// The frontend shows the window itself once it has routed and laid out the
+	// screen (OnboardingService.ShowWindow). Showing it here instead would
+	// present the previous screen's frame for an instant before the new one
+	// renders.
 	openSetup := func() {
 		flow.Reset()
-		setupWindow.Show()
-		setupWindow.Focus()
 		app.Event.Emit("setup:open")
 	}
 	syncSvc.openSetup = openSetup

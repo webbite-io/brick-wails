@@ -23,6 +23,7 @@ import {
   type Screen,
 } from "./wizard";
 
+const panelEl = document.getElementById("startup-panel")! as HTMLElement;
 const spinnerEl = document.getElementById("stage-spinner")! as HTMLSpanElement;
 const iconEl = document.getElementById("stage-icon")! as HTMLSpanElement;
 const titleEl = document.getElementById("stage-title")! as HTMLParagraphElement;
@@ -56,7 +57,25 @@ function render(s: Screen) {
   detailEl.classList.toggle("visible", !!s.detail);
 }
 
+// reveal shows the panel contents once a screen is laid out. boot() hides them
+// again while it routes, so an already-visible window stays dark instead of
+// flashing the previous screen (see .startup-panel:not(.ready) in startup.css).
+function reveal() {
+  panelEl.classList.add("ready");
+}
+
+// setWelcomeMode switches the panel between the plain welcome screen and the
+// wizard layout. Re-entering welcome replays the intro: dropping the class and
+// reading a layout property restarts the CSS animations.
+function setWelcomeMode(on: boolean) {
+  panelEl.classList.remove("welcome");
+  if (!on) return;
+  void panelEl.offsetWidth;
+  panelEl.classList.add("welcome");
+}
+
 function busy(title: string, message = "") {
+  setWelcomeMode(false);
   render({ icon: "spinner", title, message });
   setActions();
   bodyEl.innerHTML = "";
@@ -171,12 +190,21 @@ async function showWindow() {
   await OnboardingService.ShowWindow().catch(console.error);
 }
 
+// hideWindow blanks the panel and lets it paint before hiding, so the frame
+// the webview keeps for the next show is the dark background, not this screen.
+async function hideWindow() {
+  panelEl.classList.remove("ready");
+  await new Promise(requestAnimationFrame);
+  await OnboardingService.HideWindow().catch(console.error);
+}
+
 // --- routing ---
 
 let generation = 0; // bumps on every restart so stale async steps bail out
 
 async function boot() {
   const gen = ++generation;
+  panelEl.classList.remove("ready");
   busy("Starting Brick…");
   checklistEl.innerHTML = "";
   checklistEl.classList.remove("visible");
@@ -199,22 +227,23 @@ async function handleRoute(route: Route) {
     await startSync(false);
     return;
   }
-  if (needsWindow(route.step)) await showWindow();
   await refreshChecklist();
   bodyEl.innerHTML = "";
   render(screenForRoute(route));
+  setWelcomeMode(route.step === "welcome");
+  // Welcome is laid out before the window appears, so its first painted frame
+  // is the finished screen with the intro still to play.
+  if (route.step === "welcome") setActions({ label: "Log in", onClick: () => void doLogin(), cta: true });
+  reveal();
+  if (needsWindow(route.step)) await showWindow();
 
   switch (route.step) {
     case "welcome":
-      setActions(
-        { label: "Log in", onClick: () => void doLogin(), cta: true },
-        { label: "Not now", onClick: () => void OnboardingService.HideWindow() },
-      );
-      break;
+      break; // laid out above
     case "login":
       setActions(
         { label: "Log in again", onClick: () => void doLogin(), cta: true },
-        { label: "Not now", onClick: () => void OnboardingService.HideWindow() },
+        { label: "Not now", onClick: () => void hideWindow() },
       );
       break;
     case "account":
@@ -226,18 +255,19 @@ async function handleRoute(route: Route) {
     case "locked":
     case "connect-error":
     default:
-      setActions({ label: "Retry", onClick: () => void reroute(), cta: true }, { label: "Close", onClick: () => void OnboardingService.HideWindow() });
+      setActions({ label: "Retry", onClick: () => void reroute(), cta: true }, { label: "Close", onClick: () => void hideWindow() });
       break;
   }
 }
 
 async function startSync(fromWizard: boolean) {
   busy("Starting Brick…", "Starting to sync your files…");
+  reveal();
   const res = await OnboardingService.StartSync();
   if (res.ok) {
     render({ icon: "ok", title: "Brick is syncing", message: "" });
     if (fromWizard) await new Promise((r) => setTimeout(r, 600));
-    await OnboardingService.HideWindow();
+    await hideWindow();
     return;
   }
   await handleRoute({ step: res.step ?? "connect-error", firstRun: false, message: res.message ?? "", detail: undefined } as Route);
@@ -273,7 +303,7 @@ async function doLogin() {
   } catch (err) {
     render({ icon: "error", title: "Login did not complete", message: describeError(err) });
     bodyEl.innerHTML = "";
-    setActions({ label: "Try again", onClick: () => void doLogin(), cta: true }, { label: "Not now", onClick: () => void OnboardingService.HideWindow() });
+    setActions({ label: "Try again", onClick: () => void doLogin(), cta: true }, { label: "Not now", onClick: () => void hideWindow() });
   }
 }
 
@@ -502,7 +532,8 @@ async function doneStep() {
 
 Events.On("setup:open", () => void boot());
 void boot().catch((err) => {
-  void showWindow();
   render({ icon: "error", title: "Brick setup", message: describeError(err) });
+  reveal();
+  void showWindow();
   setActions({ label: "Retry", onClick: () => void boot(), cta: true });
 });

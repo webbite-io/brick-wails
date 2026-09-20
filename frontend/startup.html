@@ -11,9 +11,13 @@
     <title>Webbite Brick</title>
 </head>
 <body>
-<main class="startup-panel">
+<main class="startup-panel" id="startup-panel">
     <div class="brand">
-        <img class="brand-logo" src="/appicon.png" alt=""/>
+        <div class="brand-logo-wrap">
+            <img class="brand-logo" src="/appicon.png" alt=""/>
+            <!-- Orbiting blurred dot: a one-shot shimmer over the logo (welcome only). -->
+            <span class="brand-shimmer" aria-hidden="true"></span>
+        </div>
         <h1 class="brand-title">Webbite Brick</h1>
         <p class="brand-subtitle">Storage for all your devices</p>
     </div>

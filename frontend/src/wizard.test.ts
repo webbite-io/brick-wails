@@ -11,15 +11,13 @@ import {
 } from "./wizard";
 
 describe("screenForRoute", () => {
-  it("greets a first run", () => {
-    const s = screenForRoute({ step: "welcome", firstRun: true });
-    expect(s.title).toBe("Welcome to Brick");
-    expect(s.message).toContain("Hello and welcome to Brick");
+  it("greets a first run and drops the greeting for returning users", () => {
+    expect(screenForRoute({ step: "welcome", firstRun: true }).title).toBe("Welcome to Brick");
+    expect(screenForRoute({ step: "welcome", firstRun: false }).title).toBe("Log in to Brick");
   });
 
-  it("asks returning users to log in without the greeting", () => {
-    const s = screenForRoute({ step: "welcome", firstRun: false });
-    expect(s.message).not.toContain("welcome");
+  it("leaves the welcome screen to the brand block", () => {
+    expect(screenForRoute({ step: "welcome", firstRun: true }).message).toBe("");
   });
 
   it("surfaces backend messages and details for errors", () => {

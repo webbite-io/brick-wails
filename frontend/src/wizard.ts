@@ -34,14 +34,10 @@ export function needsWindow(step: string): boolean {
 // screenForRoute describes the header for a route step.
 export function screenForRoute(r: RouteLike): Screen {
   switch (r.step) {
+    // The welcome screen shows the brand and a "Log in" button, so it needs no
+    // status copy of its own (see .welcome in startup.css).
     case "welcome":
-      return {
-        icon: "ok",
-        title: r.firstRun ? "Welcome to Brick" : "Log in to Brick",
-        message: r.firstRun
-          ? "Hello and welcome to Brick - storage for all your devices! Do you want to log in to get started?"
-          : "Do you want to log in to get started?",
-      };
+      return { icon: "ok", title: r.firstRun ? "Welcome to Brick" : "Log in to Brick", message: "" };
     case "login":
       return { icon: "warn", title: "Authentication failed", message: r.message || "Log in again to continue.", detail: r.detail };
     case "account":

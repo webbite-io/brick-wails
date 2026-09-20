@@ -19,10 +19,15 @@
     margin-bottom: 21px;
 }
 
+.brand-logo-wrap {
+    position: relative;
+    margin-bottom: 2px;
+}
+
 .brand-logo {
+    display: block;
     width: 51px;
     height: 51px;
-    margin-bottom: 2px;
 }
 
 .brand-title {
@@ -298,4 +303,159 @@
     margin: 0;
     font-size: 11.5px;
     color: #f87171;
+}
+
+/* --- welcome screen ---
+   Logo, name, tagline and a "Log in" button, centred in the same window.
+   The four elements fade in 0.25s apart; a second after the last one lands,
+   a blurred dot orbits the logo once and fades back out. */
+
+/* Until a route lands the panel shows nothing but its own dark background: the
+   window can already be on screen (the tray shows it, then asks us to route),
+   and flashing the old screen or the wizard layout first reads as a glitch. */
+.startup-panel:not(.ready) > * {
+    visibility: hidden;
+}
+
+.startup-panel.welcome {
+    justify-content: center;
+}
+
+.welcome .status-indicator,
+.welcome .startup-detail,
+.welcome .checks-list,
+.welcome .step-body {
+    display: none;
+}
+
+.welcome .brand {
+    gap: 6px;
+    margin-bottom: 0;
+}
+
+.welcome .brand-logo-wrap {
+    transform: translateY(-20px);
+}
+
+.welcome .brand-logo {
+    width: 86px;
+    height: 86px;
+}
+
+/* Name and tagline sit 10px nearer the logo than the flow puts them. */
+.welcome .brand-title {
+    font-size: 25px;
+    transform: translateY(-10px);
+}
+
+.welcome .brand-subtitle {
+    font-size: 15.5px;
+    transform: translateY(-10px);
+}
+
+.welcome .startup-actions {
+    align-items: center;
+    margin-top: 28px;
+}
+
+.welcome .startup-actions .btn.visible {
+    width: auto;
+    padding: 9px 22px;
+    border-radius: 8px;
+    font-size: 13px;
+}
+
+.welcome .brand-logo-wrap,
+.welcome .brand-title,
+.welcome .brand-subtitle,
+.welcome .startup-actions .btn.visible {
+    animation: welcome-fade-in 3.15s ease-out both;
+}
+
+/* The window opens black and holds for a second before the logo starts. */
+.welcome .brand-logo-wrap {
+    animation-delay: 1s;
+}
+
+.welcome .brand-title {
+    animation-delay: 1.375s;
+}
+
+.welcome .brand-subtitle {
+    animation-delay: 1.75s;
+}
+
+.welcome .startup-actions .btn.visible {
+    animation-delay: 2.125s;
+}
+
+@keyframes welcome-fade-in {
+    from {
+        opacity: 0;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+/* z-index keeps the glow behind the artwork: the halo spills out around the
+   "B" while the logo itself stays crisp on top. The wrapper's transform makes
+   it a stacking context, so the glow cannot slip behind the panel. */
+.brand-shimmer {
+    display: none;
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    place-items: center;
+    pointer-events: none;
+    mix-blend-mode: screen;
+}
+
+/* Rotating the wrapper swings the offset dot around the logo. */
+.welcome .brand-shimmer {
+    display: grid;
+    animation: shimmer-orbit 5.1s linear 5.275s both;
+}
+
+.brand-shimmer::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 0 15px 9px rgba(255, 255, 255, 0.9), 0 0 39px 22px rgba(255, 255, 255, 0.4);
+    filter: blur(2px);
+    /* Short arm: the core stays on the artwork, only the glow spills out. */
+    transform: translateY(23px);
+    opacity: 0;
+}
+
+.welcome .brand-shimmer::before {
+    animation: shimmer-glow 5.1s ease-in-out 5.275s both;
+}
+
+/* A full turn, starting below the logo. */
+@keyframes shimmer-orbit {
+    from {
+        transform: rotate(0deg);
+    }
+    to {
+        transform: rotate(360deg);
+    }
+}
+
+/* Lit early so the start of the turn, below the logo, is already glowing. */
+@keyframes shimmer-glow {
+    0% {
+        opacity: 0;
+    }
+    7% {
+        opacity: 1;
+    }
+    70% {
+        opacity: 1;
+    }
+    100% {
+        opacity: 0;
+    }
 }
