@@ -16,12 +16,14 @@ import {
   folderOptions,
   needsWindow,
   presentable,
+  progressDots,
   remoteRootOptions,
   scopeOptions,
   screenForRoute,
   type Icon,
   type Option,
   type Screen,
+  type WizardStep,
 } from "./wizard";
 
 const panelEl = document.getElementById("startup-panel")! as HTMLElement;
@@ -30,7 +32,7 @@ const iconEl = document.getElementById("stage-icon")! as HTMLSpanElement;
 const titleEl = document.getElementById("stage-title")! as HTMLParagraphElement;
 const messageEl = document.getElementById("stage-message")! as HTMLParagraphElement;
 const detailEl = document.getElementById("stage-detail")! as HTMLParagraphElement;
-const checklistEl = document.getElementById("checklist")! as HTMLOListElement;
+const progressEl = document.getElementById("wizard-progress")! as HTMLElement;
 const bodyEl = document.getElementById("step-body")! as HTMLElement;
 const primaryBtn = document.getElementById("primary-btn")! as HTMLButtonElement;
 const secondaryBtn = document.getElementById("secondary-btn")! as HTMLButtonElement;
@@ -104,20 +106,20 @@ function setActions(primary?: Action, secondary?: Action) {
   applyButton(secondaryBtn, secondary, "quiet");
 }
 
-async function refreshChecklist() {
-  const items = (await OnboardingService.Checklist().catch(() => [])) ?? [];
-  checklistEl.innerHTML = "";
-  items.forEach((text, i) => {
-    const li = document.createElement("li");
-    const mark = document.createElement("span");
-    mark.className = "check";
-    mark.textContent = `${i + 1}. ✓`;
-    const label = document.createElement("span");
-    label.textContent = text;
-    li.append(mark, label);
-    checklistEl.appendChild(li);
-  });
-  checklistEl.classList.toggle("visible", items.length > 0);
+// setProgress draws the dot bar under the tagline for the wizard step now on
+// screen; null takes it away (welcome, login, errors — anything that isn't a
+// walk through the wizard).
+function setProgress(step: WizardStep | null) {
+  const dots = progressDots(step);
+  progressEl.innerHTML = "";
+  for (const done of dots) {
+    const dot = document.createElement("span");
+    dot.className = done ? "dot done" : "dot";
+    progressEl.appendChild(dot);
+  }
+  progressEl.setAttribute("aria-valuenow", String(dots.filter(Boolean).length));
+  progressEl.setAttribute("aria-valuemax", String(dots.length));
+  progressEl.classList.toggle("visible", dots.length > 0);
 }
 
 // radioGroup renders options as radio rows and returns a getter for the
@@ -210,8 +212,7 @@ async function boot() {
   const gen = ++generation;
   panelEl.classList.remove("ready");
   busy("Starting Brick…");
-  checklistEl.innerHTML = "";
-  checklistEl.classList.remove("visible");
+  setProgress(null);
   home = await OnboardingService.HomeDir().catch(() => "");
   const route = await OnboardingService.Route();
   if (gen !== generation) return;
@@ -231,7 +232,9 @@ async function handleRoute(route: Route) {
     await startSync(false);
     return;
   }
-  await refreshChecklist();
+  // The bar belongs to the wizard: it appears with the sync-folder step
+  // (folderStep) and is gone on welcome, login and the error screens.
+  setProgress(null);
   bodyEl.innerHTML = "";
   render(screenForRoute(route));
   setWelcomeMode(route.step === "welcome");
@@ -301,7 +304,6 @@ async function doLogin() {
     const res = await OnboardingService.AwaitLogin();
     render({ icon: "ok", title: res?.greeting ?? "Login successful 🎉", message: "" });
     bodyEl.innerHTML = "";
-    await refreshChecklist();
     await new Promise((r) => setTimeout(r, 700));
     await reroute();
   } catch (err) {
@@ -335,7 +337,8 @@ async function accountStep() {
 
 async function folderStep(error?: string) {
   const def = await OnboardingService.DefaultSyncFolder();
-  render({ icon: "ok", title: "Sync folder", message: "You have no sync folder configured. Choose a sync folder." });
+  render({ icon: "ok", title: "Sync folder", message: "Please choose a sync folder." });
+  setProgress("folder");
   bodyEl.innerHTML = "";
   stepLabel("Choose a sync folder");
   const get = radioGroup("folder", folderOptions(def, home));
@@ -363,6 +366,7 @@ async function folderStep(error?: string) {
 
 function createFolderStep(error?: string) {
   render({ icon: "ok", title: "Create folder", message: `Create folder in ${displayPath(home, home)}` });
+  setProgress("folder"); // still the sync-folder step, just a different screen
   bodyEl.innerHTML = "";
   const input = document.createElement("input");
   input.className = "text-input";
@@ -397,7 +401,6 @@ async function chooseFolder(path: string) {
       return;
     }
     await OnboardingService.ConfirmSyncFolder("");
-    await refreshChecklist();
     await connectStep();
   } catch (err) {
     await folderStep(describeError(err));
@@ -412,6 +415,7 @@ function conflictStep(display: string) {
     title: "Conflict resolution",
     message: `${display} contains files. How should possible conflicts be handled on first sync?`,
   });
+  setProgress("conflict");
   bodyEl.innerHTML = "";
   const get = radioGroup("conflict", CONFLICT_OPTIONS);
   setActions(
@@ -421,7 +425,6 @@ function conflictStep(display: string) {
       onClick: async () => {
         try {
           await OnboardingService.ConfirmSyncFolder(get());
-          await refreshChecklist();
           await connectStep();
         } catch (err) {
           fieldError(describeError(err));
@@ -455,6 +458,7 @@ async function connectStep() {
 
 function scopeStep(info: ScopeInfo) {
   render({ icon: "ok", title: "Sync scope", message: "One last decision to make:" });
+  setProgress("scope");
   bodyEl.innerHTML = "";
   let picking = false;
   let getExcluded: () => string[] = () => [];
@@ -472,7 +476,6 @@ function scopeStep(info: ScopeInfo) {
       try {
         const all = get() === "all";
         await OnboardingService.SetSyncScope(all, all ? [] : getExcluded());
-        await refreshChecklist();
         remoteStep();
       } catch (err) {
         fieldError(describeError(err));
@@ -485,6 +488,7 @@ function scopeStep(info: ScopeInfo) {
 
 function remoteStep(custom?: string) {
   render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
+  setProgress("remote");
   bodyEl.innerHTML = "";
   let getRoot: (() => string) | null = null;
   const showRoots = () => {
@@ -526,9 +530,9 @@ function remoteStep(custom?: string) {
 
 async function doneStep() {
   await OnboardingService.FinishOnboarding();
-  await refreshChecklist();
   bodyEl.innerHTML = "";
   render({ icon: "ok", title: "Done and ready to go!", message: "Brick will now keep your sync folder up to date." });
+  setProgress("done");
   setActions({ label: "Start syncing", cta: true, onClick: () => void startSync(true) });
 }
 

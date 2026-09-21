@@ -148,27 +148,55 @@
     display: block;
 }
 
-.checks-list {
+/* Step dots: o--o--o--o--o under the tagline, one per wizard step. Hidden
+   until the wizard starts (startup.ts sets the dots). */
+/* The negative bottom margin gives back what the top margin takes: the bar
+   sits 2px lower without the status card below it moving at all. */
+.wizard-progress {
     display: none;
-    flex-direction: column;
-    align-self: stretch;
-    gap: 4px;
-    margin: 10px 0 0;
-    padding: 0;
-    list-style: none;
-}
-
-.checks-list.visible {
-    display: flex;
-}
-
-.checks-list li {
-    display: flex;
     align-items: center;
-    gap: 6px;
-    font-size: 12.5px;
-    line-height: 17px;
-    color: #d4d4d8;
+    gap: 14px;
+    margin-top: 7px;
+    margin-bottom: -2px;
+}
+
+.wizard-progress.visible {
+    display: flex;
+}
+
+.wizard-progress .dot {
+    position: relative;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    border: 1.5px solid #52525b;
+    transition:
+        background-color 0.25s ease,
+        border-color 0.25s ease;
+}
+
+/* The dash before a dot, drawn across the gap to the one on its left. */
+.wizard-progress .dot + .dot::before {
+    content: "";
+    position: absolute;
+    right: 100%;
+    top: 50%;
+    width: 14px;
+    height: 1.5px;
+    transform: translateY(-50%);
+    background: #3f3f46;
+    transition: background-color 0.25s ease;
+}
+
+.wizard-progress .dot.done {
+    background: #22c55e;
+    border-color: #22c55e;
+}
+
+/* A dash turns green with the dot it leads into, so the green grows as one
+   run from the left rather than as detached beads. */
+.wizard-progress .dot.done::before {
+    background: #22c55e;
 }
 
 .startup-actions {
@@ -219,12 +247,6 @@
 }
 
 /* --- onboarding wizard --- */
-
-.checks-list li .check {
-    color: #22c55e;
-    font-weight: 700;
-    flex-shrink: 0;
-}
 
 .step-body {
     display: flex;
@@ -337,7 +359,7 @@
 
 .welcome .status-indicator,
 .welcome .startup-detail,
-.welcome .checks-list,
+.welcome .wizard-progress,
 .welcome .step-body {
     display: none;
 }

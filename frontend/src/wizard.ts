@@ -31,6 +31,25 @@ export function needsWindow(step: string): boolean {
   return INTERACTIVE_STEPS.has(step);
 }
 
+// The wizard screens the user walks through once logged in, in order. They
+// drive the dot bar under the tagline (o--o--o--o--o) instead of the numbered
+// checklist brick-cli prints, which cost too much vertical space here.
+export const WIZARD_STEPS = ["folder", "conflict", "scope", "remote", "done"] as const;
+
+export type WizardStep = (typeof WIZARD_STEPS)[number];
+
+// progressDots returns one flag per wizard step: true once that step is behind
+// us (filled and green), false while it is still ahead (empty and gray). The
+// flow skips steps it doesn't need — no conflicts to resolve, nothing to scope
+// — so anything before the current screen counts as done, and the bar never
+// stalls on a screen the user never saw. "done" is the finish line: on it
+// every dot is filled. null means no wizard is running (welcome, errors).
+export function progressDots(step: WizardStep | null): boolean[] {
+  if (step === null) return [];
+  const at = WIZARD_STEPS.indexOf(step);
+  return WIZARD_STEPS.map((_, i) => step === "done" || i < at);
+}
+
 // screenForRoute describes the header for a route step.
 export function screenForRoute(r: RouteLike): Screen {
   switch (r.step) {
@@ -77,9 +96,9 @@ export function folderOptions(defaultFolder: string, home: string): Option[] {
 }
 
 export const CONFLICT_OPTIONS: Option[] = [
-  { value: "device", label: "Overwrite any duplicate files on this device." },
-  { value: "brick", label: "Overwrite any duplicate files on Brick." },
-  { value: "copy", label: "Make a copy of any duplicate files (so nothing is lost)." },
+  { value: "device", label: "Overwrite duplicate files on this device." },
+  { value: "brick", label: "Overwrite duplicate files on Brick." },
+  { value: "copy", label: "Clone duplicate files so nothing is lost." },
 ];
 
 export function scopeOptions(totalHuman: string): Option[] {

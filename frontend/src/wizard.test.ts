@@ -7,6 +7,7 @@ import {
   displayPath,
   folderOptions,
   needsWindow,
+  progressDots,
   remoteRootOptions,
   scopeOptions,
   screenForRoute,
@@ -35,6 +36,24 @@ describe("screenForRoute", () => {
       expect(screenForRoute({ step }).title).not.toBe("");
     }
     expect(needsWindow("ready")).toBe(false);
+  });
+});
+
+describe("progressDots", () => {
+  it("fills the steps left behind and empties the ones still ahead", () => {
+    expect(progressDots("folder")).toEqual([false, false, false, false, false]);
+    expect(progressDots("conflict")).toEqual([true, false, false, false, false]);
+    expect(progressDots("remote")).toEqual([true, true, true, false, false]);
+  });
+
+  it("counts skipped steps as done so the bar never stalls", () => {
+    // Nothing to resolve and nothing to scope: straight from folder to remote.
+    expect(progressDots("remote").filter(Boolean)).toHaveLength(3);
+  });
+
+  it("fills every dot on the last screen and shows none outside the wizard", () => {
+    expect(progressDots("done")).toEqual([true, true, true, true, true]);
+    expect(progressDots(null)).toEqual([]);
   });
 });
 
