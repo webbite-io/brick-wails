@@ -151,12 +151,15 @@ function radioGroup(name: string, options: Option[], selected?: string, onChange
   return () => (group.querySelector<HTMLInputElement>("input:checked")?.value ?? "");
 }
 
+// checkboxGroup renders a plain, tight list rather than the boxed rows of
+// radioGroup: an account's folder list can run long, and the boxes would push
+// the buttons off the bottom of the window.
 function checkboxGroup(options: string[], checked: string[]): () => string[] {
   const group = document.createElement("div");
-  group.style.display = "contents";
+  group.className = "check-list";
   for (const name of options) {
     const label = document.createElement("label");
-    label.className = "option";
+    label.className = "check-row";
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = name;
@@ -461,12 +464,19 @@ function scopeStep(info: ScopeInfo) {
   setProgress("scope");
   bodyEl.innerHTML = "";
   let picking = false;
-  let getExcluded: () => string[] = () => [];
+  const folders = info.folders ?? [];
+  // The list is phrased as what to sync, so a tick means "sync this" and the
+  // backend gets the unticked ones (it takes exclusions, like brick-cli).
+  let getSelected: () => string[] = () => folders;
   const get = radioGroup("scope", scopeOptions(info.totalHuman), "all", (v) => {
     if (v === "pick" && !picking) {
       picking = true;
-      stepLabel("Select the folders to EXCLUDE from sync");
-      getExcluded = checkboxGroup(info.folders ?? [], info.alreadyExcluded ?? []);
+      stepLabel("Select folders to sync");
+      const excluded = info.alreadyExcluded ?? [];
+      getSelected = checkboxGroup(
+        folders,
+        folders.filter((f) => !excluded.includes(f)),
+      );
     }
   });
   setActions({
@@ -475,7 +485,8 @@ function scopeStep(info: ScopeInfo) {
     onClick: async () => {
       try {
         const all = get() === "all";
-        await OnboardingService.SetSyncScope(all, all ? [] : getExcluded());
+        const keep = getSelected();
+        await OnboardingService.SetSyncScope(all, all ? [] : folders.filter((f) => !keep.includes(f)));
         remoteStep();
       } catch (err) {
         fieldError(describeError(err));
