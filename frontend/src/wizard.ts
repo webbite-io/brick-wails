@@ -31,22 +31,26 @@ export function needsWindow(step: string): boolean {
   return INTERACTIVE_STEPS.has(step);
 }
 
-// The wizard screens the user walks through once logged in, in order. They
-// drive the dot bar under the tagline (o--o--o--o--o) instead of the numbered
-// checklist brick-cli prints, which cost too much vertical space here.
-export const WIZARD_STEPS = ["folder", "conflict", "scope", "remote", "done"] as const;
+// The wizard steps, in order. They drive the dot bar under the tagline
+// (o--o--o--o--o) instead of the numbered checklist brick-cli prints, which
+// cost too much vertical space here. Logging in is the first: it is already
+// behind the user when the wizard's own screens start, so its dot is green
+// from the sync-folder step on, and answering the last one (remote access)
+// leaves the whole bar green.
+export const WIZARD_STEPS = ["login", "folder", "conflict", "scope", "remote"] as const;
 
-export type WizardStep = (typeof WIZARD_STEPS)[number];
+// "done" is the finish line rather than a dot of its own.
+export type WizardStep = (typeof WIZARD_STEPS)[number] | "done";
 
 // progressDots returns one flag per wizard step: true once that step is behind
 // us (filled and green), false while it is still ahead (empty and gray). The
 // flow skips steps it doesn't need — no conflicts to resolve, nothing to scope
 // — so anything before the current screen counts as done, and the bar never
-// stalls on a screen the user never saw. "done" is the finish line: on it
-// every dot is filled. null means no wizard is running (welcome, errors).
+// stalls on a screen the user never saw. null means no wizard is running
+// (welcome, errors).
 export function progressDots(step: WizardStep | null): boolean[] {
   if (step === null) return [];
-  const at = WIZARD_STEPS.indexOf(step);
+  const at = WIZARD_STEPS.indexOf(step as (typeof WIZARD_STEPS)[number]);
   return WIZARD_STEPS.map((_, i) => step === "done" || i < at);
 }
 

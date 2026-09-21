@@ -294,6 +294,20 @@
     flex-shrink: 0;
 }
 
+/* Shown but not answerable: the remote-access folders once the user says no. */
+.option.disabled,
+.step-label.disabled {
+    opacity: 0.4;
+}
+
+.option.disabled {
+    cursor: default;
+}
+
+.option.disabled:hover {
+    border-color: rgba(255, 255, 255, 0.08);
+}
+
 .option .option-hint {
     display: block;
     font-size: 12px;

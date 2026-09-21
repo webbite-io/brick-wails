@@ -122,9 +122,15 @@ function setProgress(step: WizardStep | null) {
   progressEl.classList.toggle("visible", dots.length > 0);
 }
 
-// radioGroup renders options as radio rows and returns a getter for the
-// selected value.
-function radioGroup(name: string, options: Option[], selected?: string, onChange?: (v: string) => void): () => string {
+interface Radios {
+  value: () => string;
+  // setEnabled greys the rows out and makes them inert, for a group that is
+  // still worth showing but no longer answerable (see remoteStep).
+  setEnabled: (on: boolean) => void;
+}
+
+// radioGroup renders options as radio rows.
+function radioGroup(name: string, options: Option[], selected?: string, onChange?: (v: string) => void): Radios {
   const group = document.createElement("div");
   group.style.display = "contents";
   for (const [i, o] of options.entries()) {
@@ -148,7 +154,13 @@ function radioGroup(name: string, options: Option[], selected?: string, onChange
     group.appendChild(label);
   }
   bodyEl.appendChild(group);
-  return () => (group.querySelector<HTMLInputElement>("input:checked")?.value ?? "");
+  return {
+    value: () => group.querySelector<HTMLInputElement>("input:checked")?.value ?? "",
+    setEnabled: (on) => {
+      for (const row of group.querySelectorAll<HTMLElement>(".option")) row.classList.toggle("disabled", !on);
+      for (const input of group.querySelectorAll<HTMLInputElement>("input")) input.disabled = !on;
+    },
+  };
 }
 
 // checkboxGroup renders a plain, tight list rather than the boxed rows of
@@ -173,11 +185,12 @@ function checkboxGroup(options: string[], checked: string[]): () => string[] {
   return () => Array.from(group.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.value);
 }
 
-function stepLabel(text: string) {
+function stepLabel(text: string): HTMLParagraphElement {
   const p = document.createElement("p");
   p.className = "step-label";
   p.textContent = text;
   bodyEl.appendChild(p);
+  return p;
 }
 
 function fieldError(text: string) {
@@ -321,13 +334,13 @@ async function doLogin() {
 async function accountStep() {
   const accounts = (await OnboardingService.Accounts()) ?? [];
   stepLabel("Select an account");
-  const get = radioGroup("account", accounts.map((a) => ({ value: a.id, label: a.name })));
+  const account = radioGroup("account", accounts.map((a) => ({ value: a.id, label: a.name })));
   setActions({
     label: "Continue",
     cta: true,
     onClick: async () => {
       try {
-        await OnboardingService.SelectAccount(get());
+        await OnboardingService.SelectAccount(account.value());
         await reroute();
       } catch (err) {
         fieldError(describeError(err));
@@ -344,13 +357,13 @@ async function folderStep(error?: string) {
   setProgress("folder");
   bodyEl.innerHTML = "";
   stepLabel("Choose a sync folder");
-  const get = radioGroup("folder", folderOptions(def, home));
+  const folder = radioGroup("folder", folderOptions(def, home));
   if (error) fieldError(error);
   setActions({
     label: "Continue",
     cta: true,
     onClick: async () => {
-      switch (get()) {
+      switch (folder.value()) {
         case "default":
           await chooseFolder(def);
           break;
@@ -420,14 +433,14 @@ function conflictStep(display: string) {
   });
   setProgress("conflict");
   bodyEl.innerHTML = "";
-  const get = radioGroup("conflict", CONFLICT_OPTIONS);
+  const conflict = radioGroup("conflict", CONFLICT_OPTIONS);
   setActions(
     {
       label: "Continue",
       cta: true,
       onClick: async () => {
         try {
-          await OnboardingService.ConfirmSyncFolder(get());
+          await OnboardingService.ConfirmSyncFolder(conflict.value());
           await connectStep();
         } catch (err) {
           fieldError(describeError(err));
@@ -441,7 +454,7 @@ function conflictStep(display: string) {
 // --- connect + scope (runSyncScopeOnboarding) ---
 
 async function connectStep() {
-  busy("Connecting to Brick…");
+  busy("Connecting to Brick…", "Fetching quota and folder details for selective sync.");
   let info: ScopeInfo | null;
   try {
     info = await OnboardingService.Connect();
@@ -468,7 +481,7 @@ function scopeStep(info: ScopeInfo) {
   // The list is phrased as what to sync, so a tick means "sync this" and the
   // backend gets the unticked ones (it takes exclusions, like brick-cli).
   let getSelected: () => string[] = () => folders;
-  const get = radioGroup("scope", scopeOptions(info.totalHuman), "all", (v) => {
+  const scope = radioGroup("scope", scopeOptions(info.totalHuman), "all", (v) => {
     if (v === "pick" && !picking) {
       picking = true;
       stepLabel("Select folders to sync");
@@ -484,7 +497,7 @@ function scopeStep(info: ScopeInfo) {
     cta: true,
     onClick: async () => {
       try {
-        const all = get() === "all";
+        const all = scope.value() === "all";
         const keep = getSelected();
         await OnboardingService.SetSyncScope(all, all ? [] : folders.filter((f) => !keep.includes(f)));
         remoteStep();
@@ -501,24 +514,24 @@ function remoteStep(custom?: string) {
   render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
   setProgress("remote");
   bodyEl.innerHTML = "";
-  let getRoot: (() => string) | null = null;
-  const showRoots = () => {
-    if (getRoot) return;
-    stepLabel("Which folder should be accessible remotely?");
-    getRoot = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
+  const yesNo = radioGroup("remote", REMOTE_OPTIONS, "yes", (v) => enableRoots(v === "yes"));
+  const rootLabel = stepLabel("Which folder should be accessible remotely?");
+  const roots = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
+  // Saying no leaves the folder choice on screen, greyed out and inert: it
+  // answers a question the user has just declined, and taking the rows away
+  // would make the step jump around as they change their mind.
+  const enableRoots = (on: boolean) => {
+    rootLabel.classList.toggle("disabled", !on);
+    roots.setEnabled(on);
   };
-  const getYesNo = radioGroup("remote", REMOTE_OPTIONS, "yes", (v) => {
-    if (v === "yes") showRoots();
-  });
-  showRoots();
   setActions({
     label: "Continue",
     cta: true,
     onClick: async () => {
       try {
-        if (getYesNo() === "no") {
+        if (yesNo.value() === "no") {
           await OnboardingService.SetRemoteAccess(false, "");
-        } else if (getRoot?.() === "custom") {
+        } else if (roots.value() === "custom") {
           const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
           if (!picked) return; // cancelled: stay
           if (!custom) {
