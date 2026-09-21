@@ -1,6 +1,6 @@
-import {Events} from "@wailsio/runtime";
+import {Events, Window} from "@wailsio/runtime";
 import {SyncService} from "../bindings/github.com/webbite-io/brick-wails";
-import {actionForState, STATE_LABELS} from "./status";
+import {actionForState, hidesPopoverForState, STATE_LABELS} from "./status";
 
 const stateDot = document.getElementById('state-dot')! as HTMLSpanElement;
 const stateLabel = document.getElementById('state-label')! as HTMLSpanElement;
@@ -71,8 +71,11 @@ function createIcon(paths: string[]): SVGSVGElement {
     return svg;
 }
 
+let currentState = '';
+
 function renderStatus(status: any) {
     const state = status.state as string;
+    currentState = state;
     stateDot.className = 'dot state-' + state;
     stateLabel.innerText = STATE_LABELS[state] ?? state;
 
@@ -160,8 +163,15 @@ Events.On('brick:activity', () => {
     void refreshActivity();
 });
 
-setupBtn.addEventListener('click', () => {
-    SyncService.OpenSetup().catch(console.error);
+setupBtn.addEventListener('click', async () => {
+    const hide = hidesPopoverForState(currentState);
+    try {
+        await SyncService.OpenSetup();
+    } catch (err) {
+        console.error(err);
+        return; // stay open: the setup window never got the message
+    }
+    if (hide) await Window.Hide().catch(console.error);
 });
 
 pauseBtn.addEventListener('click', async () => {
