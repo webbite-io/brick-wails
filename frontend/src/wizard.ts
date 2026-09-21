@@ -101,9 +101,26 @@ export function remoteRootOptions(home: string, custom?: string): Option[] {
   ];
 }
 
+export const GENERIC_ERROR = "Something went wrong.";
+
+// presentable keeps raw payloads out of the window. Rejected binding calls and
+// backend details sometimes carry a JSON blob or a stringified object; those
+// belong in the console, never on screen.
+export function presentable(text: string | undefined, fallback = ""): string {
+  const t = (text ?? "").trim();
+  if (!t || t === "[object Object]") return fallback;
+  const json = (open: string, close: string) => t.startsWith(open) && t.endsWith(close);
+  if (json("{", "}") || json("[", "]")) return fallback;
+  return t;
+}
+
 // describeError turns a rejected binding call into a message.
 export function describeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === "object" && "message" in err) return String((err as { message: unknown }).message);
-  return String(err);
+  const raw =
+    err instanceof Error
+      ? err.message
+      : err && typeof err === "object" && "message" in err
+        ? String((err as { message: unknown }).message)
+        : String(err);
+  return presentable(raw, GENERIC_ERROR);
 }

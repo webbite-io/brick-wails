@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   CONFLICT_OPTIONS,
+  GENERIC_ERROR,
   describeError,
+  presentable,
   displayPath,
   folderOptions,
   needsWindow,
@@ -73,5 +75,21 @@ describe("describeError", () => {
     expect(describeError(new Error("boom"))).toBe("boom");
     expect(describeError({ message: "from go" })).toBe("from go");
     expect(describeError("plain")).toBe("plain");
+  });
+
+  it("never surfaces a raw payload", () => {
+    expect(describeError(new Error('{"kind":"ReferenceError","message":"x"}'))).toBe(GENERIC_ERROR);
+    expect(describeError({})).toBe(GENERIC_ERROR);
+    expect(describeError("[1,2]")).toBe(GENERIC_ERROR);
+    expect(describeError(new Error(" "))).toBe(GENERIC_ERROR);
+  });
+});
+
+describe("presentable", () => {
+  it("passes sentences through and drops payloads", () => {
+    expect(presentable("Could not reach Brick")).toBe("Could not reach Brick");
+    expect(presentable('{"code":401}')).toBe("");
+    expect(presentable(undefined)).toBe("");
+    expect(presentable("{oops}", "fallback")).toBe("fallback");
   });
 });

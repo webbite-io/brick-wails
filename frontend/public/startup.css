@@ -41,14 +41,17 @@
 
 .brand-subtitle {
     margin: 0;
-    font-size: 12px;
+    font-size: 13px;
+    line-height: 18px;
     color: #a1a1aa;
 }
 
 .status-indicator {
     display: flex;
+    flex-direction: column;
     align-items: center;
-    gap: 10px;
+    text-align: center;
+    gap: 8px;
     width: 100%;
     flex-shrink: 0;
     padding: 10px 12px;
@@ -59,21 +62,22 @@
 
 .status-text {
     min-width: 0;
-    flex: 1;
+    width: 100%;
 }
 
 .status-title {
     margin: 0;
-    font-size: 13px;
+    font-size: 14px;
+    line-height: 19px;
     font-weight: 600;
     color: #e4e4e7;
 }
 
 .status-message {
     margin: 2px 0 0;
-    font-size: 12px;
+    font-size: 13px;
     color: #a1a1aa;
-    line-height: 1.35;
+    line-height: 20px;
 }
 
 .status-message:empty {
@@ -135,9 +139,9 @@
     display: none;
     align-self: stretch;
     margin: 8px 0 0;
-    font-size: 11.5px;
+    font-size: 12.5px;
     color: #a1a1aa;
-    line-height: 1.4;
+    line-height: 19.5px;
 }
 
 .startup-detail.visible {
@@ -162,7 +166,8 @@
     display: flex;
     align-items: center;
     gap: 6px;
-    font-size: 11.5px;
+    font-size: 12.5px;
+    line-height: 17px;
     color: #d4d4d8;
 }
 
@@ -172,7 +177,7 @@
     align-self: stretch;
     justify-content: flex-end;
     gap: 8px;
-    margin-top: 18px;
+    margin-top: auto;
     flex-shrink: 0;
 }
 
@@ -196,9 +201,15 @@
     background: #2563eb;
 }
 
+/* Lighter on keyboard focus, like the plain buttons (see .btn in style.css). */
+.btn-primary:focus-visible {
+    background: #60a5fa;
+    border-color: #60a5fa;
+}
+
+/* Corner radius is inherited from .btn so every button matches. */
 .btn-cta {
     padding: 12px 16px;
-    border-radius: 10px;
     font-size: 14px;
     font-weight: 600;
 }
@@ -231,7 +242,8 @@
 
 .step-label {
     margin: 0 0 2px;
-    font-size: 11px;
+    font-size: 12px;
+    line-height: 16.5px;
     font-weight: 600;
     color: #a1a1aa;
     text-transform: uppercase;
@@ -246,10 +258,10 @@
     border: 1px solid rgba(255, 255, 255, 0.08);
     border-radius: 8px;
     background: #202024;
-    font-size: 12.5px;
+    font-size: 13.5px;
     color: #e4e4e7;
     cursor: pointer;
-    line-height: 1.35;
+    line-height: 20px;
 }
 
 .option:hover {
@@ -264,7 +276,7 @@
 
 .option .option-hint {
     display: block;
-    font-size: 11px;
+    font-size: 12px;
     color: #a1a1aa;
     word-break: break-all;
 }
@@ -277,7 +289,7 @@
     background: #0b0b0d;
     color: #e4e4e7;
     font: inherit;
-    font-size: 12.5px;
+    font-size: 13.5px;
 }
 
 .text-input:focus {
@@ -286,22 +298,24 @@
 }
 
 .link {
-    align-self: flex-start;
+    align-self: center;
     padding: 0;
     border: 0;
     background: none;
     color: #60a5fa;
     font: inherit;
-    font-size: 11.5px;
+    font-size: 12.5px;
+    line-height: 17px;
     cursor: pointer;
-    text-decoration: underline;
+    text-decoration: none;
     word-break: break-all;
-    text-align: left;
+    text-align: center;
 }
 
 .field-error {
     margin: 0;
-    font-size: 11.5px;
+    font-size: 12.5px;
+    line-height: 17px;
     color: #f87171;
 }
 
@@ -349,7 +363,8 @@
 }
 
 .welcome .brand-subtitle {
-    font-size: 15.5px;
+    font-size: 16.5px;
+    line-height: 22px;
     transform: translateY(-10px);
 }
 
@@ -361,8 +376,6 @@
 .welcome .startup-actions .btn.visible {
     width: auto;
     padding: 9px 22px;
-    border-radius: 8px;
-    font-size: 13px;
 }
 
 .welcome .brand-logo-wrap,

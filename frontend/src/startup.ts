@@ -15,6 +15,7 @@ import {
   displayPath,
   folderOptions,
   needsWindow,
+  presentable,
   remoteRootOptions,
   scopeOptions,
   screenForRoute,
@@ -52,9 +53,12 @@ function render(s: Screen) {
   iconEl.textContent = icon === "ok" ? "✓" : icon === "spinner" ? "" : "!";
   if (icon !== "spinner") iconEl.classList.add(`icon-${icon}`);
   titleEl.textContent = s.title;
-  messageEl.textContent = s.message;
-  detailEl.textContent = s.detail ?? "";
-  detailEl.classList.toggle("visible", !!s.detail);
+  // Backend copy reaches the window unfiltered, so drop anything that is a raw
+  // payload rather than a sentence (see presentable).
+  messageEl.textContent = presentable(s.message);
+  const detail = presentable(s.detail);
+  detailEl.textContent = detail;
+  detailEl.classList.toggle("visible", !!detail);
 }
 
 // reveal shows the panel contents once a screen is laid out. boot() hides them
