@@ -108,7 +108,7 @@ body {
 .counter-label {
     font-size: 10px;
     color: #a1a1aa;
-    text-transform: uppercase;
+    /* text-transform: uppercase; */
     letter-spacing: 0.04em;
 }
 
