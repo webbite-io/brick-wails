@@ -164,12 +164,16 @@ func main() {
 	// a configured machine goes straight to syncing. Closing it hides it; the
 	// tray's "Set Up Brick…" item brings it back.
 	setupWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "Setup",
-		Title:            "Webbite Brick",
-		Width:            380,
-		Height:           560,
+		Name:   "Setup",
+		Title:  "Webbite Brick",
+		Width:  420,
+		Height: 650,
+		// Resizable upwards only: the default size is also the floor, so a step
+		// with a long list can be given more room but the layout never gets
+		// squeezed below what it was designed for.
+		MinWidth:         420,
+		MinHeight:        650,
 		Hidden:           true,
-		DisableResize:    true,
 		BackgroundColour: application.NewRGB(24, 24, 27),
 		URL:              "/startup.html",
 	})
