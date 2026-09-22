@@ -5,12 +5,19 @@
 #
 # Unlike brick-cli (a plain Go CLI that cross-compiles trivially), this is a
 # native GUI app: it uses CGO and per-OS webview/tray libraries, so builds
-# only work for the OS you're running on. There is no build-all/release
-# target — packaging for macOS/Windows needs those native toolchains (or CI),
-# see README.md's "Packaging" section.
+# only work for the OS you're running on. There is no build-all, and `release`
+# only produces a Linux artifact — macOS/Windows packaging needs those native
+# toolchains (or CI), see README.md's "Packaging" section.
 
 APP_NAME := brick-ui
 BIN_DIR := bin
+DIST_DIR := dist
+
+# Release artifacts are named after the Go arch (amd64/arm64) to match
+# brick-cli's tarballs, while the AppImage that wails3 emits is named after the
+# ELF arch (x86_64/aarch64). Keep both so the rename step doesn't guess.
+GOARCH := $(shell go env GOARCH 2>/dev/null || echo amd64)
+APPIMAGE_ARCH := $(if $(filter arm64,$(GOARCH)),aarch64,x86_64)
 
 # Production builds bake ACC_API_URL, STORAGE_API_URL, OAUTH_* and
 # STORAGE_*_URL in at compile time (see BRICK_LDFLAGS in Taskfile.yml and the
@@ -28,12 +35,19 @@ BIN_DIR := bin
 # of what the app is actually built against.
 WAILS_VERSION := $(shell awk '/github.com\/wailsapp\/wails\/v3 /{print $$3; exit}' go.mod)
 
-# Extract version from git tag (strip 'v' prefix), fallback to "dev"
-VERSION := $(shell if git describe --tags --exact-match 2>/dev/null >/dev/null; then \
-	git describe --tags --exact-match | sed 's/^v//'; \
-else \
-	git describe --tags 2>/dev/null | sed 's/^v//' | sed 's/-[0-9]\+-g/-/' || echo "dev"; \
-fi)
+# Extract version from git tag (strip 'v' prefix), fallback to "dev":
+#   on an exact tag   v1.2.3      -> 1.2.3
+#   ahead of a tag    v1.2.3-4-g… -> 1.2.3-abc1234
+#   no tags at all                -> dev
+# The `|| echo dev` fallback has to key off the captured value rather than the
+# exit status of the pipeline: `git describe ... | sed` exits 0 even when git
+# failed and produced nothing, which otherwise yields an empty VERSION and
+# artifact names like brick-ui--linux-amd64.tar.gz.
+VERSION := $(shell \
+	v=$$(git describe --tags --exact-match 2>/dev/null) || \
+	v=$$(git describe --tags 2>/dev/null | sed 's/-[0-9]\+-g/-/'); \
+	v=$$(echo "$$v" | sed 's/^v//'); \
+	echo "$${v:-dev}")
 
 # Colors for output
 COLOR_RESET := \033[0m
@@ -53,7 +67,7 @@ LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev l
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
 FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
 
-.PHONY: all setup doctor dev build build-dev build-prod check-release-env run package clean install version help test test-go test-frontend test-integration test-all fonts
+.PHONY: all setup doctor dev build build-dev build-prod check-release-env run release release-to-github clean install version help test test-go test-frontend test-integration test-all fonts
 
 # Default target
 all: build-prod
@@ -192,16 +206,143 @@ fonts:
 run:
 	wails3 task run
 
-# Build native packages for this OS (.deb/.rpm/AppImage on Linux).
-package:
-	wails3 task package
+# Build the Linux release artifact: the AppImage and its icon, wrapped in a
+# tarball named like brick-cli's (brick-ui-<version>-linux-<arch>.tar.gz).
+# The installer is deliberately NOT bundled — build/linux/appimage/install.sh
+# is fetched from the repo and downloads this tarball, so it can be fixed
+# without cutting a new release.
+#
+# This deliberately shells out to `wails3 generate appimage` rather than
+# `wails3 task linux:create:appimage`: that task declares a `build` dependency
+# and would rebuild the binary in a fresh Task invocation without the .env.prod
+# values this Makefile exports, silently replacing the production build below
+# with one that falls back to the localhost dev URLs at runtime.
+#
+# Needs network on first run — the AppImage generator downloads linuxdeploy and
+# AppRun from GitHub, then caches them in build/linux/appimage/build.
+release: build-prod
+	@echo ""
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Creating AppImage...$(COLOR_RESET)"
+	@rm -rf $(DIST_DIR)/stage
+	@mkdir -p $(DIST_DIR)/stage/$(APP_NAME)
+	@wails3 task linux:generate:dotdesktop
+	@# linuxdeploy matches the icon by basename against the desktop file's
+	@# Icon= key, so it has to be named $(APP_NAME).png, not appicon.png.
+	@cp build/appicon.png $(DIST_DIR)/stage/$(APP_NAME).png
+	@wails3 generate appimage \
+		-binary $(BIN_DIR)/$(APP_NAME) \
+		-icon $(DIST_DIR)/stage/$(APP_NAME).png \
+		-desktopfile build/linux/$(APP_NAME).desktop \
+		-outputdir $(DIST_DIR)/stage \
+		-builddir build/linux/appimage/build
+	@echo ""
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Assembling $(APP_NAME)-$(VERSION)-linux-$(GOARCH).tar.gz...$(COLOR_RESET)"
+	@mv $(DIST_DIR)/stage/$(APP_NAME)-$(APPIMAGE_ARCH).AppImage $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
+	@chmod +x $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
+	@cp build/appicon.png $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).png
+	@tar -czf $(DIST_DIR)/$(APP_NAME)-$(VERSION)-linux-$(GOARCH).tar.gz \
+		-C $(DIST_DIR)/stage $(APP_NAME)
+	@rm -rf $(DIST_DIR)/stage
+	@echo ""
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Generating checksums...$(COLOR_RESET)"
+	@cd $(DIST_DIR) && \
+	if command -v sha256sum >/dev/null 2>&1; then \
+		sha256sum *.tar.gz > SHA256SUMS; \
+	else \
+		shasum -a 256 *.tar.gz > SHA256SUMS; \
+	fi
+	@echo "$(COLOR_GREEN)✓ Release artifact created$(COLOR_RESET)"
+	@echo ""
+	@ls -lh $(DIST_DIR)/*.tar.gz
+	@echo ""
+	@echo "Checksums (SHA256SUMS):"
+	@cat $(DIST_DIR)/SHA256SUMS
+	@echo ""
+	@echo "Publish it with: make release-to-github"
+
+# Publish the artifacts already sitting in dist/ (built by `make release`) as a
+# GitHub release. Does not rebuild anything — the version published is whatever
+# dist/SHA256SUMS says was actually built. Prompts before replacing a release
+# that already exists. Mirrors brick-cli's target of the same name.
+release-to-github:
+	@if [ ! -f "$(DIST_DIR)/SHA256SUMS" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) $(DIST_DIR)/SHA256SUMS not found. Run 'make release' first."; \
+		exit 1; \
+	fi; \
+	if ! command -v gh >/dev/null 2>&1; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) gh CLI is required (https://cli.github.com/) — install it and run 'gh auth login' first."; \
+		exit 1; \
+	fi; \
+	echo "$(COLOR_BOLD)$(COLOR_BLUE)Verifying release artifacts have production URLs baked in...$(COLOR_RESET)"; \
+	if [ -z "$(ACC_API_URL)" ] || [ -z "$(STORAGE_API_URL)" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) ACC_API_URL/STORAGE_API_URL are not available in this shell, so the artifacts can't be verified against them."; \
+		echo "Make sure .env.prod is present (see .env.example) and re-run."; \
+		exit 1; \
+	fi; \
+	bad=""; \
+	tmp=$$(mktemp -d); \
+	for f in $(DIST_DIR)/*.tar.gz; do \
+		[ -f "$$f" ] || continue; \
+		rm -rf "$$tmp"/*; \
+		tar -xzf "$$f" -C "$$tmp" 2>/dev/null || { bad="$$bad $$f"; continue; }; \
+		app="$$tmp/$(APP_NAME)/$(APP_NAME).AppImage"; \
+		[ -f "$$app" ] || { bad="$$bad $$f"; continue; }; \
+		: ; \
+		( cd "$$tmp" && "$$app" --appimage-extract "usr/bin/$(APP_NAME)" >/dev/null 2>&1 ) || { bad="$$bad $$f"; continue; }; \
+		bin="$$tmp/squashfs-root/usr/bin/$(APP_NAME)"; \
+		[ -f "$$bin" ] || { bad="$$bad $$f"; continue; }; \
+		grep -aqF "$(ACC_API_URL)" "$$bin" && grep -aqF "$(STORAGE_API_URL)" "$$bin" || bad="$$bad $$f"; \
+	done; \
+	rm -rf "$$tmp"; \
+	if [ -n "$$bad" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to publish — these artifacts don't have the expected production URLs ($(ACC_API_URL), $(STORAGE_API_URL)) baked in:$$bad"; \
+		echo "Re-run 'make release' with production values set (see .env.prod) before publishing."; \
+		exit 1; \
+	fi; \
+	echo "$(COLOR_GREEN)✓ Artifacts look production-ready$(COLOR_RESET)"; \
+	repo=$$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1; \
+	rel_version=$$(awk '{print $$2}' $(DIST_DIR)/SHA256SUMS | sed -E 's/^$(APP_NAME)-(.+)-(linux)-(amd64|arm64)\.tar\.gz$$/\1/' | sort -u); \
+	if [ -z "$$rel_version" ] || [ $$(echo "$$rel_version" | wc -l) -ne 1 ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) could not determine a single version from $(DIST_DIR)/SHA256SUMS; re-run 'make release' to rebuild a clean dist/."; \
+		exit 1; \
+	fi; \
+	if [ "$$rel_version" = "dev" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to publish version 'dev' — tag the commit first (git tag v0.1.0) and re-run 'make release'."; \
+		exit 1; \
+	fi; \
+	assets="$(DIST_DIR)/SHA256SUMS"; \
+	for f in $(DIST_DIR)/*.tar.gz; do \
+		[ -f "$$f" ] && assets="$$assets $$f"; \
+	done; \
+	if gh release view "$$rel_version" --repo "$$repo" >/dev/null 2>&1; then \
+		echo "$(COLOR_YELLOW)Release $$rel_version already exists on $$repo.$(COLOR_RESET)"; \
+		printf "Replace it with the artifacts currently in $(DIST_DIR)/? (y/N): "; \
+		read -r resp; \
+		resp=$$(echo "$$resp" | tr '[:upper:]' '[:lower:]'); \
+		if [ "$$resp" != "y" ] && [ "$$resp" != "yes" ]; then \
+			echo "Aborted — existing release left untouched."; \
+			exit 1; \
+		fi; \
+		echo "$(COLOR_BOLD)$(COLOR_BLUE)Replacing release $$rel_version on $$repo...$(COLOR_RESET)"; \
+		gh release delete "$$rel_version" --repo "$$repo" --yes || exit 1; \
+		gh release create "$$rel_version" $$assets --repo "$$repo" --title "$$rel_version" --generate-notes || exit 1; \
+	else \
+		echo "$(COLOR_BOLD)$(COLOR_BLUE)Creating release $$rel_version on $$repo...$(COLOR_RESET)"; \
+		gh release create "$$rel_version" $$assets --repo "$$repo" --title "$$rel_version" --generate-notes || exit 1; \
+	fi; \
+	echo "$(COLOR_GREEN)✓ Released $$rel_version to $$repo$(COLOR_RESET)"; \
+	echo ""; \
+	echo "Users can now install with:"; \
+	echo "  curl -fsSL https://raw.githubusercontent.com/$$repo/main/build/linux/appimage/install.sh | bash"
 
 # Clean build artifacts (mirrors brick-cli's clean; keeps node_modules).
 clean:
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Cleaning build artifacts...$(COLOR_RESET)"
 	@rm -rf $(BIN_DIR)
+	@rm -rf $(DIST_DIR)
 	@rm -rf frontend/dist
 	@rm -rf .task
+	@rm -rf build/linux/appimage/build
 	@echo "$(COLOR_GREEN)✓ Clean complete$(COLOR_RESET)"
 
 # Install locally for testing (to ~/.local/bin).
@@ -240,8 +381,9 @@ help:
 	@echo "  test-integration - End-to-end sync/onboarding tests (+ brick-cli compat if available)"
 	@echo "  test-all   - test + test-integration"
 	@echo "  run        - Run the last build"
-	@echo "  package    - Build native packages for this OS (.deb/.rpm/AppImage on Linux)"
-	@echo "  clean      - Remove build artifacts (bin/, frontend/dist, .task)"
+	@echo "  release    - Build the Linux release tarball (AppImage) into dist/"
+	@echo "  release-to-github - Publish dist/ artifacts as a GitHub release (prompts before replacing)"
+	@echo "  clean      - Remove build artifacts (bin/, dist/, frontend/dist, .task)"
 	@echo "  install    - Build using build-prod and install to ~/.local/bin (for testing)"
 	@echo "  version    - Show version information"
 	@echo "  help       - Show this help message"
@@ -252,10 +394,13 @@ help:
 	@echo "  make dev                                       # Run with hot reload"
 	@echo "  make build-dev                                 # Quick dev build"
 	@echo "  make install                                   # Build + install locally"
+	@echo "  make release                                   # Linux tarball in dist/"
+	@echo "  make release-to-github                         # Publish dist/ to GitHub"
 	@echo ""
-	@echo "$(COLOR_BOLD)Note:$(COLOR_RESET) unlike brick-cli, there is no build-all/release target."
-	@echo "This is a native GUI app (CGO + per-OS webview/tray libs), so builds"
-	@echo "only work for the OS you're running on; other OS targets need CI or a"
-	@echo "native machine of that OS (see README.md's Packaging section)."
+	@echo "$(COLOR_BOLD)Note:$(COLOR_RESET) unlike brick-cli, there is no build-all target, and"
+	@echo "'release' produces a Linux artifact only. This is a native GUI app (CGO +"
+	@echo "per-OS webview/tray libs), so builds only work for the OS you're running"
+	@echo "on; macOS/Windows need CI or a native machine of that OS (see README.md's"
+	@echo "Packaging section)."
 	@echo ""
 	@echo "$(COLOR_BOLD)Current version:$(COLOR_RESET) $(VERSION)"

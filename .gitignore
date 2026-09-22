@@ -1,8 +1,15 @@
 .task
 bin
+dist
 frontend/dist
 frontend/node_modules
-build/linux/appimage/build
+# NOTE: do not blanket-ignore `build/`. It is a source directory — the Wails
+# build assets (config.yml, the per-OS Taskfiles, appicon.png, the desktop
+# entry, the AppImage installer, the Android/iOS project scaffolding) all live
+# there and are tracked. A bare `build/` rule silently hides new files added
+# under it, including ones that must be committed to be useful. Ignore the
+# specific generated paths instead, as below.
+build/linux/appimage/build/
 build/windows/nsis/MicrosoftEdgeWebview2Setup.exe
 # Mobile generated (per-machine; overlays hold absolute paths)
 build/ios/xcode/overlay.json

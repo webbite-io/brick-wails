@@ -150,8 +150,64 @@ make test-all
 
 ## Packaging
 
-Not yet set up. `wails3 package` targets native installers per OS (`.dmg` on
-macOS, `.msi`/NSIS on Windows, AppImage/`.deb` on Linux) — see `build/darwin`,
-`build/windows`, `build/linux` and the [Wails v3 packaging
-docs](https://v3.wails.io/). The tray icon still uses Wails' placeholder logo
-(see `build/tray`).
+**Linux** is wired up.
+
+```bash
+make release            # build dist/brick-ui-<version>-linux-<arch>.tar.gz + SHA256SUMS
+make release-to-github  # publish dist/ as a GitHub release (prompts before replacing)
+```
+
+The tarball contains just `brick-ui.AppImage` and `brick-ui.png`. The AppImage
+is self-contained: `wails3 generate appimage` runs linuxdeploy with its GTK
+plugin and pulls in WebKitGTK's out-of-process helpers (`WebKitWebProcess`,
+`WebKitNetworkProcess`, the injected bundle), which a plain linuxdeploy run
+would miss. Expect ~150 MB — that's the GTK4 + WebKitGTK stack, not the ~13 MB
+app binary.
+
+`release-to-github` refuses to publish unless it can prove the artifacts are
+production builds: it extracts the binary back out of the AppImage and greps
+for `ACC_API_URL`/`STORAGE_API_URL`. (Grepping the AppImage directly doesn't
+work — the payload is compressed squashfs.) It also refuses to publish version
+`dev`, so tag the commit first.
+
+### Installing
+
+End users don't touch the tarball. `build/linux/appimage/install.sh` is served
+from the repo and fetches the release itself:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/build/linux/appimage/install.sh | bash
+```
+
+It resolves the latest tag via the GitHub API, verifies the download against
+`SHA256SUMS`, installs to `~/.local/bin/brick-ui`, writes the hicolor icons and
+a `~/.local/share/applications/brick-ui.desktop` entry, then refreshes the
+desktop and icon caches. No root required. Flags: `--version X`, `--prefix
+PATH`, `--force`, `--uninstall`.
+
+Re-running it upgrades in place rather than accumulating copies: every artifact
+has a fixed destination, the installed version is recorded in
+`~/.local/share/brick-ui/version` (so an unchanged version is a no-op), and any
+stray launcher entry pointing at our binary under a different filename — the
+`appimagekit-*.desktop` that AppImageLauncher writes on first launch, for
+instance — is pruned before ours is written.
+
+Because the installer lives in the repo rather than inside the tarball, fixing
+it doesn't require cutting a new release.
+
+Two caveats. The first `make release` downloads linuxdeploy and AppRun from
+GitHub, caching them in `build/linux/appimage/build`. And an AppImage only runs
+on glibc **at least** as new as the build host's, so release from the oldest
+distro you intend to support — though the GTK4/WebKitGTK 6.0 requirement
+already floors this at Ubuntu 24.04 / Debian 13.
+
+`.deb`, `.rpm` and AUR packages are still defined as Task targets
+(`wails3 task linux:create:deb` and friends, configured in
+`build/linux/nfpm/nfpm.yaml`) but aren't part of `make release`.
+
+**macOS and Windows** aren't set up. This is a CGO GUI app, so each needs its
+own native toolchain or CI runner; `build/darwin` and `build/windows` hold the
+Wails-generated scaffolding (`.dmg`, `.msi`/NSIS). See the [Wails v3 packaging
+docs](https://v3.wails.io/).
+
+The tray icon still uses Wails' placeholder logo (see `build/tray`).
