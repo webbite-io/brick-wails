@@ -143,12 +143,15 @@ func main() {
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
 	popover := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "Brick",
-		Width:            360,
-		Height:           460,
+		Name:   "Brick",
+		Width:  420,
+		Height: 650,
+		// Same sizing as the setup window: resizable upwards only, with the
+		// default size as the floor.
+		MinWidth:         420,
+		MinHeight:        650,
 		AlwaysOnTop:      true,
 		Hidden:           true,
-		DisableResize:    true,
 		Windows:          application.WindowsWindow{HiddenOnTaskbar: true},
 		BackgroundColour: application.NewRGB(24, 24, 27),
 		URL:              "/",
