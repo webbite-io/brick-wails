@@ -69,15 +69,6 @@ body {
     text-overflow: ellipsis;
 }
 
-.in-flight {
-    margin: 0 0 4px;
-    color: #93c5fd;
-    font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 .error {
     margin: 0 0 8px;
     color: #fca5a5;
@@ -166,6 +157,14 @@ body {
 .activity-empty {
     color: #71717a;
     font-style: italic;
+}
+
+/* The file being transferred right now, at the head of the list: the same row
+   as its finished neighbours, in blue, so nothing shifts when it lands. */
+.activity li.in-flight,
+.activity li.in-flight .activity-icon-slot,
+.activity li.in-flight .activity-icon {
+    color: #93c5fd;
 }
 
 .activity-icon {

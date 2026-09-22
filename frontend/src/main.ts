@@ -5,7 +5,6 @@ import {actionForState, hidesPopoverForState, STATE_LABELS} from "./status";
 const stateDot = document.getElementById('state-dot')! as HTMLSpanElement;
 const stateLabel = document.getElementById('state-label')! as HTMLSpanElement;
 const folderEl = document.getElementById('folder')! as HTMLParagraphElement;
-const inFlightEl = document.getElementById('in-flight')! as HTMLParagraphElement;
 const errorEl = document.getElementById('error')! as HTMLParagraphElement;
 const countUploaded = document.getElementById('count-uploaded')! as HTMLSpanElement;
 const countDownloaded = document.getElementById('count-downloaded')! as HTMLSpanElement;
@@ -82,13 +81,7 @@ function renderStatus(status: any) {
     folderEl.innerText = status.folder || '';
     folderEl.style.display = status.folder ? '' : 'none';
 
-    if (status.inFlight) {
-        const arrow = status.inFlight.direction === 'upload' ? '↑' : '↓';
-        inFlightEl.innerText = `${arrow} ${status.inFlight.relPath}`;
-        inFlightEl.style.display = '';
-    } else {
-        inFlightEl.style.display = 'none';
-    }
+    setInFlight(status.inFlight ?? null);
 
     if (status.lastError) {
         errorEl.innerText = status.lastError;
@@ -114,31 +107,57 @@ function renderStatus(status: any) {
     setupBtn.innerText = action ?? '';
 }
 
-function renderActivity(events: any[]) {
-    activityList.innerHTML = '';
-    for (const event of events) {
-        const li = document.createElement('li');
+// activityRow is one line of the list: an icon slot and the text.
+function activityRow(icon: SVGSVGElement | string | null, text: string): HTMLLIElement {
+    const li = document.createElement('li');
 
-        const iconSlot = document.createElement('span');
-        iconSlot.className = 'activity-icon-slot';
-        if (MOVE_ACTIVITY_KINDS.has(event.kind)) {
-            iconSlot.appendChild(createIcon(ARROW_RIGHT_PATHS));
-        } else if (ACTIVITY_ICON_PATHS[event.kind]) {
-            iconSlot.appendChild(createIcon(ACTIVITY_ICON_PATHS[event.kind]));
-        } else if (event.kind === 'keep-both') {
-            iconSlot.innerText = '⧉';
-        }
-        li.appendChild(iconSlot);
-
-        const text = document.createElement('span');
-        text.className = 'activity-text';
-        const label = ACTIVITY_TEXT_LABELS[event.kind];
-        text.innerText = label ? `${label} ${event.relPath}` : event.relPath;
-        li.appendChild(text);
-
-        activityList.appendChild(li);
+    const iconSlot = document.createElement('span');
+    iconSlot.className = 'activity-icon-slot';
+    if (typeof icon === 'string') {
+        iconSlot.innerText = icon;
+    } else if (icon) {
+        iconSlot.appendChild(icon);
     }
-    if (events.length === 0) {
+    li.appendChild(iconSlot);
+
+    const label = document.createElement('span');
+    label.className = 'activity-text';
+    label.innerText = text;
+    li.appendChild(label);
+
+    return li;
+}
+
+// The transfer running right now. It heads the activity list rather than
+// sitting in a line of its own above it, so the panel below doesn't jump as
+// files start and finish.
+let inFlight: any = null;
+let activityEvents: any[] = [];
+
+function renderActivity() {
+    activityList.innerHTML = '';
+
+    if (inFlight) {
+        const down = inFlight.direction !== 'upload';
+        const row = activityRow(createIcon(down ? ARROW_DOWN_PATHS : ARROW_UP_PATHS), `${down ? 'Downloading' : 'Uploading'} ${inFlight.relPath}`);
+        row.className = 'in-flight';
+        activityList.appendChild(row);
+    }
+
+    for (const event of activityEvents) {
+        let icon: SVGSVGElement | string | null = null;
+        if (MOVE_ACTIVITY_KINDS.has(event.kind)) {
+            icon = createIcon(ARROW_RIGHT_PATHS);
+        } else if (ACTIVITY_ICON_PATHS[event.kind]) {
+            icon = createIcon(ACTIVITY_ICON_PATHS[event.kind]);
+        } else if (event.kind === 'keep-both') {
+            icon = '⧉';
+        }
+        const label = ACTIVITY_TEXT_LABELS[event.kind];
+        activityList.appendChild(activityRow(icon, label ? `${label} ${event.relPath}` : event.relPath));
+    }
+
+    if (!inFlight && activityEvents.length === 0) {
         const li = document.createElement('li');
         li.className = 'activity-empty';
         li.innerText = 'No activity yet';
@@ -146,9 +165,23 @@ function renderActivity(events: any[]) {
     }
 }
 
+// setInFlight redraws only when the transfer actually changes: status events
+// arrive every two seconds, and rebuilding the list each time would throw away
+// the user's scroll position.
+let inFlightKey = '';
+
+function setInFlight(next: any) {
+    const key = next ? `${next.direction} ${next.relPath}` : '';
+    if (key === inFlightKey) return;
+    inFlightKey = key;
+    inFlight = next;
+    renderActivity();
+}
+
 async function refreshActivity() {
     try {
-        renderActivity((await SyncService.Activity(20)) ?? []);
+        activityEvents = (await SyncService.Activity(20)) ?? [];
+        renderActivity();
     } catch (err) {
         console.error(err);
     }
