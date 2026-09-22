@@ -275,12 +275,16 @@
 
 /* --- onboarding wizard --- */
 
+/* The step runs 12px into the panel's 16px right padding and pads its rows
+   back by the same amount, so the scrollbar of a long folder list lands in the
+   gutter beside the rows instead of on top of them. */
 .step-body {
     display: flex;
     flex-direction: column;
     align-self: stretch;
     gap: 6px;
-    margin-top: 12px;
+    margin: 12px -12px 0 0;
+    padding-right: 12px;
     min-height: 0;
     overflow-y: auto;
 }
