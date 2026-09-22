@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -102,6 +103,9 @@ type Flow struct {
 	rootID       string
 	topFolders   []string
 	checklist    []string
+	// remoteRoot is the agentRoots entry this session added, so re-answering
+	// the remote-access step replaces it instead of piling roots up.
+	remoteRoot string
 }
 
 // New returns a Flow sharing tokens with the rest of the app.
@@ -126,6 +130,7 @@ func (f *Flow) Reset() {
 	defer f.mu.Unlock()
 	f.cancelLoginLocked()
 	f.accounts, f.firstSetup, f.conflictMode, f.pendingDir, f.rootID, f.topFolders, f.checklist = nil, false, "", "", "", nil, nil
+	f.remoteRoot = ""
 }
 
 func (f *Flow) storageClient(accountID string) *storage.Client {
@@ -530,34 +535,45 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 
 // SetRemoteAccess records the remote-file-access decision. When enabled,
 // root (empty = home) is added to agentRoots.
+//
+// The wizard can be walked backwards, so this overwrites its own earlier
+// answer rather than adding to it: the root this session put in agentRoots is
+// dropped before the new one goes in, and declining turns remote control back
+// off. Roots configured elsewhere (the CLI, an earlier setup) are left alone.
 func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
-	if !enabled {
-		return nil
-	}
-	if strings.TrimSpace(root) == "" {
-		root = f.HomeDir()
-	}
-	abs, err := filepath.Abs(brickcfg.ExpandHome(root))
-	if err != nil {
-		return err
-	}
-	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
-		return fmt.Errorf("%s is not a folder", abs)
-	}
-	if _, err := f.store.Update(func(c *brickcfg.Config) error {
-		c.RemoteControl = true
-		for _, r := range c.AgentRoots {
-			if r == abs {
-				return nil
-			}
+	var abs string
+	if enabled {
+		if strings.TrimSpace(root) == "" {
+			root = f.HomeDir()
 		}
-		c.AgentRoots = append(c.AgentRoots, abs)
+		var err error
+		if abs, err = filepath.Abs(brickcfg.ExpandHome(root)); err != nil {
+			return err
+		}
+		if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+			return fmt.Errorf("%s is not a folder", abs)
+		}
+	}
+	f.mu.Lock()
+	prev := f.remoteRoot
+	f.mu.Unlock()
+	if _, err := f.store.Update(func(c *brickcfg.Config) error {
+		if prev != "" {
+			c.AgentRoots = slices.DeleteFunc(c.AgentRoots, func(r string) bool { return r == prev })
+		}
+		c.RemoteControl = enabled
+		if enabled && !slices.Contains(c.AgentRoots, abs) {
+			c.AgentRoots = append(c.AgentRoots, abs)
+		}
 		return nil
 	}); err != nil {
 		return err
 	}
 	f.mu.Lock()
-	f.done("Remote file access enabled (root folder: %s)", brickcfg.DisplayPath(abs))
+	f.remoteRoot = abs
+	if enabled {
+		f.done("Remote file access enabled (root folder: %s)", brickcfg.DisplayPath(abs))
+	}
 	f.mu.Unlock()
 	return nil
 }

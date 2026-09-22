@@ -235,15 +235,13 @@
     border-color: #60a5fa;
 }
 
-/* Corner radius is inherited from .btn so every button matches. */
+/* Corner radius is inherited from .btn so every button matches. A quiet CTA
+   is the outlined Back button under Continue: same size, no fill, and the
+   plain .btn hover (the blue one belongs to .btn-primary). */
 .btn-cta {
     padding: 12px 16px;
     font-size: 14px;
     font-weight: 600;
-}
-
-.btn-cta:hover:not(:disabled) {
-    background: #2563eb;
 }
 
 /* --- onboarding wizard --- */

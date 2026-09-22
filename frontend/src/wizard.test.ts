@@ -69,9 +69,9 @@ describe("displayPath", () => {
 });
 
 describe("options", () => {
-  it("offers the three CLI sync-folder choices", () => {
+  it("offers the default folder and the native picker", () => {
     const opts = folderOptions("/home/ada/Brick", "/home/ada");
-    expect(opts.map((o) => o.value)).toEqual(["default", "pick", "create"]);
+    expect(opts.map((o) => o.value)).toEqual(["default", "pick"]);
     expect(opts[0].label).toBe("Use ~/Brick");
     expect(opts[1].label).toBe("Pick existing folder in ~");
   });

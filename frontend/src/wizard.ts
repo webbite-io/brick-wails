@@ -91,11 +91,13 @@ export function displayPath(path: string, home: string): string {
   return path;
 }
 
+// folderOptions offers the default folder or the native picker. brick-cli's
+// third choice, typing a folder to create, has no place here: the OS picker
+// makes folders itself.
 export function folderOptions(defaultFolder: string, home: string): Option[] {
   return [
     { value: "default", label: `Use ${displayPath(defaultFolder, home)}` },
     { value: "pick", label: `Pick existing folder in ${displayPath(home, home)}` },
-    { value: "create", label: "Create folder" },
   ];
 }
 

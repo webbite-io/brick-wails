@@ -320,8 +320,25 @@ func TestSetRemoteAccessAndScopeValidation(t *testing.T) {
 	if err := e.flow.SetRemoteAccess(true, filepath.Join(e.home, "missing")); err == nil {
 		t.Error("missing root accepted")
 	}
-	if err := e.flow.SetRemoteAccess(false, ""); err != nil || len(e.flow.Checklist()) != 3 {
-		t.Errorf("declining should be a no-op: %v %v", err, e.flow.Checklist())
+	// The wizard can be walked backwards, so re-answering the step overwrites
+	// what it saved: a new root replaces the old one instead of piling up.
+	other := filepath.Join(e.home, "other")
+	os.MkdirAll(other, 0o755)
+	if err := e.flow.SetRemoteAccess(true, other); err != nil {
+		t.Fatalf("re-answering: %v", err)
+	}
+	if c := e.cfg(); !reflect.DeepEqual(c.AgentRoots, []string{other}) {
+		t.Errorf("root not replaced: %v", c.AgentRoots)
+	}
+	steps := len(e.flow.Checklist())
+	if err := e.flow.SetRemoteAccess(false, ""); err != nil {
+		t.Fatalf("declining: %v", err)
+	}
+	if c := e.cfg(); c.RemoteControl || len(c.AgentRoots) != 0 {
+		t.Errorf("declining should undo this session's answer: %v %v", c.RemoteControl, c.AgentRoots)
+	}
+	if len(e.flow.Checklist()) != steps {
+		t.Errorf("declining should not tick a step off: %v", e.flow.Checklist())
 	}
 	if err := e.flow.SetSyncScope(false, []string{"NotAFolder"}); err == nil {
 		t.Error("unknown folder accepted")

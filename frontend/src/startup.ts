@@ -12,7 +12,6 @@ import {
   CONFLICT_OPTIONS,
   REMOTE_OPTIONS,
   describeError,
-  displayPath,
   folderOptions,
   needsWindow,
   presentable,
@@ -104,6 +103,36 @@ function applyButton(btn: HTMLButtonElement, a: Action | undefined, variant: "pr
 function setActions(primary?: Action, secondary?: Action) {
   applyButton(primaryBtn, primary, "primary");
   applyButton(secondaryBtn, secondary, "quiet");
+}
+
+// --- step history ---
+//
+// Once past login the wizard can be walked backwards: each step that moves on
+// remembers how to redraw itself, and Back replays the screen on top of the
+// stack. A step the user returns to saves its answer again on the way forward,
+// and the services overwrite what the first pass wrote (Flow.SetRemoteAccess
+// replaces the root it added, ConfirmSyncFolder the sync folder, and so on).
+
+type StepFn = () => void;
+
+const history: StepFn[] = [];
+
+// remember records the screen being left, so Back can return to it. Steps call
+// it only when they actually move on — not when they redraw themselves with an
+// error, and not when a native dialog is cancelled.
+function remember(step: StepFn) {
+  history.push(step);
+}
+
+// backAction is the Back button for the current screen, or nothing on the
+// first step of the wizard.
+function backAction(): Action | undefined {
+  if (!history.length) return undefined;
+  return {
+    label: "Back",
+    cta: true,
+    onClick: () => history.pop()?.(),
+  };
 }
 
 // setProgress draws the dot bar under the tagline for the wizard step now on
@@ -229,6 +258,7 @@ async function boot() {
   panelEl.classList.remove("ready");
   busy("Starting Brick…");
   setProgress(null);
+  history.length = 0;
   home = await OnboardingService.HomeDir().catch(() => "");
   const route = await OnboardingService.Route();
   if (gen !== generation) return;
@@ -286,6 +316,10 @@ async function handleRoute(route: Route) {
 async function startSync(fromWizard: boolean) {
   busy("Starting Brick…", "Starting to sync your files…");
   reveal();
+  // Finishing hands the wizard's decisions (first sync, conflict mode) to the
+  // runner and ends the session, so it waits until the user commits: up to
+  // here every step is still open to a Back.
+  if (fromWizard) await OnboardingService.FinishOnboarding();
   const res = await OnboardingService.StartSync();
   if (res.ok) {
     render({ icon: "ok", title: "Brick is syncing", message: "" });
@@ -320,6 +354,7 @@ async function doLogin() {
     const res = await OnboardingService.AwaitLogin();
     render({ icon: "ok", title: res?.greeting ?? "Login successful 🎉", message: "" });
     bodyEl.innerHTML = "";
+    history.length = 0; // the wizard starts here: there is nothing behind it
     await new Promise((r) => setTimeout(r, 700));
     await reroute();
   } catch (err) {
@@ -341,6 +376,7 @@ async function accountStep() {
     onClick: async () => {
       try {
         await OnboardingService.SelectAccount(account.value());
+        remember(() => void accountStep());
         await reroute();
       } catch (err) {
         fieldError(describeError(err));
@@ -359,64 +395,33 @@ async function folderStep(error?: string) {
   stepLabel("Choose a sync folder");
   const folder = radioGroup("folder", folderOptions(def, home));
   if (error) fieldError(error);
-  setActions({
-    label: "Continue",
-    cta: true,
-    onClick: async () => {
-      switch (folder.value()) {
-        case "default":
+  setActions(
+    {
+      label: "Continue",
+      cta: true,
+      onClick: async () => {
+        if (folder.value() === "default") {
           await chooseFolder(def);
-          break;
-        case "pick": {
-          const picked = await OnboardingService.PickDirectory(home, "Pick a folder to sync");
-          if (picked) await chooseFolder(picked); // cancelled: stay here
-          break;
+          return;
         }
-        case "create":
-          createFolderStep();
-          break;
-      }
+        const picked = await OnboardingService.PickDirectory(home, "Pick a folder to sync");
+        if (picked) await chooseFolder(picked); // cancelled: stay here
+      },
     },
-  });
-}
-
-function createFolderStep(error?: string) {
-  render({ icon: "ok", title: "Create folder", message: `Create folder in ${displayPath(home, home)}` });
-  setProgress("folder"); // still the sync-folder step, just a different screen
-  bodyEl.innerHTML = "";
-  const input = document.createElement("input");
-  input.className = "text-input";
-  input.placeholder = "folder or folder1/folder2";
-  bodyEl.appendChild(input);
-  if (error) fieldError(error);
-  const submit = async () => {
-    if (!input.value.trim()) {
-      void folderStep(); // empty = back, like brick-cli
-      return;
-    }
-    try {
-      const created = await OnboardingService.CreateFolderInHome(input.value);
-      await chooseFolder(created);
-    } catch (err) {
-      createFolderStep(describeError(err));
-    }
-  };
-  input.onkeydown = (e) => {
-    if (e.key === "Enter") void submit();
-    if (e.key === "Escape") void folderStep();
-  };
-  setActions({ label: "Create", cta: true, onClick: () => void submit() }, { label: "Back", onClick: () => void folderStep() });
-  input.focus();
+    backAction(),
+  );
 }
 
 async function chooseFolder(path: string) {
   try {
     const choice = await OnboardingService.ChooseSyncFolder(path);
     if (choice?.hasFiles) {
+      remember(() => void folderStep());
       conflictStep(choice.display);
       return;
     }
     await OnboardingService.ConfirmSyncFolder("");
+    remember(() => void folderStep());
     await connectStep();
   } catch (err) {
     await folderStep(describeError(err));
@@ -441,13 +446,14 @@ function conflictStep(display: string) {
       onClick: async () => {
         try {
           await OnboardingService.ConfirmSyncFolder(conflict.value());
+          remember(() => conflictStep(display));
           await connectStep();
         } catch (err) {
           fieldError(describeError(err));
         }
       },
     },
-    { label: "Back", onClick: () => void folderStep() },
+    backAction(),
   );
 }
 
@@ -468,7 +474,7 @@ async function connectStep() {
   } else if (info?.showRemote) {
     remoteStep();
   } else {
-    await doneStep();
+    doneStep();
   }
 }
 
@@ -478,43 +484,56 @@ function scopeStep(info: ScopeInfo) {
   bodyEl.innerHTML = "";
   let picking = false;
   const folders = info.folders ?? [];
+  const excluded = info.alreadyExcluded ?? [];
   // The list is phrased as what to sync, so a tick means "sync this" and the
   // backend gets the unticked ones (it takes exclusions, like brick-cli).
   let getSelected: () => string[] = () => folders;
-  const scope = radioGroup("scope", scopeOptions(info.totalHuman), "all", (v) => {
-    if (v === "pick" && !picking) {
-      picking = true;
-      stepLabel("Select folders to sync");
-      const excluded = info.alreadyExcluded ?? [];
-      getSelected = checkboxGroup(
-        folders,
-        folders.filter((f) => !excluded.includes(f)),
-      );
-    }
+  const listFolders = () => {
+    if (picking) return;
+    picking = true;
+    stepLabel("Select folders to sync");
+    getSelected = checkboxGroup(
+      folders,
+      folders.filter((f) => !excluded.includes(f)),
+    );
+  };
+  // An account that already leaves folders out — including one the user has
+  // just walked back into this step to change — opens on the list, showing
+  // what is synced today rather than resetting them to "all".
+  const scope = radioGroup("scope", scopeOptions(info.totalHuman), excluded.length ? "pick" : "all", (v) => {
+    if (v === "pick") listFolders();
   });
-  setActions({
-    label: "Continue",
-    cta: true,
-    onClick: async () => {
-      try {
-        const all = scope.value() === "all";
-        const keep = getSelected();
-        await OnboardingService.SetSyncScope(all, all ? [] : folders.filter((f) => !keep.includes(f)));
-        remoteStep();
-      } catch (err) {
-        fieldError(describeError(err));
-      }
+  if (excluded.length) listFolders();
+  setActions(
+    {
+      label: "Continue",
+      cta: true,
+      onClick: async () => {
+        try {
+          const all = scope.value() === "all";
+          const keep = getSelected();
+          const drop = all ? [] : folders.filter((f) => !keep.includes(f));
+          await OnboardingService.SetSyncScope(all, drop);
+          remember(() => scopeStep({ ...info, alreadyExcluded: drop }));
+          remoteStep();
+        } catch (err) {
+          fieldError(describeError(err));
+        }
+      },
     },
-  });
+    backAction(),
+  );
 }
 
 // --- remote access (promptForRemoteControl) ---
 
-function remoteStep(custom?: string) {
+// answer is what the user said last time through, so Back returns to their
+// choice rather than to the default.
+function remoteStep(custom?: string, answer: string = "yes") {
   render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
   setProgress("remote");
   bodyEl.innerHTML = "";
-  const yesNo = radioGroup("remote", REMOTE_OPTIONS, "yes", (v) => enableRoots(v === "yes"));
+  const yesNo = radioGroup("remote", REMOTE_OPTIONS, answer, (v) => enableRoots(v === "yes"));
   const rootLabel = stepLabel("Which folder should be accessible remotely?");
   const roots = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
   // Saying no leaves the folder choice on screen, greyed out and inert: it
@@ -524,40 +543,46 @@ function remoteStep(custom?: string) {
     rootLabel.classList.toggle("disabled", !on);
     roots.setEnabled(on);
   };
-  setActions({
-    label: "Continue",
-    cta: true,
-    onClick: async () => {
-      try {
-        if (yesNo.value() === "no") {
-          await OnboardingService.SetRemoteAccess(false, "");
-        } else if (roots.value() === "custom") {
-          const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
-          if (!picked) return; // cancelled: stay
-          if (!custom) {
-            remoteStep(picked); // show the choice before saving
-            return;
+  enableRoots(answer === "yes"); // Back into a declined step lands on "no"
+  setActions(
+    {
+      label: "Continue",
+      cta: true,
+      onClick: async () => {
+        try {
+          if (yesNo.value() === "no") {
+            await OnboardingService.SetRemoteAccess(false, "");
+          } else if (roots.value() === "custom") {
+            const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
+            if (!picked) return; // cancelled: stay
+            if (!custom) {
+              remoteStep(picked); // show the choice before saving
+              return;
+            }
+            await OnboardingService.SetRemoteAccess(true, picked);
+          } else {
+            await OnboardingService.SetRemoteAccess(true, home);
           }
-          await OnboardingService.SetRemoteAccess(true, picked);
-        } else {
-          await OnboardingService.SetRemoteAccess(true, home);
+          remember(() => remoteStep(custom, yesNo.value()));
+          doneStep();
+        } catch (err) {
+          fieldError(describeError(err));
         }
-        await doneStep();
-      } catch (err) {
-        fieldError(describeError(err));
-      }
+      },
     },
-  });
+    backAction(),
+  );
 }
 
 // --- done ---
 
-async function doneStep() {
-  await OnboardingService.FinishOnboarding();
+// doneStep only shows the summary; the wizard is closed off in startSync, so
+// Back from here still leads to a step that can be answered again.
+function doneStep() {
   bodyEl.innerHTML = "";
   render({ icon: "ok", title: "Done and ready to go!", message: "Brick will now keep your sync folder up to date." });
   setProgress("done");
-  setActions({ label: "Start syncing", cta: true, onClick: () => void startSync(true) });
+  setActions({ label: "Start syncing", cta: true, onClick: () => void startSync(true) }, backAction());
 }
 
 // --- entry ---
