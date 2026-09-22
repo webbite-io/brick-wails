@@ -33,6 +33,7 @@ const messageEl = document.getElementById("stage-message")! as HTMLParagraphElem
 const detailEl = document.getElementById("stage-detail")! as HTMLParagraphElement;
 const progressEl = document.getElementById("wizard-progress")! as HTMLElement;
 const bodyEl = document.getElementById("step-body")! as HTMLElement;
+const actionsEl = document.getElementById("startup-actions")! as HTMLElement;
 const primaryBtn = document.getElementById("primary-btn")! as HTMLButtonElement;
 const secondaryBtn = document.getElementById("secondary-btn")! as HTMLButtonElement;
 
@@ -44,6 +45,8 @@ interface Action {
   label: string;
   onClick: () => void;
   cta?: boolean;
+  // A chevron marks the step buttons: "Back" points back, "Next" points on.
+  icon?: "prev" | "next";
 }
 
 function render(s: Screen) {
@@ -86,13 +89,32 @@ function busy(title: string, message = "") {
   bodyEl.innerHTML = "";
 }
 
+// chevron draws the arrow on the step buttons. Drawn rather than typed: "<"
+// and ">" sit on the text baseline and read as punctuation.
+function chevron(dir: "prev" | "next"): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "chevron");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const arrow = document.createElementNS(ns, "polyline");
+  arrow.setAttribute("points", dir === "prev" ? "15 18 9 12 15 6" : "9 18 15 12 9 6");
+  svg.appendChild(arrow);
+  return svg;
+}
+
 function applyButton(btn: HTMLButtonElement, a: Action | undefined, variant: "primary" | "quiet") {
   if (!a) {
     btn.onclick = null;
+    btn.replaceChildren();
     btn.classList.remove("visible", "btn-cta", "btn-primary", "btn-quiet");
     return;
   }
-  btn.textContent = a.label;
+  const label = document.createElement("span");
+  label.textContent = a.label;
+  if (a.icon === "prev") btn.replaceChildren(chevron("prev"), label);
+  else if (a.icon === "next") btn.replaceChildren(label, chevron("next"));
+  else btn.replaceChildren(label);
   btn.onclick = a.onClick;
   btn.classList.toggle("btn-primary", variant === "primary");
   btn.classList.toggle("btn-quiet", variant === "quiet");
@@ -103,6 +125,9 @@ function applyButton(btn: HTMLButtonElement, a: Action | undefined, variant: "pr
 function setActions(primary?: Action, secondary?: Action) {
   applyButton(primaryBtn, primary, "primary");
   applyButton(secondaryBtn, secondary, "quiet");
+  // A step pair sits side by side, Back on the left. Everything else — a lone
+  // "Log in", or "Try again" over "Not now" — keeps stacking.
+  actionsEl.classList.toggle("nav", !!primary && secondary?.icon === "prev");
 }
 
 // --- step history ---
@@ -131,6 +156,7 @@ function backAction(): Action | undefined {
   return {
     label: "Back",
     cta: true,
+    icon: "prev",
     onClick: () => history.pop()?.(),
   };
 }
@@ -371,8 +397,9 @@ async function accountStep() {
   stepLabel("Select an account");
   const account = radioGroup("account", accounts.map((a) => ({ value: a.id, label: a.name })));
   setActions({
-    label: "Continue",
+    label: "Next",
     cta: true,
+    icon: "next",
     onClick: async () => {
       try {
         await OnboardingService.SelectAccount(account.value());
@@ -397,8 +424,9 @@ async function folderStep(error?: string) {
   if (error) fieldError(error);
   setActions(
     {
-      label: "Continue",
+      label: "Next",
       cta: true,
+      icon: "next",
       onClick: async () => {
         if (folder.value() === "default") {
           await chooseFolder(def);
@@ -441,8 +469,9 @@ function conflictStep(display: string) {
   const conflict = radioGroup("conflict", CONFLICT_OPTIONS);
   setActions(
     {
-      label: "Continue",
+      label: "Next",
       cta: true,
+      icon: "next",
       onClick: async () => {
         try {
           await OnboardingService.ConfirmSyncFolder(conflict.value());
@@ -506,8 +535,9 @@ function scopeStep(info: ScopeInfo) {
   if (excluded.length) listFolders();
   setActions(
     {
-      label: "Continue",
+      label: "Next",
       cta: true,
+      icon: "next",
       onClick: async () => {
         try {
           const all = scope.value() === "all";
@@ -546,8 +576,9 @@ function remoteStep(custom?: string, answer: string = "yes") {
   enableRoots(answer === "yes"); // Back into a declined step lands on "no"
   setActions(
     {
-      label: "Continue",
+      label: "Next",
       cta: true,
+      icon: "next",
       onClick: async () => {
         try {
           if (yesNo.value() === "no") {

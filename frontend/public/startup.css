@@ -216,7 +216,36 @@
 }
 
 .startup-actions .btn.visible {
-    display: block;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+}
+
+/* Step navigation: Back on the left, Next on the right. The primary button
+   comes first in the markup, so order sends it back to the right. */
+.startup-actions.nav {
+    flex-direction: row;
+}
+
+.startup-actions.nav .btn.visible {
+    width: auto;
+    flex: 1;
+}
+
+.startup-actions.nav #primary-btn {
+    order: 1;
+}
+
+.chevron {
+    width: 14px;
+    height: 14px;
+    flex-shrink: 0;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 2.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
 }
 
 .btn-primary {
