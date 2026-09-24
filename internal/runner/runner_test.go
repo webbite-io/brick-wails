@@ -3,11 +3,7 @@
 package runner
 
 import (
-	"context"
-	"encoding/json"
 	"errors"
-	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -16,7 +12,6 @@ import (
 
 	"github.com/webbite-io/brick-wails/internal/auth"
 	"github.com/webbite-io/brick-wails/internal/brickcfg"
-	"github.com/webbite-io/brick-wails/internal/controlapi"
 	"github.com/webbite-io/brick-wails/internal/lock"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
 	"github.com/webbite-io/brick-wails/internal/testutil"
@@ -145,24 +140,17 @@ func TestStartSyncStop(t *testing.T) {
 	if _, err := lock.Acquire(lp); !errors.Is(err, lock.ErrLocked) {
 		t.Errorf("lock not held while syncing: %v", err)
 	}
-	disc, _ := controlapi.RuntimeDir(f.store.Dir())
-	if _, err := os.Stat(filepath.Join(disc, "agent.json")); err != nil {
-		t.Errorf("control API discovery file missing: %v", err)
-	}
 
 	f.r.Stop()
 	if st := f.r.Status(); st.Running || st.State != StateStopped {
 		t.Errorf("after stop %+v", st)
 	}
-	// ...and released afterwards, with the discovery file gone.
+	// ...and released afterwards.
 	lk, err := lock.Acquire(lp)
 	if err != nil {
 		t.Fatalf("lock not released: %v", err)
 	}
 	lk.Release()
-	if _, err := os.Stat(filepath.Join(disc, "agent.json")); !os.IsNotExist(err) {
-		t.Error("discovery file left behind")
-	}
 	if _, err := os.Stat(syncengine.StatePath(f.store.Dir(), "acct-1")); err != nil {
 		t.Errorf("state file not in config dir: %v", err)
 	}
@@ -198,34 +186,6 @@ func TestStorageUnreachableIsStopped(t *testing.T) {
 	if err := f.r.Start(StartParams{}); err == nil {
 		t.Fatal("expected error")
 	}
-	if st := f.r.Status(); st.State != StateStopped || st.LastError == "" {
-		t.Errorf("status %+v", st)
-	}
-}
-
-// `brick switch-accounts` / `brick restart` stop "the running instance" via
-// POST /v1/quit — which must stop this app's engine (not the app).
-func TestCLIQuitViaControlAPIStopsEngine(t *testing.T) {
-	f := newFixture(t, true)
-	if err := f.r.Start(StartParams{}); err != nil {
-		t.Fatal(err)
-	}
-	dir, _ := controlapi.RuntimeDir(f.store.Dir())
-	data, err := os.ReadFile(filepath.Join(dir, "agent.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var d controlapi.Discovery
-	json.Unmarshal(data, &d)
-	c := &http.Client{Transport: &http.Transport{DialContext: func(context.Context, string, string) (net.Conn, error) { return net.Dial("unix", d.Address) }}}
-	req, _ := http.NewRequest("POST", "http://unix/v1/quit", nil)
-	req.Header.Set(controlapi.SecretHeader, d.Token)
-	resp, err := c.Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	resp.Body.Close()
-	waitFor(t, "stopped", func() bool { return !f.r.Running() })
 	if st := f.r.Status(); st.State != StateStopped || st.LastError == "" {
 		t.Errorf("status %+v", st)
 	}

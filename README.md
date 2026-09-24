@@ -58,11 +58,10 @@ expires while syncing, the setup window opens at the login step.
   (`OAUTH_CLIENT_ID`), since a refresh token can only be refreshed by the
   client it was issued to. Token rotation re-reads the config first, so a
   refresh done by the CLI is adopted rather than replayed.
-- **CLI commands still work**: while syncing, the app serves brick's local
-  control API (the server side only — the app never calls it), so `brick sync
-  -s` pauses the app's engine before deleting newly excluded folders, and
-  `brick switch-accounts` / `brick restart` stop it. The app then shows
-  "Not syncing" with a *Start Syncing* button.
+- **CLI commands that touch a running instance**: the CLI no longer has a
+  control API, so `brick sync -s`, `brick switch-accounts` and `brick restart`
+  can't reach into the app. They detect the held lock and ask the user to quit
+  the app first.
 
 ## Configuration
 
@@ -97,8 +96,7 @@ Logs go to `<config dir>/brick-ui.log` (plus stderr with `DEBUG=true`).
   - `syncengine` — the sync engine
   - `lock` — the per-user instance lock (shared with brick-cli)
   - `agent` — the remote-file agent
-  - `controlapi` — brick's local control API (server side)
-  - `runner` — lifecycle: lock + engine + agent + control API, app-level state
+  - `runner` — lifecycle: lock + engine + agent, app-level state
   - `onboarding` — startup routing and wizard steps
   - `testutil` — fake accounts/OIDC and Storage APIs, test helpers, and
     `cmd/brick-fakes` to run the fakes as real servers
@@ -138,15 +136,11 @@ make test-all
   401s, and adopting a CLI-rotated token), the Storage API client, a reconcile
   matrix covering every create/update/delete/move/conflict/exclude case, pause
   semantics, cursor and state-file compatibility, a cross-process lock test,
-  the agent's path sandboxing and tunnel, the control API, the runner lifecycle
-  and every onboarding step.
+  the agent's path sandboxing and tunnel, the runner lifecycle and every
+  onboarding step.
 - **Integration** (`integration/`): onboarding → live two-way sync on a real
   filesystem, session expiry → re-login → resume, incremental restarts, and
-  first-sync conflict handling. When a brick-cli checkout is available
-  (`BRICK_CLI_DIR`, default `../brick-cli`) it also builds the real `brick` and
-  checks `--self-test` accepts an app-onboarded config, the instance lock is
-  shared both ways, `brick switch-accounts` stops the app's engine, and the app
-  reuses sync state written by the CLI.
+  first-sync conflict handling.
 
 ## Packaging
 

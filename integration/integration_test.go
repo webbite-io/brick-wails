@@ -1,10 +1,8 @@
 //go:build integration
 
 // Package integration exercises the app's sync end to end: the real
-// onboarding flow and runner (lock, engine with a real fsnotify watcher,
-// control API) against in-process fake auth and Storage APIs, and — when a
-// brick-cli checkout is available — against the real `brick` binary to prove
-// the two apps share config, state and the instance lock correctly.
+// onboarding flow and runner (lock, engine with a real fsnotify watcher)
+// against in-process fake auth and Storage APIs.
 //
 // Run with: make test-integration   (or go test -tags integration ./integration/...)
 package integration

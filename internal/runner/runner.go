@@ -1,7 +1,7 @@
 // Package runner owns the lifecycle of syncing inside the app: the instance
-// lock (shared with brick-cli), the sync engine, the remote-file agent and
-// the local control API — and the app-level state shown in the UI when no
-// engine is running (not-configured, auth-required, locked, stopped).
+// lock (shared with brick-cli), the sync engine and the remote-file agent —
+// and the app-level state shown in the UI when no engine is running
+// (not-configured, auth-required, locked, stopped).
 package runner
 
 import (
@@ -16,7 +16,6 @@ import (
 	"github.com/webbite-io/brick-wails/internal/agent"
 	"github.com/webbite-io/brick-wails/internal/auth"
 	"github.com/webbite-io/brick-wails/internal/brickcfg"
-	"github.com/webbite-io/brick-wails/internal/controlapi"
 	"github.com/webbite-io/brick-wails/internal/lock"
 	"github.com/webbite-io/brick-wails/internal/storage"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
@@ -60,9 +59,8 @@ type Config struct {
 	Events  Events
 	// EngineOptions override loop timings (tests).
 	EngineOptions syncengine.Options
-	// DisableAgent / DisableControlAPI turn those side services off (tests).
-	DisableAgent      bool
-	DisableControlAPI bool
+	// DisableAgent turns the remote-file agent off (tests).
+	DisableAgent bool
 }
 
 // StartParams carry the onboarding decisions into the first run.
@@ -248,20 +246,6 @@ func (r *Runner) Start(p StartParams) error {
 	ok = true
 
 	roots := agent.ResolveRoots(cfg.AgentRoots)
-	var ctrl *controlapi.Server
-	if !r.cfg.DisableControlAPI {
-		ctrl, err = controlapi.Start(controlapi.Options{ConfigDir: r.cfg.Store.Dir(), Version: r.cfg.Version, RemoteControl: cfg.RemoteControl, AgentRoots: roots}, controlapi.Hooks{
-			Engine:  eng,
-			Account: r.Account,
-			Quit: func() {
-				r.logf("sync stopped by the Brick CLI")
-				r.stop(StateStopped, "Syncing was stopped by the Brick CLI.")
-			},
-		})
-		if err != nil {
-			r.logf("could not start control API: %v", err)
-		}
-	}
 	var agentWG sync.WaitGroup
 	if !r.cfg.DisableAgent {
 		agentWG.Add(1)
@@ -278,9 +262,6 @@ func (r *Runner) Start(p StartParams) error {
 		runErr := eng.Run(ctx)
 		cancel()
 		agentWG.Wait()
-		if ctrl != nil {
-			ctrl.Close()
-		}
 		lk.Release()
 
 		r.mu.Lock()

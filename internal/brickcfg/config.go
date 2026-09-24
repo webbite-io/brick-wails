@@ -111,9 +111,7 @@ func Dir() (string, error) {
 
 // Isolated reports whether BRICK_CONFIG_DIR points somewhere other than the
 // directory brick-cli uses — i.e. this app is deliberately not sharing state
-// with the CLI (dev/testing). Per-user runtime files (the control API socket
-// and discovery file) then move under the config dir too, so an isolated app
-// never touches a real brick-cli's runtime files.
+// with the CLI (dev/testing).
 func Isolated() bool {
 	v := strings.TrimSpace(os.Getenv(ConfigDirEnv))
 	if v == "" {

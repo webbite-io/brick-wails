@@ -53,8 +53,7 @@ func (e *Engine) AddWatchesRecursive(w *fsnotify.Watcher) {
 // backstop — until ctx is cancelled (returns nil) or the session expires
 // (returns an error wrapping auth.ErrSessionExpired). State is saved on exit.
 //
-// Ported from brick-cli's runSyncLoop, minus TUI, signals, detach and the
-// control API (served separately by internal/controlapi).
+// Ported from brick-cli's runSyncLoop, minus TUI, signals and detach.
 func (e *Engine) Run(parent context.Context) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()

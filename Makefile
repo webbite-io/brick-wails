@@ -159,9 +159,7 @@ check-release-env:
 # --- Tests ---
 # Go unit tests live under internal/ and never import Wails, so they need no
 # GTK/WebKit headers. Integration tests (real fsnotify, fake auth + storage
-# servers, optionally a real brick-cli build) are behind the "integration"
-# build tag; set BRICK_CLI_DIR to a brick-cli checkout (default ../brick-cli)
-# to include the cross-CLI compatibility tests.
+# servers) are behind the "integration" build tag.
 test: test-go test-frontend
 
 test-go:
@@ -378,7 +376,7 @@ help:
 	@echo "  build-dev  - Build for current platform, unstripped (dev)"
 	@echo "  build-prod - Build for current platform, stripped (production; needs .env.prod)"
 	@echo "  test       - Go unit tests (-race) + frontend typecheck and unit tests"
-	@echo "  test-integration - End-to-end sync/onboarding tests (+ brick-cli compat if available)"
+	@echo "  test-integration - End-to-end sync/onboarding tests"
 	@echo "  test-all   - test + test-integration"
 	@echo "  run        - Run the last build"
 	@echo "  release    - Build the Linux release tarball (AppImage) into dist/"

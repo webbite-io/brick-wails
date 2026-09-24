@@ -1,7 +1,7 @@
 # brick-cli parity
 
-The sync engine, auth, storage client, lock, agent and control API server in
-this directory are **ports** of brick-cli code, not shared code (the repos
+The sync engine, auth, storage client, lock and agent in this
+directory are **ports** of brick-cli code, not shared code (the repos
 deliberately don't share a Go module). When brick-cli changes any of the
 functions below, mirror the change here and bump the "synced at" commit.
 
@@ -22,9 +22,12 @@ functions below, mirror the change here and bump the "synced at" commit.
 | `syncengine` status/activity/pause | `sync.go`: `setState` … `statusSnapshot`, `setPaused`, `checkInterrupted` | logging via `Sink` |
 | `lock` | `lock.go`, `lock_unix.go`, `lock_windows.go` | same file path → mutual exclusion with the CLI |
 | `agent` | `agent.go` | local API + tunnel verbatim (`localapi.go`) |
-| `controlapi` | `controlapi.go` (server half) | discovery `background` always false |
-| `onboarding.Flow` | `sync.go`: `prepareSync`, `ensureStorageSyncFolder`, `promptForSyncFolder`, `promptCreateFolder`, `promptConflictMode`, `runSyncScopeOnboarding`, `promptForRemoteControl`; `auth.go`: `ensureAuthenticated`, `selectAccount`; `selftest.go` (routing order) | wizard copy mirrors the CLI prompts |
+| `onboarding.Flow` | `sync.go`: `prepareSync`, `ensureStorageSyncFolder`, `promptForSyncFolder`, `promptCreateFolder`, `promptConflictMode`, `runSyncScopeOnboarding`, `promptForRemoteControl`; `auth.go`: `ensureAuthenticated`, `selectAccount` | wizard copy mirrors the CLI prompts |
 
-Not ported (CLI-only): `tui.go`, `live.go`, `daemon_*.go`, the control-API
-*client* functions, `transfer.go` upload/download commands, update check,
-uninstall, restart, switch-accounts, selective-sync editing after onboarding.
+Not ported (CLI-only): `tui.go`, `live.go`, `daemon_*.go`, `transfer.go`
+upload/download commands, update check, uninstall, restart, switch-accounts,
+selective-sync editing after onboarding.
+
+Gone from both: the local status/control API (server here, client + server in
+brick-cli) and the CLI's `--self-test`. `onboarding.Flow.Route` still performs
+the readiness checks `--self-test` used to report, in the same order.
