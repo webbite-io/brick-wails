@@ -21,7 +21,11 @@ build/android/gen/
 .env.dev
 .env.prod
 
-brick-ui
-brick-wails
+# Stray binaries from a bare `go build`/`wails3 build` in the repo root. Keep
+# these anchored with a leading slash: unanchored, `brick-wails` also matches
+# frontend/bindings/github.com/webbite-io/brick-wails/, hiding the generated
+# TypeScript bindings that must be committed.
+/brick-ui
+/brick-wails
 
 .env.local
