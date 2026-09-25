@@ -1,234 +1,166 @@
-#!/usr/bin/env bash
+#!/bin/sh
+# Webbite Brick — user-level installer, shipped *inside* the release tarball.
 #
-# install.sh - Install Webbite Brick (GUI) from GitHub releases
+# Installs the AppImage sitting next to this script to ~/.local/bin/brick-ui,
+# drops the icon into the hicolor theme and writes a desktop entry so Brick
+# shows up in the app launcher. Everything lands under $HOME — no root, no
+# package manager.
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/build/linux/appimage/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/build/linux/appimage/install.sh | bash -s -- --version 0.0.1
-#   curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/build/linux/appimage/install.sh | bash -s -- --uninstall
+#   ./install.sh              install (or upgrade in place)
+#   ./install.sh --uninstall  remove everything this script installed
+#   ./install.sh --help
 #
-# Downloads the AppImage release tarball, installs it to ~/.local/bin and
-# registers a desktop entry + icons. Re-running upgrades in place: every
-# artifact lands on a fixed path, so repeat runs overwrite rather than
-# accumulate, and stale entries from older layouts are pruned.
+# `make release` copies this file into brick-ui-<version>-linux-<arch>.tar.gz
+# alongside the AppImage, so someone who downloads the tarball by hand gets a
+# working installer. The repo-root install.sh downloads a release and then
+# delegates here, which makes this script the single source of truth for what
+# gets installed and where — the fetcher deliberately knows none of it.
 #
-# Linux only — the GUI is a GTK4/WebKitGTK app shipped as an AppImage.
-#
+# POSIX sh on purpose: it is the one script that runs on whatever the user's
+# machine happens to have, before any of our own tooling is in place.
 
-set -euo pipefail
+set -eu
 
-# Configuration
 APP_NAME="brick-ui"
 DISPLAY_NAME="Webbite Brick"
-COMMENT="Tray companion for the Webbite Brick CLI"
-GITHUB_REPO="webbite-io/brick-wails"
-DEFAULT_INSTALL_DIR="$HOME/.local/bin"
+COMMENT="Sync your files with Webbite Brick"
 
-# Desktop integration paths (XDG user dirs — no root required)
-DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-ICON_ROOT="$DATA_HOME/icons/hicolor"
-DESKTOP_DIR="$DATA_HOME/applications"
-DESKTOP_FILE="$DESKTOP_DIR/${APP_NAME}.desktop"
-STATE_DIR="$DATA_HOME/$APP_NAME"
-VERSION_FILE="$STATE_DIR/version"
+DEFAULT_BIN_DIR="${HOME}/.local/bin"
+DATA_HOME="${XDG_DATA_HOME:-${HOME}/.local/share}"
+ICON_ROOT="${DATA_HOME}/icons/hicolor"
+DESKTOP_DIR="${DATA_HOME}/applications"
+DESKTOP_FILE="${DESKTOP_DIR}/${APP_NAME}.desktop"
+STATE_DIR="${DATA_HOME}/${APP_NAME}"
 
-# Icon sizes written into the hicolor theme. The shipped PNG is 1024x1024; we
-# only resize when a resizer is present, otherwise the full-size file is
-# installed once at FALLBACK_SIZE and the desktop scales it down.
-ICON_SIZES=(32 48 64 128 256 512)
-FALLBACK_SIZE=256
+# Icon sizes generated when a resizer is available. The source PNG is 1024x1024;
+# without a resizer we install it once at 256x256, which every desktop scales
+# down fine — it's just a little wasteful.
+ICON_SIZES="32 48 64 128 256 512"
+FALLBACK_SIZE="256"
 
-# Parse command line arguments
-VERSION=""
-PREFIX=""
-FORCE=false
-UNINSTALL=false
+# Resolve the directory this script lives in, so it works when invoked from
+# anywhere (./install.sh, sh /path/to/install.sh, etc).
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+SCRIPT_PATH="${SCRIPT_DIR}/$(basename -- "$0")"
 
-while [[ $# -gt 0 ]]; do
-  case $1 in
-  --version)
-    VERSION="$2"
-    shift 2
-    ;;
-  --prefix)
-    PREFIX="$2"
-    shift 2
-    ;;
-  --force)
-    FORCE=true
-    shift
-    ;;
-  --uninstall)
-    UNINSTALL=true
-    shift
-    ;;
-  --help)
-    cat <<EOF
-$DISPLAY_NAME - Installation Script
-
-Usage:
-  install.sh [options]
-
-Options:
-  --version VERSION    Install specific version (e.g., 0.0.1)
-  --prefix PATH        Install to PATH (default: ~/.local/bin)
-  --force              Reinstall even if already at the target version
-  --uninstall          Remove the app, icons and desktop entry
-  --help               Show this help message
-
-Examples:
-  # Install (or upgrade to) the latest version
-  ./install.sh
-
-  # Install a specific version
-  ./install.sh --version 0.0.1
-
-  # One-line install from GitHub
-  curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPO/main/build/linux/appimage/install.sh | bash
-
-  # Remove it again
-  ./install.sh --uninstall
-
-EOF
-    exit 0
-    ;;
-  *)
-    echo "Unknown option: $1"
-    echo "Run with --help for usage information"
-    exit 1
-    ;;
-  esac
-done
-
-# Colors (only if terminal supports it)
+COLOR_RESET=''
+COLOR_BOLD=''
+COLOR_GREEN=''
+COLOR_YELLOW=''
 if [ -t 1 ]; then
-  COLOR_RESET='\033[0m'
-  COLOR_BOLD='\033[1m'
-  COLOR_GREEN='\033[32m'
-  COLOR_BLUE='\033[34m'
-  COLOR_RED='\033[31m'
-  COLOR_YELLOW='\033[33m'
-else
-  COLOR_RESET=''
-  COLOR_BOLD=''
-  COLOR_GREEN=''
-  COLOR_BLUE=''
-  COLOR_RED=''
-  COLOR_YELLOW=''
+	COLOR_RESET='\033[0m'
+	COLOR_BOLD='\033[1m'
+	COLOR_GREEN='\033[32m'
+	COLOR_YELLOW='\033[33m'
 fi
 
-# Utility functions
-info() {
-  echo -e "\n${COLOR_BOLD}${COLOR_BLUE}==>${COLOR_RESET} ${COLOR_BOLD}$*${COLOR_RESET}"
+say() { printf "%b\n" "$1"; }
+# Warnings go to stdout, not stderr, so they stay interleaved in the right
+# place when the caller pipes the output (stderr is unbuffered and would
+# otherwise jump ahead of the block-buffered progress lines). Hard errors
+# still go to stderr, where a caller checking for failure expects them.
+warn() { printf "%b\n" "${COLOR_YELLOW}Warning:${COLOR_RESET} $1"; }
+die() { printf "%b\n" "${COLOR_YELLOW}Error:${COLOR_RESET} $1" >&2; exit 1; }
+
+usage() {
+	cat <<EOF
+${DISPLAY_NAME} - bundled installer
+
+Usage: ./install.sh [options]
+
+Options:
+  --prefix PATH   Install the binary to PATH (default: ~/.local/bin)
+  --uninstall     Remove the binary, icons and desktop entry
+  --help          Show this help message
+
+Icons, the desktop entry and the recorded state always go to XDG user
+directories under \$HOME; --prefix only moves the binary.
+EOF
 }
 
-success() {
-  echo -e "${COLOR_GREEN}✓${COLOR_RESET} $*"
+BIN_DIR=""
+UNINSTALL=false
+
+while [ $# -gt 0 ]; do
+	case "$1" in
+	--prefix)
+		[ $# -ge 2 ] || die "--prefix requires a path"
+		BIN_DIR="$2"
+		shift 2
+		;;
+	--prefix=*)
+		BIN_DIR="${1#--prefix=}"
+		shift
+		;;
+	--uninstall | -u)
+		UNINSTALL=true
+		shift
+		;;
+	--help | -h)
+		usage
+		exit 0
+		;;
+	*)
+		die "unknown option '$1' (try --help)"
+		;;
+	esac
+done
+
+# The install dir is remembered at install time so --uninstall can find the
+# binary again without being handed the same --prefix a second time.
+if [ -z "${BIN_DIR}" ] && [ -f "${STATE_DIR}/bindir" ]; then
+	BIN_DIR=$(cat "${STATE_DIR}/bindir" 2>/dev/null || echo "")
+fi
+[ -n "${BIN_DIR}" ] || BIN_DIR="${DEFAULT_BIN_DIR}"
+TARGET="${BIN_DIR}/${APP_NAME}"
+
+# `make release` writes VERSION into the tarball. It is only used for display
+# and bookkeeping: if it is missing (a bundle built before this existed), the
+# install still succeeds and the fetcher simply won't be able to tell that this
+# version is already installed.
+read_bundled_version() {
+	if [ -f "${SCRIPT_DIR}/VERSION" ]; then
+		head -n1 "${SCRIPT_DIR}/VERSION" 2>/dev/null | tr -d ' \t\r\n'
+	else
+		echo ""
+	fi
 }
 
-error() {
-  echo -e "${COLOR_RED}✗ Error:${COLOR_RESET} $*" >&2
+refresh_caches() {
+	if command -v update-desktop-database >/dev/null 2>&1; then
+		update-desktop-database "${DESKTOP_DIR}" >/dev/null 2>&1 || true
+	fi
+	if command -v gtk-update-icon-cache >/dev/null 2>&1; then
+		gtk-update-icon-cache -f -t "${ICON_ROOT}" >/dev/null 2>&1 || true
+	fi
 }
 
-warning() {
-  echo -e "${COLOR_YELLOW}⚠${COLOR_RESET} $*"
-}
+install_icons() {
+	source_icon="$1"
+	# Prefer a real resize so each theme size is pixel-exact; fall back to
+	# installing the full-size PNG under one size directory.
+	resizer=''
+	if command -v magick >/dev/null 2>&1; then
+		resizer='magick'
+	elif command -v convert >/dev/null 2>&1; then
+		resizer='convert'
+	fi
 
-die() {
-  error "$*"
-  exit 1
-}
-
-command_exists() {
-  command -v "$1" >/dev/null 2>&1
-}
-
-# Cleanup function
-TEMP_DIR=""
-cleanup() {
-  if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
-    rm -rf "$TEMP_DIR"
-  fi
-}
-trap cleanup EXIT INT TERM
-
-check_prerequisites() {
-  local missing=()
-
-  command_exists curl || missing+=("curl")
-  command_exists tar || missing+=("tar")
-
-  if ! command_exists shasum && ! command_exists sha256sum; then
-    missing+=("shasum or sha256sum")
-  fi
-
-  if [ ${#missing[@]} -gt 0 ]; then
-    error "Missing required tools:"
-    for tool in "${missing[@]}"; do
-      echo "  - $tool"
-    done
-    exit 1
-  fi
-}
-
-# The GUI is only released for Linux; a macOS/Windows user landing here should
-# get a clear message rather than a 404 from the download step.
-detect_os() {
-  local os
-  os="$(uname -s)"
-
-  case "$os" in
-  Linux*)
-    echo "linux"
-    ;;
-  *)
-    die "Unsupported operating system: $os ($DISPLAY_NAME is currently Linux-only)"
-    ;;
-  esac
-}
-
-detect_arch() {
-  local arch
-  arch="$(uname -m)"
-
-  case "$arch" in
-  x86_64)
-    echo "amd64"
-    ;;
-  arm64 | aarch64)
-    echo "arm64"
-    ;;
-  *)
-    die "Unsupported architecture: $arch (supported: x86_64, arm64)"
-    ;;
-  esac
-}
-
-get_latest_version() {
-  info "Fetching latest version from GitHub..." >&2
-
-  local version
-  version=$(curl -fsSL -H "User-Agent: brick-ui-installer" "https://api.github.com/repos/$GITHUB_REPO/releases/latest" |
-    grep '"tag_name"' |
-    sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/' || echo "")
-
-  if [ -z "$version" ]; then
-    die "Failed to fetch latest version from GitHub API"
-  fi
-
-  echo "$version"
-}
-
-determine_install_dir() {
-  local install_dir
-
-  if [ -n "$PREFIX" ]; then
-    install_dir="$PREFIX"
-  else
-    install_dir="$DEFAULT_INSTALL_DIR"
-  fi
-
-  echo "$install_dir"
+	if [ -n "${resizer}" ]; then
+		for size in ${ICON_SIZES}; do
+			dir="${ICON_ROOT}/${size}x${size}/apps"
+			mkdir -p "${dir}"
+			"${resizer}" "${source_icon}" -resize "${size}x${size}" \
+				"${dir}/${APP_NAME}.png" 2>/dev/null ||
+				cp "${source_icon}" "${dir}/${APP_NAME}.png"
+		done
+		say "  icons installed (${ICON_SIZES}) under ${ICON_ROOT}"
+	else
+		dir="${ICON_ROOT}/${FALLBACK_SIZE}x${FALLBACK_SIZE}/apps"
+		mkdir -p "${dir}"
+		cp "${source_icon}" "${dir}/${APP_NAME}.png"
+		say "  icon installed at ${dir}/${APP_NAME}.png"
+	fi
 }
 
 # Remove desktop entries that point at our binary but live under a different
@@ -236,315 +168,189 @@ determine_install_dir() {
 # their own `appimagekit-*.desktop` on first launch, which would otherwise leave
 # the user with two identical launcher tiles after an upgrade.
 prune_duplicate_desktop_entries() {
-  local keep="$1"
-  local binary_path="$2"
+	keep="$1"
 
-  [ -d "$DESKTOP_DIR" ] || return 0
+	[ -d "${DESKTOP_DIR}" ] || return 0
 
-  local entry
-  for entry in "$DESKTOP_DIR"/*.desktop; do
-    [ -e "$entry" ] || continue
-    [ "$entry" = "$keep" ] && continue
+	for entry in "${DESKTOP_DIR}"/*.desktop; do
+		[ -e "${entry}" ] || continue
+		[ "${entry}" = "${keep}" ] && continue
 
-    # Match either the exact installed path or any AppImage named after us,
-    # so entries left by a previous --prefix still get cleaned up.
-    if grep -qE "^Exec=.*(${binary_path//\//\\/}|${APP_NAME}(\.AppImage)?)( |$)" "$entry" 2>/dev/null; then
-      rm -f "$entry"
-      success "Removed duplicate desktop entry $(basename "$entry")"
-    fi
-  done
-}
-
-refresh_desktop_caches() {
-  if command_exists update-desktop-database; then
-    update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
-  fi
-  if command_exists gtk-update-icon-cache; then
-    gtk-update-icon-cache -f -t "$ICON_ROOT" >/dev/null 2>&1 || true
-  fi
-}
-
-install_icons() {
-  local source_icon="$1"
-
-  local resizer=""
-  if command_exists magick; then
-    resizer="magick"
-  elif command_exists convert; then
-    resizer="convert"
-  fi
-
-  local size dir
-  if [ -n "$resizer" ]; then
-    for size in "${ICON_SIZES[@]}"; do
-      dir="$ICON_ROOT/${size}x${size}/apps"
-      mkdir -p "$dir"
-      "$resizer" "$source_icon" -resize "${size}x${size}" "$dir/${APP_NAME}.png" 2>/dev/null ||
-        cp "$source_icon" "$dir/${APP_NAME}.png"
-    done
-    success "Installed icons (${ICON_SIZES[*]}) to $ICON_ROOT"
-  else
-    dir="$ICON_ROOT/${FALLBACK_SIZE}x${FALLBACK_SIZE}/apps"
-    mkdir -p "$dir"
-    cp "$source_icon" "$dir/${APP_NAME}.png"
-    success "Installed icon to $dir/${APP_NAME}.png"
-  fi
+		# Match either the exact installed path or any AppImage named after us,
+		# so entries left by a previous --prefix still get cleaned up.
+		if grep -qE "^Exec=.*${APP_NAME}(\.AppImage)?( |$)" "${entry}" 2>/dev/null; then
+			rm -f "${entry}"
+			say "  removed duplicate desktop entry $(basename "${entry}")"
+		fi
+	done
 }
 
 write_desktop_entry() {
-  local binary_path="$1"
-  local version="$2"
+	version="$1"
 
-  mkdir -p "$DESKTOP_DIR"
-
-  # Exec uses the absolute installed path rather than a bare command name:
-  # desktop sessions don't source your shell rc, so ~/.local/bin is frequently
-  # absent from the launcher's PATH even when it's in your terminal's.
-  # StartupWMClass matches the app id Wails sets, so the running window groups
-  # under this entry instead of appearing as a second, unnamed icon.
-  cat >"$DESKTOP_FILE" <<EOF
+	mkdir -p "${DESKTOP_DIR}"
+	# Exec is the absolute installed path rather than a bare command name, so
+	# launchers work even when ~/.local/bin isn't on the session PATH (common
+	# for GUI sessions, which don't source your shell rc).
+	# StartupWMClass matches the app id Wails sets, so the window groups under
+	# this entry in docks and the alt-tab switcher instead of showing up as an
+	# unnamed second icon.
+	cat >"${DESKTOP_FILE}" <<EOF
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=$DISPLAY_NAME
-Comment=$COMMENT
-Exec=$binary_path
-Icon=$APP_NAME
-Categories=Network;FileTransfer;
-Keywords=brick;sync;backup;webbite;
+Name=${DISPLAY_NAME}
+Comment=${COMMENT}
+Exec=${TARGET}
+Icon=${APP_NAME}
 Terminal=false
+Categories=Utility;Network;FileTransfer;
+Keywords=sync;files;cloud;storage;brick;webbite;
 StartupNotify=true
-StartupWMClass=$APP_NAME
-X-AppImage-Version=$version
+StartupWMClass=${APP_NAME}
+X-AppImage-Version=${version}
 EOF
-  chmod 644 "$DESKTOP_FILE"
-  success "Registered desktop entry at $DESKTOP_FILE"
+	chmod 644 "${DESKTOP_FILE}"
+	say "  desktop entry written to ${DESKTOP_FILE}"
 }
 
-download_and_verify() {
-  local url="$1"
-  local archive_name="$2"
-  local checksum_url="$3"
+# Record what we installed, and keep a copy of this installer next to it. The
+# repo-root fetcher reads `version` to skip redundant downloads and execs the
+# stashed copy for --uninstall, so it never has to carry its own duplicate of
+# the paths above.
+record_state() {
+	version="$1"
 
-  if ! curl -fsSL --progress-bar "$url" -o "$archive_name"; then
-    die "Failed to download $url
-
-If this version exists, check https://github.com/$GITHUB_REPO/releases"
-  fi
-  success "Downloaded $archive_name"
-
-  if ! curl -fsSL "$checksum_url" -o SHA256SUMS 2>/dev/null; then
-    warning "No SHA256SUMS published for this release — skipping checksum verification"
-    return 0
-  fi
-
-  local expected_checksum
-  expected_checksum=$(grep "$archive_name" SHA256SUMS | awk '{print $1}')
-
-  if [ -z "$expected_checksum" ]; then
-    warning "$archive_name not listed in SHA256SUMS — skipping checksum verification"
-    return 0
-  fi
-
-  local actual_checksum
-  if command_exists sha256sum; then
-    actual_checksum=$(sha256sum "$archive_name" | awk '{print $1}')
-  else
-    actual_checksum=$(shasum -a 256 "$archive_name" | awk '{print $1}')
-  fi
-
-  if [ "$expected_checksum" != "$actual_checksum" ]; then
-    die "Checksum verification failed!
-Expected: $expected_checksum
-Actual:   $actual_checksum"
-  fi
-  success "Checksum verified"
+	mkdir -p "${STATE_DIR}"
+	printf '%s\n' "${BIN_DIR}" >"${STATE_DIR}/bindir"
+	if [ -n "${version}" ]; then
+		printf '%s\n' "${version}" >"${STATE_DIR}/version"
+	else
+		rm -f "${STATE_DIR}/version"
+	fi
+	if [ "${SCRIPT_PATH}" != "${STATE_DIR}/install.sh" ]; then
+		cp "${SCRIPT_PATH}" "${STATE_DIR}/install.sh" 2>/dev/null || return 0
+		chmod +x "${STATE_DIR}/install.sh" 2>/dev/null || true
+	fi
 }
 
-extract_archive() {
-  local archive_name="$1"
-
-  tar -xzf "$archive_name"
-  if [ ! -f "$APP_NAME/${APP_NAME}.AppImage" ]; then
-    die "AppImage not found in archive"
-  fi
-  if [ ! -f "$APP_NAME/${APP_NAME}.png" ]; then
-    die "Icon not found in archive"
-  fi
-}
-
-install_appimage() {
-  local install_dir="$1"
-  local target="$install_dir/$APP_NAME"
-
-  mkdir -p "$install_dir" || die "Could not create $install_dir"
-  [ -w "$install_dir" ] || die "$install_dir is not writable"
-
-  # Overwriting a running AppImage in place would pull the mounted image out
-  # from under the running process, so unlink first — the kernel keeps the old
-  # inode alive until that process exits.
-  rm -f "$target"
-  cp "$APP_NAME/${APP_NAME}.AppImage" "$target"
-  chmod +x "$target"
-  success "Installed $target"
-}
-
-record_version() {
-  mkdir -p "$STATE_DIR"
-  echo "$1" >"$VERSION_FILE"
-}
-
-installed_version() {
-  [ -f "$VERSION_FILE" ] && cat "$VERSION_FILE" 2>/dev/null || echo ""
-}
-
-# AppImages mount themselves with FUSE 2. Distros increasingly ship only FUSE 3,
-# where the AppImage aborts with a dlopen error for libfuse.so.2. Surface that
-# up front instead of letting it fail on first launch.
 check_fuse() {
-  command_exists ldconfig || return 0
-  ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2' && return 0
-
-  warning "libfuse.so.2 was not found — AppImages need it in order to run."
-  echo "  Install it with one of:"
-  echo "    Debian/Ubuntu:  sudo apt install libfuse2"
-  echo "    Fedora:         sudo dnf install fuse-libs"
-  echo "    Arch:           sudo pacman -S fuse2"
-  echo "  Or run without FUSE: $APP_NAME --appimage-extract-and-run"
+	# AppImages mount themselves with FUSE 2. Distros increasingly ship only
+	# FUSE 3, in which case the AppImage exits with a dlopen error for
+	# libfuse.so.2. Detect it up front and point at the two ways out, rather
+	# than letting the user hit a cryptic failure on first launch.
+	if command -v ldconfig >/dev/null 2>&1; then
+		if ldconfig -p 2>/dev/null | grep -q 'libfuse\.so\.2'; then
+			return 0
+		fi
+	else
+		# No ldconfig to ask — assume it's fine rather than warning wrongly.
+		return 0
+	fi
+	warn "libfuse.so.2 was not found, which AppImages need in order to run."
+	say "  Install it with one of:"
+	say "    Debian/Ubuntu:  sudo apt install libfuse2"
+	say "    Fedora:         sudo dnf install fuse-libs"
+	say "    Arch:           sudo pacman -S fuse2"
+	say "  Or run without FUSE: ${APP_NAME} --appimage-extract-and-run"
+	say ""
 }
 
 check_path() {
-  local install_dir="$1"
-
-  if echo ":${PATH}:" | grep -q ":${install_dir}:"; then
-    return 0
-  fi
-
-  warning "$install_dir is not in your PATH, so the '$APP_NAME' command won't resolve."
-  echo "  Add it for bash/zsh:  echo 'export PATH=\"$install_dir:\$PATH\"' >> ~/.profile"
-  echo "  Add it for fish:      fish_add_path $install_dir"
-  echo "  (The applications-menu entry works regardless — it uses an absolute path.)"
+	case ":${PATH}:" in
+	*":${BIN_DIR}:"*) return 0 ;;
+	esac
+	say ""
+	warn "${BIN_DIR} is not in your PATH, so the '${APP_NAME}' command won't resolve."
+	say "  Add it for bash/zsh:  echo 'export PATH=\"${BIN_DIR}:\$PATH\"' >> ~/.profile"
+	say "  Add it for fish:      fish_add_path ${BIN_DIR}"
+	say "  (The applications-menu entry works regardless — it uses an absolute path.)"
 }
 
 uninstall() {
-  info "Removing $DISPLAY_NAME..."
-
-  local install_dir
-  install_dir=$(determine_install_dir)
-  local target="$install_dir/$APP_NAME"
-  local removed=0
-
-  if [ -e "$target" ]; then
-    rm -f "$target"
-    success "Removed $target"
-    removed=1
-  fi
-
-  # Remove our own entry first, so the sweep below only ever reports entries
-  # that really are strays from another installer or an older layout.
-  if [ -e "$DESKTOP_FILE" ]; then
-    rm -f "$DESKTOP_FILE"
-    success "Removed $DESKTOP_FILE"
-    removed=1
-  fi
-
-  prune_duplicate_desktop_entries "" "$target"
-
-  local size icon
-  for size in "${ICON_SIZES[@]}"; do
-    icon="$ICON_ROOT/${size}x${size}/apps/${APP_NAME}.png"
-    if [ -e "$icon" ]; then
-      rm -f "$icon"
-      removed=1
-    fi
-  done
-  if [ "$removed" -eq 1 ]; then
-    success "Removed icons from $ICON_ROOT"
-  fi
-
-  rm -rf "$STATE_DIR"
-  refresh_desktop_caches
-
-  echo ""
-  if [ "$removed" -eq 0 ]; then
-    warning "Nothing to remove — $DISPLAY_NAME doesn't appear to be installed."
-  else
-    success "$DISPLAY_NAME removed"
-    echo ""
-    echo "Your settings and credentials in ~/.config/brick were left untouched."
-    echo "That directory is shared with the brick CLI, so removing it would sign"
-    echo "you out of both — delete it by hand only if you want a clean slate."
-  fi
+	say "${COLOR_BOLD}Removing ${DISPLAY_NAME}...${COLOR_RESET}"
+	removed=0
+	if [ -e "${TARGET}" ]; then
+		rm -f "${TARGET}"
+		say "  removed ${TARGET}"
+		removed=1
+	fi
+	# Remove our own entry first, so the sweep below only ever reports entries
+	# that really are strays from another installer or an older layout.
+	if [ -e "${DESKTOP_FILE}" ]; then
+		rm -f "${DESKTOP_FILE}"
+		say "  removed ${DESKTOP_FILE}"
+		removed=1
+	fi
+	prune_duplicate_desktop_entries ""
+	for size in ${ICON_SIZES}; do
+		icon="${ICON_ROOT}/${size}x${size}/apps/${APP_NAME}.png"
+		if [ -e "${icon}" ]; then
+			rm -f "${icon}"
+			say "  removed ${icon}"
+			removed=1
+		fi
+	done
+	# Safe even when running as the stashed copy inside STATE_DIR: the shell
+	# holds an open fd on this file, and unlinking leaves that inode readable
+	# until the process exits.
+	rm -rf "${STATE_DIR}"
+	refresh_caches
+	if [ "${removed}" -eq 0 ]; then
+		say "Nothing to remove — ${DISPLAY_NAME} doesn't appear to be installed."
+	else
+		say "${COLOR_GREEN}✓ ${DISPLAY_NAME} removed${COLOR_RESET}"
+		say ""
+		say "Your settings and credentials in ~/.config/brick were left untouched."
+		say "That directory is shared with the brick CLI, so removing it would sign"
+		say "you out of both — delete it by hand only if you want a clean slate."
+	fi
 }
 
-main() {
-  if [ "$UNINSTALL" = true ]; then
-    uninstall
-    exit 0
-  fi
+install_app() {
+	appimage="${SCRIPT_DIR}/${APP_NAME}.AppImage"
+	icon="${SCRIPT_DIR}/${APP_NAME}.png"
 
-  info "$DISPLAY_NAME - Installation Script"
-  echo ""
+	[ -f "${appimage}" ] || die "${appimage} not found — run this script from inside the extracted release directory."
+	[ -f "${icon}" ] || die "${icon} not found — run this script from inside the extracted release directory."
 
-  check_prerequisites
+	version=$(read_bundled_version)
 
-  local os arch
-  os=$(detect_os)
-  arch=$(detect_arch)
-  echo "Detected platform: $os/$arch"
+	if [ -n "${version}" ]; then
+		say "${COLOR_BOLD}Installing ${DISPLAY_NAME} ${version}...${COLOR_RESET}"
+	else
+		say "${COLOR_BOLD}Installing ${DISPLAY_NAME}...${COLOR_RESET}"
+	fi
 
-  if [ -z "$VERSION" ]; then
-    VERSION=$(get_latest_version)
-  fi
+	mkdir -p "${BIN_DIR}" || die "could not create ${BIN_DIR}"
+	[ -w "${BIN_DIR}" ] || die "${BIN_DIR} is not writable"
 
-  local current
-  current=$(installed_version)
-  if [ -n "$current" ] && [ "$current" = "$VERSION" ] && [ "$FORCE" != true ]; then
-    echo ""
-    success "$DISPLAY_NAME $VERSION is already installed — nothing to do."
-    echo "  Reinstall anyway with: --force"
-    exit 0
-  fi
+	# Replacing a running AppImage in place would yank the mounted file out
+	# from under it, so remove first — the kernel keeps the running copy alive
+	# until it exits.
+	rm -f "${TARGET}"
+	cp "${appimage}" "${TARGET}"
+	chmod 755 "${TARGET}"
+	say "  installed ${TARGET}"
 
-  local install_dir
-  install_dir=$(determine_install_dir)
-  echo "Install directory: $install_dir"
+	install_icons "${icon}"
+	# Prune before writing ours, so a stale entry sharing our filename can't be
+	# deleted after we've just written it.
+	prune_duplicate_desktop_entries "${DESKTOP_FILE}"
+	write_desktop_entry "${version}"
+	record_state "${version}"
+	refresh_caches
 
-  if [ -n "$current" ]; then
-    info "Upgrading $current -> $VERSION"
-  fi
-
-  local archive_name="${APP_NAME}-${VERSION}-${os}-${arch}.tar.gz"
-  local base_url="https://github.com/${GITHUB_REPO}/releases/download/${VERSION}"
-
-  TEMP_DIR=$(mktemp -d)
-  cd "$TEMP_DIR"
-
-  info "Downloading from GitHub releases..."
-  download_and_verify "$base_url/$archive_name" "$archive_name" "$base_url/SHA256SUMS"
-  extract_archive "$archive_name"
-
-  info "Installing $DISPLAY_NAME $VERSION:"
-  install_appimage "$install_dir"
-  install_icons "$APP_NAME/${APP_NAME}.png"
-  # Prune before writing ours, so a stale entry sharing our filename can't be
-  # deleted after we've just written it.
-  prune_duplicate_desktop_entries "$DESKTOP_FILE" "$install_dir/$APP_NAME"
-  write_desktop_entry "$install_dir/$APP_NAME" "$VERSION"
-  record_version "$VERSION"
-  refresh_desktop_caches
-
-  echo ""
-  success "Installation complete!"
-  echo ""
-
-  check_fuse
-  check_path "$install_dir"
-
-  echo ""
-  echo "Launch $DISPLAY_NAME from your applications menu, or run:"
-  echo "  $APP_NAME"
-  echo ""
+	say ""
+	say "${COLOR_GREEN}✓ ${DISPLAY_NAME} installed${COLOR_RESET}"
+	say ""
+	check_fuse
+	say "Launch it from your applications menu, or run: ${APP_NAME}"
+	check_path
 }
 
-main
+if [ "${UNINSTALL}" = true ]; then
+	uninstall
+else
+	install_app
+fi

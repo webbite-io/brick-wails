@@ -151,7 +151,8 @@ make release            # build dist/brick-ui-<version>-linux-<arch>.tar.gz + SH
 make release-to-github  # publish dist/ as a GitHub release (prompts before replacing)
 ```
 
-The tarball contains just `brick-ui.AppImage` and `brick-ui.png`. The AppImage
+The tarball contains `brick-ui.AppImage`, `brick-ui.png`, a `VERSION` stamp and
+`install.sh` (copied from `build/linux/appimage/`). The AppImage
 is self-contained: `wails3 generate appimage` runs linuxdeploy with its GTK
 plugin and pulls in WebKitGTK's out-of-process helpers (`WebKitWebProcess`,
 `WebKitNetworkProcess`, the injected bundle), which a plain linuxdeploy run
@@ -166,28 +167,43 @@ work — the payload is compressed squashfs.) It also refuses to publish version
 
 ### Installing
 
-End users don't touch the tarball. `build/linux/appimage/install.sh` is served
-from the repo and fetches the release itself:
+End users don't touch the tarball. The repo-root `install.sh` is served from the
+repo and fetches the release itself:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/build/linux/appimage/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/install.sh | bash
 ```
 
-It resolves the latest tag via the GitHub API, verifies the download against
-`SHA256SUMS`, installs to `~/.local/bin/brick-ui`, writes the hicolor icons and
-a `~/.local/share/applications/brick-ui.desktop` entry, then refreshes the
-desktop and icon caches. No root required. Flags: `--version X`, `--prefix
-PATH`, `--force`, `--uninstall`.
+There are two installers, split along a deliberate line:
 
-Re-running it upgrades in place rather than accumulating copies: every artifact
-has a fixed destination, the installed version is recorded in
-`~/.local/share/brick-ui/version` (so an unchanged version is a no-op), and any
-stray launcher entry pointing at our binary under a different filename — the
+- **`install.sh`** (repo root) only *fetches*. It detects the platform, resolves
+  the latest tag via the GitHub API, downloads the tarball and verifies it
+  against `SHA256SUMS`, then hands off to the installer inside it. Flags:
+  `--version X`, `--prefix PATH`, `--force`, `--uninstall`.
+- **`build/linux/appimage/install.sh`** does the *installing*, and is bundled
+  into the tarball by `make release`. It installs to `~/.local/bin/brick-ui`,
+  writes the hicolor icons and a
+  `~/.local/share/applications/brick-ui.desktop` entry, then refreshes the
+  desktop and icon caches. No root required. Flags: `--prefix PATH`,
+  `--uninstall`.
+
+So a hand-downloaded tarball installs exactly the way a curl-piped install does
+— `./install.sh` inside the extracted directory is the same code path — and the
+fetcher never has to know where icons or desktop entries go. It's POSIX sh, and
+it lives under `build/linux/appimage/` because it's specific to how the AppImage
+is packaged.
+
+Re-running upgrades in place rather than accumulating copies: every artifact has
+a fixed destination, the installed version and install dir are recorded in
+`~/.local/share/brick-ui/` (so an unchanged version is a no-op), and any stray
+launcher entry pointing at our binary under a different filename — the
 `appimagekit-*.desktop` that AppImageLauncher writes on first launch, for
 instance — is pruned before ours is written.
 
-Because the installer lives in the repo rather than inside the tarball, fixing
-it doesn't require cutting a new release.
+The bundled installer also stashes a copy of itself at
+`~/.local/share/brick-ui/install.sh`. That's what `--uninstall` on the root
+script delegates to: removing an install shouldn't require re-downloading 150 MB
+to get at its uninstaller, and the paths only need to be spelled out once.
 
 Two caveats. The first `make release` downloads linuxdeploy and AppRun from
 GitHub, caching them in `build/linux/appimage/build`. And an AppImage only runs
