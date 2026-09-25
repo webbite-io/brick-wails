@@ -228,8 +228,16 @@ func (f *Flow) BeginLogin(ctx context.Context) (string, error) {
 	f.mu.Lock()
 	f.cancelLoginLocked()
 	f.mu.Unlock()
+	// Loaded up front so the instance key is available for the authorization
+	// request (brick-cli's runLogin does the same). A fresh config's key is
+	// generated here and survives unchanged into this very first login.
+	cfg, _, err := f.store.LoadOrCreate()
+	if err != nil {
+		return "", err
+	}
 	s, err := auth.StartLogin(ctx, auth.LoginParams{
 		APIURL: f.env.APIURL, ClientID: f.env.OAuthClientID, Scopes: f.env.OAuthScopes, CallbackURL: f.env.OAuthCallbackURL,
+		InstanceKey: cfg.InstanceKey,
 	})
 	if err != nil {
 		return "", err

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -95,6 +96,55 @@ func TestLoginHappyPath(t *testing.T) {
 		t.Errorf("callback port still bound after Wait: %v", err)
 	} else {
 		ln.Close()
+	}
+}
+
+// The authorization request carries this install's identity so account-hq can
+// list and revoke it on its own, separately from brick-cli on the same machine.
+func TestLoginSendsDeviceIdentity(t *testing.T) {
+	idp := fakeoidc.New()
+	defer idp.Close()
+
+	s, err := StartLogin(context.Background(), LoginParams{
+		APIURL: idp.URL, ClientID: idp.ClientID, CallbackURL: freeCallbackURL(t), InstanceKey: "inst-1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Cancel()
+	q, _ := url.ParseQuery(strings.SplitN(s.AuthURL, "?", 2)[1])
+	if q.Get("instance_key") != "inst-1" {
+		t.Errorf("instance_key = %q, want %q", q.Get("instance_key"), "inst-1")
+	}
+	if got, want := q.Get("device_name"), DeviceName(); got != want {
+		t.Errorf("device_name = %q, want %q", got, want)
+	}
+
+	// No instance key (a config that somehow has none) omits the parameter
+	// rather than sending an empty one.
+	s2, err := StartLogin(context.Background(), LoginParams{APIURL: idp.URL, ClientID: idp.ClientID, CallbackURL: freeCallbackURL(t)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Cancel()
+	q2, _ := url.ParseQuery(strings.SplitN(s2.AuthURL, "?", 2)[1])
+	if _, ok := q2["instance_key"]; ok {
+		t.Error("instance_key sent with no key configured")
+	}
+}
+
+func TestDeviceName(t *testing.T) {
+	name := DeviceName()
+	host, err := os.Hostname()
+	if err != nil {
+		t.Skip("no hostname on this machine")
+	}
+	if !strings.HasPrefix(name, "Brick Desktop on "+host) {
+		t.Errorf("DeviceName() = %q, want it to start with %q", name, "Brick Desktop on "+host)
+	}
+	// "Brick CLI" is brick-cli's prefix; the two must not collide.
+	if strings.Contains(name, "Brick CLI") {
+		t.Errorf("DeviceName() = %q, must not reuse brick-cli's name", name)
 	}
 }
 

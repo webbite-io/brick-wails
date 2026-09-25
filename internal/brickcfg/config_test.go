@@ -28,6 +28,9 @@ func TestLoadOrCreateCreatesFileWithClientID(t *testing.T) {
 	if _, err := uuid.Parse(cfg.ClientID); err != nil {
 		t.Errorf("clientId %q is not a UUID: %v", cfg.ClientID, err)
 	}
+	if _, err := uuid.Parse(cfg.InstanceKey); err != nil {
+		t.Errorf("instanceKey %q is not a UUID: %v", cfg.InstanceKey, err)
+	}
 	info, err := os.Stat(s.Path())
 	if err != nil {
 		t.Fatal(err)
@@ -40,8 +43,9 @@ func TestLoadOrCreateCreatesFileWithClientID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created || again.ClientID != cfg.ClientID {
-		t.Errorf("second load: created=%v clientId=%q, want false/%q", created, again.ClientID, cfg.ClientID)
+	if created || again.ClientID != cfg.ClientID || again.InstanceKey != cfg.InstanceKey {
+		t.Errorf("second load: created=%v clientId=%q instanceKey=%q, want false/%q/%q",
+			created, again.ClientID, again.InstanceKey, cfg.ClientID, cfg.InstanceKey)
 	}
 }
 
@@ -57,12 +61,38 @@ func TestLoadOrCreateBackfillsClientID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ClientID == "" || cfg.ActiveAccountID != "acct" {
+	if cfg.ClientID == "" || cfg.InstanceKey == "" || cfg.ActiveAccountID != "acct" {
 		t.Fatalf("got %+v", cfg)
 	}
 	onDisk, _ := s.Load()
 	if onDisk.ClientID != cfg.ClientID {
 		t.Error("backfilled clientId not persisted")
+	}
+	if onDisk.InstanceKey != cfg.InstanceKey {
+		t.Error("backfilled instanceKey not persisted")
+	}
+}
+
+// An instanceKey written by brick-cli identifies this install to account-api;
+// this app must adopt it verbatim rather than generating a competing one.
+func TestLoadOrCreateKeepsCLIInstanceKey(t *testing.T) {
+	s := newTestStore(t)
+	if err := os.MkdirAll(s.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.Path(), []byte("clientId: c1\ninstanceKey: from-cli\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err := s.LoadOrCreate()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.InstanceKey != "from-cli" {
+		t.Errorf("instanceKey = %q, want the CLI's %q", cfg.InstanceKey, "from-cli")
+	}
+	onDisk, _ := s.Load()
+	if onDisk.InstanceKey != "from-cli" {
+		t.Errorf("instanceKey on disk = %q, want it left alone", onDisk.InstanceKey)
 	}
 }
 
@@ -145,7 +175,7 @@ func TestUpdateIsReadModifyWrite(t *testing.T) {
 
 func TestSchemaMatchesCLIKeys(t *testing.T) {
 	c := &Config{
-		ClientID: "c", AccessToken: "a", RefreshToken: "r", IDToken: "i",
+		ClientID: "c", AccessToken: "a", RefreshToken: "r", IDToken: "i", InstanceKey: "k",
 		ActiveAccountID: "acct", RemoteControl: true, AgentRoots: []string{"/x"},
 		Accounts: map[string]*AccountConfig{"acct": {StorageSyncFolder: "/f", ExcludeDirs: []string{"d"}}},
 	}
@@ -153,7 +183,7 @@ func TestSchemaMatchesCLIKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"clientId:", "accessToken:", "refreshToken:", "idToken:", "activeAccountId:", "accounts:", "agentRoots:", "remoteControl:", "storageSyncFolder:", "excludeDirs:"} {
+	for _, key := range []string{"clientId:", "accessToken:", "refreshToken:", "idToken:", "instanceKey:", "activeAccountId:", "accounts:", "agentRoots:", "remoteControl:", "storageSyncFolder:", "excludeDirs:"} {
 		if !strings.Contains(string(out), key) {
 			t.Errorf("marshalled config missing %s\n%s", key, out)
 		}
