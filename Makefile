@@ -221,7 +221,10 @@ run:
 release: build-prod
 	@echo ""
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Creating AppImage...$(COLOR_RESET)"
-	@rm -rf $(DIST_DIR)/stage
+	@# Wipe the whole of dist/, not just the staging dir: the checksum step
+	@# below globs *.tar.gz, so an artifact left over from an earlier version
+	@# would be re-listed in SHA256SUMS and published alongside this one.
+	@rm -rf $(DIST_DIR)
 	@mkdir -p $(DIST_DIR)/stage/$(APP_NAME)
 	@wails3 task linux:generate:dotdesktop
 	@# linuxdeploy matches the icon by basename against the desktop file's
