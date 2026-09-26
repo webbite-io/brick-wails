@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"github.com/webbite-io/brick-wails/internal/onboarding"
 	"github.com/webbite-io/brick-wails/internal/runner"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
+	"github.com/webbite-io/brick-wails/internal/update"
 )
 
 //go:embed all:frontend/dist
@@ -115,9 +117,10 @@ func main() {
 	run := runner.New(runner.Config{Env: env, Store: store, Tokens: tokens, Version: Version, Events: evs})
 	flow := onboarding.New(env, store, tokens)
 
-	var setupWindow *application.WebviewWindow
+	var setupWindow, updateWindow *application.WebviewWindow
 	syncSvc := &SyncService{runner: run}
 	onbSvc := &OnboardingService{flow: flow, runner: run, window: func() *application.WebviewWindow { return setupWindow }}
+	updSvc := &UpdateService{window: func() *application.WebviewWindow { return updateWindow }}
 
 	app := application.New(application.Options{
 		Name:        "Webbite Brick",
@@ -125,6 +128,7 @@ func main() {
 		Services: []application.Service{
 			application.NewService(syncSvc),
 			application.NewService(onbSvc),
+			application.NewService(updSvc),
 		},
 		Assets: application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 		Mac: application.MacOptions{
@@ -138,7 +142,7 @@ func main() {
 			run.Stop()
 		},
 	})
-	evs.app, syncSvc.app, onbSvc.app = app, app, app
+	evs.app, syncSvc.app, onbSvc.app, updSvc.app = app, app, app, app
 
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
@@ -185,6 +189,29 @@ func main() {
 		setupWindow.Hide()
 		e.Cancel()
 	})
+
+	// The update window is a small, fixed-size prompt shown at most once per
+	// launch: it starts hidden and is only shown by checkForUpdates below, if
+	// GitHub reports a newer release within the check's timeout.
+	updateWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "Update",
+		Title:            "Webbite Brick",
+		Width:            380,
+		Height:           210,
+		MinWidth:         380,
+		MinHeight:        210,
+		MaxWidth:         380,
+		MaxHeight:        210,
+		Hidden:           true,
+		AlwaysOnTop:      true,
+		Windows:          application.WindowsWindow{HiddenOnTaskbar: true},
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/update.html",
+	})
+	updateWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		updateWindow.Hide()
+		e.Cancel()
+	})
 	// The frontend shows the window itself once it has routed and laid out the
 	// screen (OnboardingService.ShowWindow). Showing it here instead would
 	// present the previous screen's frame for an instant before the new one
@@ -209,6 +236,14 @@ func main() {
 	}
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { applyTrayIcon() })
 	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) { applyTrayIcon() })
+
+	// Checked once per launch, immediately: a dev build (Version == "dev")
+	// never checks, matching brick-cli's own isRunningInDevelopment gate.
+	if Version != "dev" {
+		app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+			go checkForUpdates(app, updateWindow, updSvc, Version, logger)
+		})
+	}
 
 	menu := app.NewMenu()
 	menu.Add("Open Brick Status").OnClick(func(*application.Context) { tray.ShowWindow() })
@@ -310,4 +345,23 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+// checkForUpdates asks GitHub for a newer release (internal/update.Check
+// bounds this to 3s) and, if one exists, shows the update window. Runs in
+// its own goroutine so a slow or unreachable GitHub never delays startup.
+func checkForUpdates(app *application.App, win *application.WebviewWindow, svc *UpdateService, version string, logger *log.Logger) {
+	info, err := update.Check(context.Background(), version)
+	if err != nil {
+		logger.Printf("update check failed: %v", err)
+		return
+	}
+	if info == nil {
+		return
+	}
+	logger.Printf("update available: v%s -> v%s", info.Current, info.Latest)
+	svc.info.Store(info)
+	app.Event.Emit("update:available", info)
+	win.Show()
+	win.Focus()
 }

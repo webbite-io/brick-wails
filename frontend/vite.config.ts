@@ -11,12 +11,14 @@ export default defineConfig({
   },
   plugins: [wails("./bindings")],
   build: {
-    // Two windows, two entry points: the tray popover (index.html) and the
-    // startup status window (startup.html, see main.go's "Startup" window).
+    // Three windows, three entry points: the tray popover (index.html), the
+    // startup status window (startup.html), and the update prompt
+    // (update.html, see main.go's "Update" window).
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         startup: resolve(__dirname, "startup.html"),
+        update: resolve(__dirname, "update.html"),
       },
     },
   },

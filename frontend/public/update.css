@@ -1,0 +1,46 @@
+.update-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    padding: 20px 20px 16px;
+    background: #18181b;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.update-title {
+    margin: 0 0 8px;
+    font-family: "Roboto Condensed", "Segoe UI", sans-serif;
+    font-weight: 700;
+    font-size: 17px;
+    color: #ffffff;
+}
+
+.update-versions {
+    margin: 0;
+    font-size: 13.5px;
+    line-height: 20px;
+    color: #a1a1aa;
+}
+
+.update-error {
+    margin: 10px 0 0;
+    font-size: 12.5px;
+    line-height: 17px;
+    color: #f87171;
+}
+
+.update-error:empty {
+    display: none;
+}
+
+.update-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: auto;
+}
+
+.update-actions .btn {
+    flex: 1;
+}
