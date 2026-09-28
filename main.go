@@ -7,7 +7,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"sync"
 	"syscall"
@@ -18,6 +17,7 @@ import (
 
 	"github.com/webbite-io/brick-wails/internal/auth"
 	"github.com/webbite-io/brick-wails/internal/brickcfg"
+	"github.com/webbite-io/brick-wails/internal/logfile"
 	"github.com/webbite-io/brick-wails/internal/onboarding"
 	"github.com/webbite-io/brick-wails/internal/runner"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
@@ -53,23 +53,23 @@ func defaults() brickcfg.Defaults {
 	}
 }
 
-// openLog writes to <configDir>/brick-ui.log (truncated past 5 MB), plus
-// stderr when DEBUG=true. Separate from brick-cli's daemon.log.
+// openLog writes to <configDir>/brick.log — brick-cli's log file, kept to the
+// same 10,000-line cap (see internal/logfile) — plus stderr when DEBUG=true.
+// Lines are tagged "UI: " after the timestamp (Lmsgprefix), so a shared log
+// says which app wrote what; brick-cli's own lines carry no tag.
+// Logging is best-effort: a log file that can't be opened (a read-only home,
+// say) leaves the app running with stderr-only output.
 func openLog(dir string, debug bool) *log.Logger {
 	var out io.Writer = io.Discard
-	if err := os.MkdirAll(dir, 0o755); err == nil {
-		p := filepath.Join(dir, "brick-ui.log")
-		if info, err := os.Stat(p); err == nil && info.Size() > 5<<20 {
-			_ = os.Truncate(p, 0)
-		}
-		if f, err := os.OpenFile(p, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600); err == nil {
-			out = f
-		}
+	if w, err := logfile.Open(dir); err == nil {
+		out = w
+	} else if debug {
+		fmt.Fprintf(os.Stderr, "could not open %s: %v\n", logfile.Name, err)
 	}
 	if debug {
 		out = io.MultiWriter(out, os.Stderr)
 	}
-	return log.New(out, "", log.LstdFlags)
+	return log.New(out, "UI: ", log.LstdFlags|log.Lmsgprefix)
 }
 
 // appEvents forwards runner output to the frontend and the log.

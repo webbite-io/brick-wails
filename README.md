@@ -78,7 +78,9 @@ Settings use the same keys as brick-cli — see [`.env.example`](.env.example).
   directory, which also moves its runtime files — useful to try the app
   without touching a real brick setup.
 
-Logs go to `<config dir>/brick-ui.log` (plus stderr with `DEBUG=true`).
+Logs go to `<config dir>/brick.log` — the same rolling, 10,000-line capped log
+brick-cli writes (see `internal/logfile`) — plus stderr with `DEBUG=true`. This
+app's lines are tagged `UI: ` after the timestamp; brick-cli's are untagged.
 
 ## Project layout
 
