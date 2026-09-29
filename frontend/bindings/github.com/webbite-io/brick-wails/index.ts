@@ -3,11 +3,14 @@
 
 import * as OnboardingService from "./onboardingservice.js";
 import * as SyncService from "./syncservice.js";
+import * as UpdateService from "./updateservice.js";
 export {
     OnboardingService,
-    SyncService
+    SyncService,
+    UpdateService
 };
 
 export type {
-    StartResult
+    StartResult,
+    UpdateView
 } from "./models.js";

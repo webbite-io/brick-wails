@@ -25,6 +25,7 @@ type Defaults struct {
 	OAuthClientID    string
 	OAuthScopes      string
 	OAuthCallbackURL string
+	WebOAuthClientID string
 	WebURL           string
 	HelpURL          string
 }
@@ -36,9 +37,18 @@ type Env struct {
 	OAuthClientID    string
 	OAuthScopes      string
 	OAuthCallbackURL string
-	WebURL           string
-	HelpURL          string
-	Debug            bool
+
+	// WebOAuthClientID is the OIDC client the *web app* is registered as —
+	// the client a tray hand-off mints its authorization code for (see
+	// auth.MintHandoffCode). Defaults to OAuthClientID, which is right only
+	// while the web app redeems codes as this same client; point it at the
+	// web app's own client id otherwise, or the token exchange on the far
+	// side is rejected for a code issued to someone else.
+	WebOAuthClientID string
+
+	WebURL  string
+	HelpURL string
+	Debug   bool
 }
 
 // ResolveEnv resolves every setting with brick-cli's precedence: a non-empty
@@ -53,12 +63,14 @@ func ResolveEnv(d Defaults) Env {
 		}
 		return fallback
 	}
+	clientID := pick("OAUTH_CLIENT_ID", d.OAuthClientID, "")
 	return Env{
 		APIURL:           pick("ACC_API_URL", d.APIURL, FallbackAPIURL),
 		StorageAPIURL:    pick("STORAGE_API_URL", d.StorageAPIURL, FallbackStorageAPIURL),
-		OAuthClientID:    pick("OAUTH_CLIENT_ID", d.OAuthClientID, ""),
+		OAuthClientID:    clientID,
 		OAuthScopes:      pick("OAUTH_SCOPES", d.OAuthScopes, FallbackOAuthScopes),
 		OAuthCallbackURL: pick("OAUTH_CALLBACK_URL", d.OAuthCallbackURL, FallbackOAuthCallbackURL),
+		WebOAuthClientID: pick("WEB_OAUTH_CLIENT_ID", d.WebOAuthClientID, clientID),
 		WebURL:           pick("STORAGE_WEB_URL", d.WebURL, FallbackWebURL),
 		HelpURL:          pick("STORAGE_HELP_URL", d.HelpURL, ""),
 		Debug:            strings.EqualFold(strings.TrimSpace(os.Getenv("DEBUG")), "true"),

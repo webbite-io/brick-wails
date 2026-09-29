@@ -22,6 +22,7 @@ vars:
     -X 'main.DefaultOAuthClientID={{.OAUTH_CLIENT_ID}}'
     -X 'main.DefaultOAuthScopes={{.OAUTH_SCOPES}}'
     -X 'main.DefaultOAuthCallbackURL={{.OAUTH_CALLBACK_URL}}'
+    -X 'main.DefaultWebOAuthClientID={{.WEB_OAUTH_CLIENT_ID}}'
     -X 'main.DefaultWebURL={{.STORAGE_WEB_URL}}'
     -X 'main.DefaultHelpURL={{.STORAGE_HELP_URL}}'
 

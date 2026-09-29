@@ -134,6 +134,7 @@ build-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
 build-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
 build-prod: export OAUTH_SCOPES := $(OAUTH_SCOPES)
 build-prod: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
+build-prod: export WEB_OAUTH_CLIENT_ID := $(WEB_OAUTH_CLIENT_ID)
 build-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
 build-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env
@@ -204,12 +205,11 @@ fonts:
 run:
 	wails3 task run
 
-# Build the Linux release artifact: the AppImage, its icon, a VERSION stamp and
-# build/linux/appimage/install.sh, wrapped in a tarball named like brick-cli's
-# (brick-ui-<version>-linux-<arch>.tar.gz). The bundled installer is what does
-# the actual install — the repo-root install.sh only fetches a release and then
-# delegates to it, so a hand-downloaded tarball installs the same way as a
-# curl-piped one.
+# Build the Linux release artifact: the AppImage and its icon, wrapped in a
+# tarball named like brick-cli's (brick-ui-<version>-linux-<arch>.tar.gz).
+# The tarball carries the app and nothing else — build/linux/appimage/install.sh
+# is served from the web, downloads this tarball and installs what's inside, so
+# there is nothing to ship alongside it.
 #
 # This deliberately shells out to `wails3 generate appimage` rather than
 # `wails3 task linux:create:appimage`: that task declares a `build` dependency
@@ -242,10 +242,6 @@ release: build-prod
 	@mv $(DIST_DIR)/stage/$(APP_NAME)-$(APPIMAGE_ARCH).AppImage $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
 	@chmod +x $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
 	@cp build/appicon.png $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).png
-	@# The installer reads VERSION to stamp the desktop entry and to record what
-	@# is installed, which is how the root install.sh knows a re-run is a no-op.
-	@printf '%s\n' "$(VERSION)" > $(DIST_DIR)/stage/$(APP_NAME)/VERSION
-	@install -m 755 build/linux/appimage/install.sh $(DIST_DIR)/stage/$(APP_NAME)/install.sh
 	@tar -czf $(DIST_DIR)/$(APP_NAME)-$(VERSION)-linux-$(GOARCH).tar.gz \
 		-C $(DIST_DIR)/stage $(APP_NAME)
 	@rm -rf $(DIST_DIR)/stage
@@ -339,7 +335,7 @@ release-to-github:
 	echo "$(COLOR_GREEN)✓ Released $$rel_version to $$repo$(COLOR_RESET)"; \
 	echo ""; \
 	echo "Users can now install with:"; \
-	echo "  curl -fsSL https://raw.githubusercontent.com/$$repo/main/install.sh | bash"
+	echo "  curl -fsSL https://raw.githubusercontent.com/$$repo/main/build/linux/appimage/install.sh | bash"
 
 # Clean build artifacts (mirrors brick-cli's clean; keeps node_modules).
 clean:
