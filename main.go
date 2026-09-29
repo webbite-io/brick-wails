@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"embed"
 	"fmt"
 	"io"
@@ -11,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -33,6 +33,11 @@ var trayIconLight []byte
 
 //go:embed build/tray/logo-wails-dark.png
 var trayIconDark []byte
+
+// menuDotSize is the pixel size of the blue dot drawn beside the tray menu's
+// "Install Update" item — menu item icons are rendered at roughly the text
+// height, so it's sized for that rather than for the tray icon.
+const menuDotSize = 16
 
 // Build metadata and compile-time defaults, set via ldflags in production
 // builds (see the Taskfiles / Makefile). Empty in dev builds, which instead
@@ -120,7 +125,11 @@ func main() {
 	var setupWindow, updateWindow *application.WebviewWindow
 	syncSvc := &SyncService{runner: run}
 	onbSvc := &OnboardingService{flow: flow, runner: run, window: func() *application.WebviewWindow { return setupWindow }}
-	updSvc := &UpdateService{window: func() *application.WebviewWindow { return updateWindow }}
+	updSvc := &UpdateService{
+		logger:  logger,
+		version: Version,
+		window:  func() *application.WebviewWindow { return updateWindow },
+	}
 
 	app := application.New(application.Options{
 		Name:        "Webbite Brick",
@@ -190,9 +199,9 @@ func main() {
 		e.Cancel()
 	})
 
-	// The update window is a small, fixed-size prompt shown at most once per
-	// launch: it starts hidden and is only shown by checkForUpdates below, if
-	// GitHub reports a newer release within the check's timeout.
+	// The update window is a small, fixed-size prompt: it starts hidden, and
+	// UpdateService shows it when the launch check finds a newer release or
+	// when the user picks the tray's update item themselves.
 	updateWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:             "Update",
 		Title:            "Webbite Brick",
@@ -224,26 +233,38 @@ func main() {
 
 	tray := app.SystemTray.New()
 	tray.SetTooltip("Webbite Brick")
+	// Each icon has a badged twin — the same glyph with a blue dot in the
+	// corner — built once here and shown while an update is waiting. A failed
+	// composite costs the dot, not the tray icon.
+	badge := func(icon []byte) []byte {
+		badged, err := update.Badge(icon)
+		if err != nil {
+			logger.Printf("tray badge: %v", err)
+			return icon
+		}
+		return badged
+	}
+	trayIconLightBadged, trayIconDarkBadged := badge(trayIconLight), badge(trayIconDark)
+
 	// SetDarkModeIcon only auto-switches on Windows, so react to theme
 	// changes explicitly on every platform. IsDarkMode() is only reliable
 	// once the app has started.
+	var updatePending atomic.Bool
 	applyTrayIcon := func() {
-		if app.Env.IsDarkMode() {
+		dark, pending := app.Env.IsDarkMode(), updatePending.Load()
+		switch {
+		case dark && pending:
+			tray.SetIcon(trayIconDarkBadged)
+		case dark:
 			tray.SetIcon(trayIconDark)
-		} else {
+		case pending:
+			tray.SetIcon(trayIconLightBadged)
+		default:
 			tray.SetIcon(trayIconLight)
 		}
 	}
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { applyTrayIcon() })
 	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) { applyTrayIcon() })
-
-	// Checked once per launch, immediately: a dev build (Version == "dev")
-	// never checks, matching brick-cli's own isRunningInDevelopment gate.
-	if Version != "dev" {
-		app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-			go checkForUpdates(app, updateWindow, updSvc, Version, logger)
-		})
-	}
 
 	menu := app.NewMenu()
 	menu.Add("Open Brick Status").OnClick(func(*application.Context) { tray.ShowWindow() })
@@ -262,6 +283,12 @@ func main() {
 		}
 	})
 	menu.AddSeparator()
+	// Offers whatever a check has already turned up, and otherwise runs one on
+	// the spot — see updSvc.onPending below for the "Install Update" face of
+	// this item.
+	updateItem := menu.Add("Check for Updates")
+	updateItem.OnClick(func(*application.Context) { go updSvc.offerOrCheck() })
+	menu.AddSeparator()
 	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
 	tray.AttachWindow(popover).WindowOffset(4)
@@ -270,6 +297,44 @@ func main() {
 		// Wails' default toggle of the attached window races it (under X11
 		// both open). Route the click to the menu, GNOME's own convention.
 		tray.OnClick(tray.OpenMenu)
+	}
+
+	// One place where a found update changes the tray: the icon gains its blue
+	// dot and the menu item becomes the offer to install it, carrying the same
+	// dot. Both stay until the app is actually replaced, so dismissing the
+	// window doesn't hide that an update is still waiting.
+	updateDot, err := update.Dot(menuDotSize)
+	if err != nil {
+		logger.Printf("menu dot: %v", err)
+	}
+	updSvc.onPending = func(*update.Info) {
+		updatePending.Store(true)
+		updateItem.SetLabel("Install Update")
+		if updateDot != nil {
+			updateItem.SetBitmap(updateDot)
+		}
+		applyTrayIcon()
+	}
+
+	// The launch check runs immediately, then every CheckInterval — a tray app
+	// can stay running for weeks. A dev build (Version == "dev") never checks,
+	// matching brick-cli's own isRunningInDevelopment gate.
+	if Version != "dev" {
+		app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
+			go func() {
+				updSvc.checkOnStartup()
+				t := time.NewTicker(update.CheckInterval)
+				defer t.Stop()
+				for {
+					select {
+					case <-t.C:
+						updSvc.checkInBackground()
+					case <-app.Context().Done():
+						return
+					}
+				}
+			}()
+		})
 	}
 
 	// Keep the tray in step with status. Also opens the setup window when a
@@ -345,23 +410,4 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-}
-
-// checkForUpdates asks GitHub for a newer release (internal/update.Check
-// bounds this to 3s) and, if one exists, shows the update window. Runs in
-// its own goroutine so a slow or unreachable GitHub never delays startup.
-func checkForUpdates(app *application.App, win *application.WebviewWindow, svc *UpdateService, version string, logger *log.Logger) {
-	info, err := update.Check(context.Background(), version)
-	if err != nil {
-		logger.Printf("update check failed: %v", err)
-		return
-	}
-	if info == nil {
-		return
-	}
-	logger.Printf("update available: v%s -> v%s", info.Current, info.Latest)
-	svc.info.Store(info)
-	app.Event.Emit("update:available", info)
-	win.Show()
-	win.Focus()
 }

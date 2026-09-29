@@ -18,6 +18,11 @@ import (
 // slow or unreachable network never delays startup noticeably.
 const checkTimeout = 3 * time.Second
 
+// CheckInterval is how often the app re-checks after the one at launch. A
+// tray app can stay running for weeks, so the launch check alone would let a
+// release go unnoticed for as long as the machine stays up.
+const CheckInterval = 6 * time.Hour
+
 // releaseURL is a var (not a const) so tests can point it at a fake server.
 var releaseURL = "https://api.github.com/repos/webbite-io/brick-wails/releases/latest"
 

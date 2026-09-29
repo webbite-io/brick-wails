@@ -11,5 +11,6 @@ export {
 };
 
 export type {
-    StartResult
+    StartResult,
+    UpdateView
 } from "./models.js";

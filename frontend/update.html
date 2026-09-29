@@ -12,14 +12,12 @@
 </head>
 <body>
 <main class="update-panel">
-    <h1 class="update-title">Update available</h1>
-    <p class="update-versions">
-        You're running v<span id="current-version"></span>. v<span id="latest-version"></span> is now available.
-    </p>
+    <h1 class="update-title" id="update-title">Checking for updates…</h1>
+    <p class="update-versions" id="update-message"></p>
     <p class="update-error" id="update-error"></p>
     <footer class="update-actions">
-        <button id="continue-btn" class="btn">Continue</button>
-        <button id="update-btn" class="btn btn-primary btn-cta">Update</button>
+        <button id="continue-btn" class="btn">Close</button>
+        <button id="update-btn" class="btn btn-primary btn-cta" hidden>Update</button>
     </footer>
 </main>
 <script type="module" src="/src/update.js"></script>

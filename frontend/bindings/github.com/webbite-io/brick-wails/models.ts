@@ -13,3 +13,22 @@ export interface StartResult {
     "step"?: string;
     "message"?: string;
 }
+
+/**
+ * UpdateView is what the update window shows. Every path that opens the
+ * window sets one first, so the window itself holds no state of its own.
+ */
+export interface UpdateView {
+    "state": string;
+    "current": string;
+
+    /**
+     * Latest is the newer version on offer, set only in the "available" state.
+     */
+    "latest"?: string;
+
+    /**
+     * Error explains a "failed" check, in the check's own words.
+     */
+    "error"?: string;
+}
