@@ -177,7 +177,15 @@ It resolves the latest tag via the GitHub API, verifies the download against
 `SHA256SUMS`, installs to `~/.local/bin/brick-ui`, writes the hicolor icons and
 a `~/.local/share/applications/brick-ui.desktop` entry, then refreshes the
 desktop and icon caches. No root required. Flags: `--version X`, `--prefix
-PATH`, `--force`, `--uninstall`.
+PATH`, `--force`, `--restart`, `--no-restart`, `--uninstall`.
+
+It finishes by asking whether to (re)start the app — the point being that the
+desktop app's own "Update" button opens a terminal on this script, so an
+upgrade should end with the new version running rather than the old one still
+in the tray. Answering yes stops any running instance, starts the new one in
+its own session, and closes the terminal if that terminal was only ever there
+to run the installer (`--restart`/`--no-restart` answer ahead of time, and a
+run with no tty behind it never asks).
 
 Re-running it upgrades in place rather than accumulating copies: every artifact
 has a fixed destination, the installed version is recorded in

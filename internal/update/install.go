@@ -10,7 +10,7 @@ import (
 // terminal — the public installer for the desktop app (brick-cli's own
 // install.sh lives in its repo; this one is served from webbite.io since the
 // desktop app isn't always installed alongside a git checkout).
-const InstallCommand = "curl -fsSL https://webbite.io/desktop/install.sh | bash"
+const InstallCommand = "curl -fsSL https://webbite.io/desktop/appimage/install.sh | bash"
 
 // OpenInTerminal launches the platform's default terminal running
 // InstallCommand and returns once the terminal process has started — not

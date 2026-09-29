@@ -12,6 +12,10 @@
 # artifact lands on a fixed path, so repeat runs overwrite rather than
 # accumulate, and stale entries from older layouts are pruned.
 #
+# It finishes by offering to (re)start the app, so an upgrade launched from the
+# desktop app's own "Update" button lands the user back in the new version
+# rather than leaving the old one running.
+#
 # Linux only — the GUI is a GTK4/WebKitGTK app shipped as an AppImage.
 #
 
@@ -43,6 +47,8 @@ VERSION=""
 PREFIX=""
 FORCE=false
 UNINSTALL=false
+# ask | always | never — whether to (re)start the app once it's installed.
+RESTART="ask"
 
 while [[ $# -gt 0 ]]; do
   case $1 in
@@ -62,6 +68,14 @@ while [[ $# -gt 0 ]]; do
     UNINSTALL=true
     shift
     ;;
+  --restart)
+    RESTART="always"
+    shift
+    ;;
+  --no-restart)
+    RESTART="never"
+    shift
+    ;;
   --help)
     cat <<EOF
 $DISPLAY_NAME - Installation Script
@@ -73,6 +87,8 @@ Options:
   --version VERSION    Install specific version (e.g., 0.0.1)
   --prefix PATH        Install to PATH (default: ~/.local/bin)
   --force              Reinstall even if already at the target version
+  --restart            (Re)start the app afterwards without asking
+  --no-restart         Leave any running instance alone
   --uninstall          Remove the app, icons and desktop entry
   --help               Show this help message
 
@@ -477,6 +493,146 @@ uninstall() {
   fi
 }
 
+# PIDs of every running instance. Matched on the executable name rather than a
+# command-line substring: `pkill -f brick-ui` would also match this installer's
+# own shell when it was started from a path containing the name, and the
+# AppImage re-execs itself from its FUSE mount, so both the outer and the inner
+# process answer to the same name and both need the signal.
+app_pids() {
+  if command_exists pgrep; then
+    pgrep -x "$APP_NAME" 2>/dev/null || true
+  else
+    ps -eo pid=,comm= 2>/dev/null | awk -v name="$APP_NAME" '$2 == name { print $1 }' || true
+  fi
+}
+
+# Ask the running instance to quit and wait for it to go. The new AppImage is
+# already on disk by this point — the old process keeps running off the
+# unlinked inode — but it has to be gone before the replacement starts, or the
+# two fight over the same tray icon and sync state.
+stop_running_app() {
+  local pids
+  pids=$(app_pids)
+  [ -n "$pids" ] || return 0
+
+  echo "  Stopping the running instance..."
+  # Unquoted on purpose: one signal per PID.
+  # shellcheck disable=SC2086
+  kill $pids 2>/dev/null || true
+
+  local waited=0
+  while [ "$waited" -lt 100 ]; do
+    [ -n "$(app_pids)" ] || return 0
+    sleep 0.1
+    waited=$((waited + 1))
+  done
+
+  warning "The old instance didn't exit within 10s — forcing it."
+  # shellcheck disable=SC2086
+  kill -9 $(app_pids) 2>/dev/null || true
+  sleep 0.5
+}
+
+# Start the app in its own session, so it survives this terminal closing (which
+# is the very next thing we do). nohup covers the rare box without util-linux.
+launch_app() {
+  local target="$1"
+
+  if command_exists setsid; then
+    setsid "$target" >/dev/null 2>&1 </dev/null &
+  else
+    nohup "$target" >/dev/null 2>&1 </dev/null &
+  fi
+  disown 2>/dev/null || true
+}
+
+# Read a yes/no answer, defaulting to yes. Stdin is the curl pipe when the
+# script is run the documented way, so the answer has to come from /dev/tty —
+# and where there's no tty at all (CI, a hook, a headless upgrade) we don't ask.
+confirm() {
+  local prompt="$1" answer
+
+  # Opened rather than just tested with -r: /dev/tty is present and readable by
+  # its permission bits even where there's no controlling terminal behind it,
+  # and reading it then fails noisily instead of being skipped.
+  # (The braces matter: `exec 2>/dev/null 3<>…` would silence this shell's
+  # stderr for good, and putting the redirect after the open reports the
+  # failure before it takes effect.)
+  if ! { exec 3<>/dev/tty; } 2>/dev/null; then
+    return 1
+  fi
+
+  printf '%s' "$prompt" >&3
+  if ! read -r answer <&3; then
+    exec 3>&-
+    return 1
+  fi
+  exec 3>&-
+
+  case "$answer" in
+  "" | [Yy] | [Yy][Ee][Ss]) return 0 ;;
+  *) return 1 ;;
+  esac
+}
+
+# Close the window we were launched into — but only when that window exists
+# solely to run us. The desktop app's "Update" button spawns
+# `bash -c '<installer>; read -n1 …'`, and leaving that behind after a
+# successful restart is litter the user has to dismiss. A terminal the user
+# opened themselves is theirs, so it stays.
+close_terminal() {
+  command_exists ps || return 0
+
+  # A session leader's PID is the session ID, so this names the process the
+  # terminal actually started.
+  local sid
+  sid=$(ps -o sid= -p $$ 2>/dev/null | tr -d ' ')
+  [ -n "$sid" ] || return 0
+  [ "$sid" != "1" ] && [ "$sid" != "$$" ] || return 0
+
+  # An interactive shell's argv is just the shell (often "-bash"); a one-shot
+  # wrapper carries the command it was handed. Only the latter is ours to close.
+  local leader
+  leader=$(ps -o args= -p "$sid" 2>/dev/null || echo "")
+  case "$leader" in
+  *" -c "*) ;;
+  *) return 0 ;;
+  esac
+
+  echo "Closing this window..."
+  # SIGHUP rather than TERM: it's what a closing terminal sends anyway, and a
+  # shell acts on it even while it's ignoring TERM.
+  kill -HUP "$sid" 2>/dev/null || true
+}
+
+maybe_restart() {
+  local target="$1"
+
+  [ "$RESTART" != "never" ] || return 0
+
+  local running=0
+  if [ -n "$(app_pids)" ]; then
+    running=1
+  fi
+
+  if [ "$RESTART" != "always" ]; then
+    local question="Do you want to start $DISPLAY_NAME? (Y/n): "
+    if [ "$running" -eq 1 ]; then
+      question="Do you want to restart $DISPLAY_NAME? (Y/n): "
+    fi
+    echo ""
+    confirm "$question" || return 0
+  fi
+
+  if [ "$running" -eq 1 ]; then
+    stop_running_app
+  fi
+  launch_app "$target"
+  success "$DISPLAY_NAME $VERSION is running"
+
+  close_terminal
+}
+
 main() {
   if [ "$UNINSTALL" = true ]; then
     uninstall
@@ -484,7 +640,6 @@ main() {
   fi
 
   info "$DISPLAY_NAME - Installation Script"
-  echo ""
 
   check_prerequisites
 
@@ -544,6 +699,8 @@ main() {
   echo ""
   echo "Launch $DISPLAY_NAME from your applications menu, or run:"
   echo "  $APP_NAME"
+
+  maybe_restart "$install_dir/$APP_NAME"
   echo ""
 }
 
