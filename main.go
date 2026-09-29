@@ -187,7 +187,7 @@ func main() {
 	// frontend/src/startup.ts). It starts hidden: on launch the frontend
 	// routes, and only shows the window when the user has something to do —
 	// a configured machine goes straight to syncing. Closing it hides it; the
-	// tray's "Set Up Brick…" item brings it back.
+	// tray's "Set Up Brick" item brings it back.
 	setupWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:   "Setup",
 		Title:  "Webbite Brick",
@@ -289,6 +289,11 @@ func main() {
 			tray.SetIcon(icons.plain)
 		}
 	}
+	// Seeded before the app runs, so the tray registers with the Brick icon:
+	// an unset icon registers Wails' own logo, which would show until the
+	// ApplicationStarted call below replaced it. IsDarkMode() is false this
+	// early, so this lands on the light face and that call corrects it.
+	applyTrayIcon()
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { applyTrayIcon() })
 	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) { applyTrayIcon() })
 
@@ -302,7 +307,12 @@ func main() {
 	webApp := &webapp.Opener{Env: env, Store: store, Tokens: tokens, Logger: logger, OpenURL: app.Browser.OpenURL}
 	menu.Add("Open Brick App").OnClick(func(*application.Context) { go webApp.Open(auth.WebTargetFiles) })
 	menu.AddSeparator()
-	setupItem := menu.Add("Set Up Brick…")
+	// Hidden until the startup routing has concluded what the machine needs
+	// (see updateTray): the runner starts out not-configured, so an item shown
+	// from the start would offer setup on every launch, including the ones
+	// that are a second away from syncing.
+	setupItem := menu.Add("Set Up Brick")
+	setupItem.SetHidden(true)
 	setupItem.OnClick(func(*application.Context) { openSetup() })
 	pauseItem := menu.Add("Pause Sync")
 	pauseItem.OnClick(func(*application.Context) {
@@ -371,32 +381,40 @@ func main() {
 	// running sync loses its session, so the user is asked to log in again.
 	var trayMu sync.Mutex
 	lastState := ""
+	// Set once the frontend's startup routing has reached a verdict — see
+	// onbSvc.onSettled below.
+	var startupSettled atomic.Bool
 	updateTray := func(s runner.Status) {
 		trayMu.Lock()
 		defer trayMu.Unlock()
 		prev := lastState
 		lastState = s.State
 		openFolderItem.SetEnabled(s.Folder != "")
+		needsSetup := true
 		switch s.State {
 		case runner.StateNotConfigured:
 			tray.SetTooltip("Brick — not set up")
-			setupItem.SetLabel("Set Up Brick…").SetHidden(false)
+			setupItem.SetLabel("Set Up Brick")
 		case runner.StateAuthRequired:
 			tray.SetTooltip("Brick — login required")
-			setupItem.SetLabel("Log In Again…").SetHidden(false)
+			setupItem.SetLabel("Log In Again…")
 		case runner.StateLocked:
 			tray.SetTooltip("Brick — the Brick CLI is syncing")
-			setupItem.SetLabel("Start Syncing").SetHidden(false)
+			setupItem.SetLabel("Start Syncing")
 		case runner.StateStopped:
 			tray.SetTooltip("Brick — not syncing")
-			setupItem.SetLabel("Start Syncing").SetHidden(false)
+			setupItem.SetLabel("Start Syncing")
 		case "error":
 			tray.SetTooltip("Brick — error: " + s.LastError)
-			setupItem.SetHidden(true)
+			needsSetup = false
 		default:
 			tray.SetTooltip("Brick — " + s.State)
-			setupItem.SetHidden(true)
+			needsSetup = false
 		}
+		// The item stays away until startup routing has settled: until then
+		// the state is only the runner's starting point, not a conclusion
+		// about the machine.
+		setupItem.SetHidden(!needsSetup || !startupSettled.Load())
 		pauseItem.SetEnabled(s.Running)
 		if s.State == "paused" {
 			pauseItem.SetLabel("Resume Sync")
@@ -415,6 +433,14 @@ func main() {
 		}
 	}
 	evs.onStatus = updateTray
+	// The startup routing in frontend/src/startup.ts decides what this machine
+	// needs — and only then is the runner's state a verdict the tray can offer
+	// the user something about.
+	onbSvc.onSettled = func() {
+		if !startupSettled.Swap(true) {
+			updateTray(run.Status())
+		}
+	}
 
 	// Periodic status push too, so relative times in the popover stay fresh
 	// even when nothing changes.

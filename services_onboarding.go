@@ -22,6 +22,10 @@ type OnboardingService struct {
 	runner *runner.Runner
 	// window returns the setup window (nil before it's created).
 	window func() *application.WebviewWindow
+	// onSettled fires the first time routing reaches a verdict about this
+	// machine — what the tray's setup item waits for (see main.go). Set before
+	// the app runs.
+	onSettled func()
 	// pending carries a finished wizard's decisions to StartSync.
 	pending atomic.Pointer[runner.StartParams]
 }
@@ -33,13 +37,26 @@ type StartResult struct {
 	Message string `json:"message,omitempty"`
 }
 
+// settle reports that routing has concluded what this machine needs.
+func (s *OnboardingService) settle() {
+	if s.onSettled != nil {
+		s.onSettled()
+	}
+}
+
 // Route decides which screen the setup window should show. When syncing is
 // already running it returns "ready".
 func (s *OnboardingService) Route(ctx context.Context) onboarding.Route {
 	if s.runner.Running() {
 		return onboarding.Route{Step: onboarding.StepReady}
 	}
-	return s.flow.Route(ctx)
+	r := s.flow.Route(ctx)
+	// Anything but "ready" is a conclusion in itself: this machine needs the
+	// user. "ready" waits for StartSync, which is where it's put to the test.
+	if r.Step != onboarding.StepReady {
+		s.settle()
+	}
+	return r
 }
 
 // BeginLogin starts the login callback server, opens the browser and returns
@@ -149,6 +166,8 @@ func (s *OnboardingService) StartSync() StartResult {
 		p = *v
 	}
 	err := s.runner.Start(p)
+	// Started or not, the startup question is now answered.
+	s.settle()
 	if err != nil && p.FirstSync {
 		// Keep the wizard's decisions (first sync + conflict mode) for the retry.
 		s.pending.Store(&p)

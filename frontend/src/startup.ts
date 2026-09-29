@@ -2,7 +2,7 @@
 // counterpart of brick-cli's interactive setup). The window starts hidden:
 // on load this routes, and a fully configured machine goes straight to
 // syncing without ever showing it. Anything needing the user shows the
-// window. The Go side emits "setup:open" (tray "Set Up Brick…", popover
+// window. The Go side emits "setup:open" (tray "Set Up Brick", popover
 // buttons, or an expired session) to run the flow again.
 
 import { Events } from "@wailsio/runtime";
