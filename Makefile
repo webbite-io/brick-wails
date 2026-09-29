@@ -134,6 +134,7 @@ build-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
 build-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
 build-prod: export OAUTH_SCOPES := $(OAUTH_SCOPES)
 build-prod: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
+build-prod: export WEB_OAUTH_CLIENT_ID := $(WEB_OAUTH_CLIENT_ID)
 build-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
 build-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env

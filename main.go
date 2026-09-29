@@ -25,6 +25,7 @@ import (
 	"github.com/webbite-io/brick-wails/internal/syncengine"
 	"github.com/webbite-io/brick-wails/internal/trayicon"
 	"github.com/webbite-io/brick-wails/internal/update"
+	"github.com/webbite-io/brick-wails/internal/webapp"
 )
 
 //go:embed all:frontend/dist
@@ -55,6 +56,7 @@ var (
 	DefaultOAuthClientID    = ""
 	DefaultOAuthScopes      = ""
 	DefaultOAuthCallbackURL = ""
+	DefaultWebOAuthClientID = ""
 	DefaultWebURL           = ""
 	DefaultHelpURL          = ""
 )
@@ -62,7 +64,8 @@ var (
 func defaults() brickcfg.Defaults {
 	return brickcfg.Defaults{
 		APIURL: DefaultAPIURL, StorageAPIURL: DefaultStorageAPIURL, OAuthClientID: DefaultOAuthClientID,
-		OAuthScopes: DefaultOAuthScopes, OAuthCallbackURL: DefaultOAuthCallbackURL, WebURL: DefaultWebURL, HelpURL: DefaultHelpURL,
+		OAuthScopes: DefaultOAuthScopes, OAuthCallbackURL: DefaultOAuthCallbackURL,
+		WebOAuthClientID: DefaultWebOAuthClientID, WebURL: DefaultWebURL, HelpURL: DefaultHelpURL,
 	}
 }
 
@@ -293,7 +296,11 @@ func main() {
 	menu.Add("Open Brick Status").OnClick(func(*application.Context) { tray.ShowWindow() })
 	openFolderItem := menu.Add("Open Brick Folder")
 	openFolderItem.OnClick(func(*application.Context) { _ = syncSvc.OpenFolder() })
-	menu.Add("Open Brick App").OnClick(func(*application.Context) { _ = app.Browser.OpenURL(env.WebURL) })
+	// Off the UI thread: handing the session to the browser takes a round
+	// trip to the auth server first (see webAppOpener), and the menu must not
+	// sit open while that happens.
+	webApp := &webapp.Opener{Env: env, Store: store, Tokens: tokens, Logger: logger, OpenURL: app.Browser.OpenURL}
+	menu.Add("Open Brick App").OnClick(func(*application.Context) { go webApp.Open(auth.WebTargetFiles) })
 	menu.AddSeparator()
 	setupItem := menu.Add("Set Up Brick…")
 	setupItem.OnClick(func(*application.Context) { openSetup() })
