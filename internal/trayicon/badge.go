@@ -1,4 +1,8 @@
-package update
+// Package trayicon draws the small status dots the system tray icon and its
+// menu items carry: a blue one for a waiting update, a yellow one for paused
+// sync. Badging the icon at runtime keeps one PNG per theme in the repo
+// instead of one per theme per state.
+package trayicon
 
 import (
 	"bytes"
@@ -10,10 +14,13 @@ import (
 	"math"
 )
 
-// badgeColour is the accent blue the frontend uses for its primary buttons
-// (.btn-primary, frontend/public/startup.css), so the "an update is waiting"
-// dot reads as the same blue wherever it shows up.
-var badgeColour = color.NRGBA{R: 0x3b, G: 0x82, B: 0xf6, A: 0xff}
+// The palette the frontend uses for the same two states — the accent blue of
+// its primary buttons (.btn-primary) and the yellow of its paused status dot
+// (.dot.state-paused), both in frontend/public/style.css.
+var (
+	UpdateBlue   = color.NRGBA{R: 0x3b, G: 0x82, B: 0xf6, A: 0xff}
+	PausedYellow = color.NRGBA{R: 0xea, G: 0xb3, B: 0x08, A: 0xff}
+)
 
 // Sizes as a fraction of the icon they're drawn on, so the badge scales with
 // whatever resolution the tray icon is supplied at.
@@ -28,9 +35,8 @@ const (
 	dotFill = 0.8
 )
 
-// Badge returns iconPNG with a blue dot in its upper-right corner: the tray
-// icon's "an update is waiting" state.
-func Badge(iconPNG []byte) ([]byte, error) {
+// Badge returns iconPNG with a dot of c in its upper-right corner.
+func Badge(iconPNG []byte, c color.NRGBA) ([]byte, error) {
 	src, err := png.Decode(bytes.NewReader(iconPNG))
 	if err != nil {
 		return nil, fmt.Errorf("decode icon: %w", err)
@@ -42,7 +48,20 @@ func Badge(iconPNG []byte) ([]byte, error) {
 	r, ring := badgeGeometry(min(b.Dx(), b.Dy()))
 	// Inset by the ring width, so the punched-out gap stops exactly at the
 	// icon's edge rather than being clipped by it.
-	drawDot(img, float64(b.Dx())-r-ring, r+ring, r, ring)
+	drawDot(img, float64(b.Dx())-r-ring, r+ring, r, ring, c)
+	return encodePNG(img)
+}
+
+// Dot returns a standalone dot PNG of c, size×size: the same mark a badged
+// tray icon carries, for a menu item standing for the same state
+// (application.MenuItem.SetBitmap).
+func Dot(size int, c color.NRGBA) ([]byte, error) {
+	if size <= 0 {
+		return nil, fmt.Errorf("dot size must be positive, got %d", size)
+	}
+	img := image.NewNRGBA(image.Rect(0, 0, size, size))
+	centre := float64(size) / 2
+	drawDot(img, centre, centre, centre*dotFill, 0, c)
 	return encodePNG(img)
 }
 
@@ -52,24 +71,11 @@ func badgeGeometry(size int) (r, ring float64) {
 	return float64(size) * badgeRadius, float64(size) * badgeRing
 }
 
-// Dot returns a standalone blue dot PNG, size×size: the same mark the badged
-// tray icon carries, for the menu item offering the update
-// (application.MenuItem.SetBitmap).
-func Dot(size int) ([]byte, error) {
-	if size <= 0 {
-		return nil, fmt.Errorf("dot size must be positive, got %d", size)
-	}
-	img := image.NewNRGBA(image.Rect(0, 0, size, size))
-	centre := float64(size) / 2
-	drawDot(img, centre, centre, centre*dotFill, 0)
-	return encodePNG(img)
-}
-
-// drawDot paints an anti-aliased disc of badgeColour centred on (cx, cy),
-// after clearing a ring of that width around it. Clearing first is what lets
-// the disc be written straight over the top: every pixel it touches has been
-// made fully transparent, so there's nothing left to blend with.
-func drawDot(img *image.NRGBA, cx, cy, r, ring float64) {
+// drawDot paints an anti-aliased disc of c centred on (cx, cy), after clearing
+// a ring of that width around it. Clearing first is what lets the disc be
+// written straight over the top: every pixel it touches has been made fully
+// transparent, so there's nothing left to blend with.
+func drawDot(img *image.NRGBA, cx, cy, r, ring float64, c color.NRGBA) {
 	outer := r + ring
 	area := image.Rect(
 		int(math.Floor(cx-outer)), int(math.Floor(cy-outer)),
@@ -86,9 +92,9 @@ func drawDot(img *image.NRGBA, cx, cy, r, ring float64) {
 				}
 			}
 			if cov := coverage(x, y, cx, cy, r); cov > 0 {
-				c := badgeColour
-				c.A = uint8(math.Round(float64(c.A) * cov))
-				img.SetNRGBA(x, y, c)
+				dot := c
+				dot.A = uint8(math.Round(float64(c.A) * cov))
+				img.SetNRGBA(x, y, dot)
 			}
 		}
 	}

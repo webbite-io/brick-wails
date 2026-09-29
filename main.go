@@ -3,6 +3,7 @@ package main
 import (
 	"embed"
 	"fmt"
+	"image/color"
 	"io"
 	"log"
 	"os"
@@ -22,6 +23,7 @@ import (
 	"github.com/webbite-io/brick-wails/internal/onboarding"
 	"github.com/webbite-io/brick-wails/internal/runner"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
+	"github.com/webbite-io/brick-wails/internal/trayicon"
 	"github.com/webbite-io/brick-wails/internal/update"
 )
 
@@ -38,6 +40,10 @@ var trayIconDark []byte
 // "Install Update" item — menu item icons are rendered at roughly the text
 // height, so it's sized for that rather than for the tray icon.
 const menuDotSize = 16
+
+// trayIconSet is one theme's tray icon in each of its three faces: plain, a
+// blue dot for a waiting update, a yellow one for paused sync.
+type trayIconSet struct{ plain, update, paused []byte }
 
 // Build metadata and compile-time defaults, set via ldflags in production
 // builds (see the Taskfiles / Makefile). Empty in dev builds, which instead
@@ -233,34 +239,51 @@ func main() {
 
 	tray := app.SystemTray.New()
 	tray.SetTooltip("Webbite Brick")
-	// Each icon has a badged twin — the same glyph with a blue dot in the
-	// corner — built once here and shown while an update is waiting. A failed
+	// Both themes' badged faces are composited once here, at startup. A failed
 	// composite costs the dot, not the tray icon.
-	badge := func(icon []byte) []byte {
-		badged, err := update.Badge(icon)
+	badge := func(icon []byte, c color.NRGBA) []byte {
+		badged, err := trayicon.Badge(icon, c)
 		if err != nil {
 			logger.Printf("tray badge: %v", err)
 			return icon
 		}
 		return badged
 	}
-	trayIconLightBadged, trayIconDarkBadged := badge(trayIconLight), badge(trayIconDark)
+	faces := func(icon []byte) trayIconSet {
+		return trayIconSet{
+			plain:  icon,
+			update: badge(icon, trayicon.UpdateBlue),
+			paused: badge(icon, trayicon.PausedYellow),
+		}
+	}
+	lightIcons, darkIcons := faces(trayIconLight), faces(trayIconDark)
 
 	// SetDarkModeIcon only auto-switches on Windows, so react to theme
 	// changes explicitly on every platform. IsDarkMode() is only reliable
 	// once the app has started.
-	var updatePending atomic.Bool
+	//
+	// iconMu makes reading the two states and setting the icon one step: the
+	// update check and the status feed both land here from their own
+	// goroutines, and without it the loser of a race could leave the icon
+	// showing what the winner had already moved on from.
+	var iconMu sync.Mutex
+	var updatePending, syncPaused atomic.Bool
 	applyTrayIcon := func() {
-		dark, pending := app.Env.IsDarkMode(), updatePending.Load()
+		iconMu.Lock()
+		defer iconMu.Unlock()
+		icons := lightIcons
+		if app.Env.IsDarkMode() {
+			icons = darkIcons
+		}
 		switch {
-		case dark && pending:
-			tray.SetIcon(trayIconDarkBadged)
-		case dark:
-			tray.SetIcon(trayIconDark)
-		case pending:
-			tray.SetIcon(trayIconLightBadged)
+		// A waiting update outranks paused sync: it's the one the user has
+		// something to do about.
+		case updatePending.Load():
+			tray.SetIcon(icons.update)
+		case syncPaused.Load():
+			tray.SetIcon(icons.paused)
 		default:
-			tray.SetIcon(trayIconLight)
+			tray.SetIcon(icons.plain)
 		}
 	}
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { applyTrayIcon() })
@@ -303,7 +326,7 @@ func main() {
 	// dot and the menu item becomes the offer to install it, carrying the same
 	// dot. Both stay until the app is actually replaced, so dismissing the
 	// window doesn't hide that an update is still waiting.
-	updateDot, err := update.Dot(menuDotSize)
+	updateDot, err := trayicon.Dot(menuDotSize, trayicon.UpdateBlue)
 	if err != nil {
 		logger.Printf("menu dot: %v", err)
 	}
@@ -372,6 +395,12 @@ func main() {
 			pauseItem.SetLabel("Resume Sync")
 		} else {
 			pauseItem.SetLabel("Pause Sync")
+		}
+		// The icon carries the paused state too. Only on a change: status
+		// lands here every couple of seconds, and each SetIcon costs a tray
+		// refresh.
+		if paused := s.State == "paused"; syncPaused.Swap(paused) != paused {
+			applyTrayIcon()
 		}
 		if s.State == runner.StateAuthRequired && prev != "" && prev != runner.StateAuthRequired {
 			logger.Printf("session expired; asking the user to log in again")

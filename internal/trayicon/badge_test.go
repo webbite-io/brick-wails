@@ -1,4 +1,4 @@
-package update
+package trayicon
 
 import (
 	"bytes"
@@ -34,35 +34,42 @@ func decode(t *testing.T, data []byte) image.Image {
 	return img
 }
 
-func TestBadgeKeepsSizeAndMarksTheCorner(t *testing.T) {
+func TestBadgeKeepsSizeAndMarksTheCornerInTheGivenColour(t *testing.T) {
 	const size = 64
-	badged := decode(t, mustBadge(t, solidIcon(t, size)))
+	for name, want := range map[string]color.NRGBA{
+		"update": UpdateBlue,
+		"paused": PausedYellow,
+	} {
+		t.Run(name, func(t *testing.T) {
+			badged := decode(t, mustBadge(t, solidIcon(t, size), want))
 
-	if got := badged.Bounds(); got.Dx() != size || got.Dy() != size {
-		t.Fatalf("badged icon is %v, want %dx%d", got, size, size)
-	}
+			if got := badged.Bounds(); got.Dx() != size || got.Dy() != size {
+				t.Fatalf("badged icon is %v, want %dx%d", got, size, size)
+			}
 
-	// The dot's centre: right of centre, above it (see Badge's geometry).
-	r, ring := badgeGeometry(size)
-	offset := int(r + ring)
-	pr, pg, pb, a := badged.At(size-offset, offset).RGBA()
-	if a != 0xffff {
-		t.Fatalf("dot centre is not opaque: alpha %d", a)
-	}
-	wantR, wantG, wantB, _ := badgeColour.RGBA()
-	if pr != wantR || pg != wantG || pb != wantB {
-		t.Fatalf("dot centre is %d,%d,%d, want the accent blue %d,%d,%d", pr, pg, pb, wantR, wantG, wantB)
-	}
+			// The dot's centre: right of centre, above it (see Badge's geometry).
+			r, ring := badgeGeometry(size)
+			offset := int(r + ring)
+			pr, pg, pb, a := badged.At(size-offset, offset).RGBA()
+			if a != 0xffff {
+				t.Fatalf("dot centre is not opaque: alpha %d", a)
+			}
+			wantR, wantG, wantB, _ := want.RGBA()
+			if pr != wantR || pg != wantG || pb != wantB {
+				t.Fatalf("dot centre is %d,%d,%d, want %d,%d,%d", pr, pg, pb, wantR, wantG, wantB)
+			}
 
-	// The opposite corner is untouched, so the badge hasn't eaten the glyph.
-	if _, _, _, a := badged.At(1, size-2).RGBA(); a != 0xffff {
-		t.Fatalf("bottom-left corner lost its alpha (%d); the badge should only touch the top right", a)
+			// The opposite corner is untouched, so the badge hasn't eaten the glyph.
+			if _, _, _, a := badged.At(1, size-2).RGBA(); a != 0xffff {
+				t.Fatalf("bottom-left corner lost its alpha (%d); the badge should only touch the top right", a)
+			}
+		})
 	}
 }
 
 func TestBadgeClearsARingAroundTheDot(t *testing.T) {
 	const size = 64
-	badged := decode(t, mustBadge(t, solidIcon(t, size)))
+	badged := decode(t, mustBadge(t, solidIcon(t, size), UpdateBlue))
 
 	// Just outside the dot but inside the punched-out ring: the icon's own
 	// pixels there are cleared, which is what keeps the dot legible over the
@@ -76,14 +83,14 @@ func TestBadgeClearsARingAroundTheDot(t *testing.T) {
 }
 
 func TestBadgeRejectsNonPNG(t *testing.T) {
-	if _, err := Badge([]byte("not a png")); err == nil {
+	if _, err := Badge([]byte("not a png"), UpdateBlue); err == nil {
 		t.Fatal("expected an error for input that isn't a PNG")
 	}
 }
 
 func TestDot(t *testing.T) {
 	const size = 16
-	img := decode(t, mustDot(t, size))
+	img := decode(t, mustDot(t, size, UpdateBlue))
 
 	if got := img.Bounds(); got.Dx() != size || got.Dy() != size {
 		t.Fatalf("dot is %v, want %dx%d", got, size, size)
@@ -99,23 +106,23 @@ func TestDot(t *testing.T) {
 }
 
 func TestDotRejectsNonPositiveSize(t *testing.T) {
-	if _, err := Dot(0); err == nil {
+	if _, err := Dot(0, UpdateBlue); err == nil {
 		t.Fatal("expected an error for size 0")
 	}
 }
 
-func mustBadge(t *testing.T, icon []byte) []byte {
+func mustBadge(t *testing.T, icon []byte, c color.NRGBA) []byte {
 	t.Helper()
-	badged, err := Badge(icon)
+	badged, err := Badge(icon, c)
 	if err != nil {
 		t.Fatalf("Badge: %v", err)
 	}
 	return badged
 }
 
-func mustDot(t *testing.T, size int) []byte {
+func mustDot(t *testing.T, size int, c color.NRGBA) []byte {
 	t.Helper()
-	dot, err := Dot(size)
+	dot, err := Dot(size, c)
 	if err != nil {
 		t.Fatalf("Dot: %v", err)
 	}
