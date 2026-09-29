@@ -23,7 +23,7 @@ function render(view: UpdateView) {
     case "available":
       titleEl.textContent = "Update available";
       messageEl.textContent = `You're running v${view.current}. v${view.latest} is now available.`;
-      continueBtn.textContent = "Continue";
+      continueBtn.textContent = "Cancel";
       updateBtn.disabled = false;
       updateBtn.textContent = "Update";
       // Update is the default action: focusing it lets Enter trigger it as soon
