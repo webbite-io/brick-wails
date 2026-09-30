@@ -61,6 +61,57 @@ func (e *Engine) buildRemoteTree(ctx context.Context) (files, folders map[string
 	return files, folders, folderID, nil
 }
 
+// fetchRemoteTree returns the remote tree for one reconcile pass, reusing the
+// last full walk when a cheap CheckUpdates probe confirms nothing has changed
+// remotely since it was captured — rather than paying for a full recursive
+// ListChildren walk of every folder on every single reconcile, including ones
+// triggered purely by a local filesystem change (the debounce worker in Run),
+// where the remote side is almost always untouched. See the remoteTree*
+// fields for why reuse is safe, and reconcileAll's forceFullRemoteWalk for
+// the one case that must bypass it.
+//
+// Caller must hold e.mu.
+func (e *Engine) fetchRemoteTree(ctx context.Context, forceFullRemoteWalk bool) (files, folders map[string]storage.Node, folderID map[string]string, err error) {
+	var walkSeed int64
+	haveSeed := false
+	if !forceFullRemoteWalk && e.remoteTreeAsOf > 0 {
+		changed, serverTime, checkErr := e.sc.CheckUpdates(ctx, e.remoteTreeAsOf)
+		if checkErr == nil {
+			if !changed {
+				e.remoteTreeAsOf = serverTime
+				return e.remoteTreeFiles, e.remoteTreeFolders, e.remoteTreeFolderID, nil
+			}
+			// Something did change -> a real walk is needed below, but this
+			// probe's serverTime still seeds the refreshed cache, sparing a
+			// second request just to ask the same question again.
+			walkSeed, haveSeed = serverTime, true
+		}
+		// A failed probe falls through to a real walk too: the cache can't be
+		// trusted without being able to ask whether it's still valid.
+	}
+	if !haveSeed {
+		if serverTime, stErr := e.sc.ServerNow(ctx); stErr == nil {
+			walkSeed, haveSeed = serverTime, true
+		}
+	}
+
+	files, folders, folderID, err = e.buildRemoteTree(ctx)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	e.remoteTreeFiles, e.remoteTreeFolders, e.remoteTreeFolderID = files, folders, folderID
+	if haveSeed {
+		e.remoteTreeAsOf = walkSeed
+	} else {
+		// Couldn't establish a safe "as of" timestamp for this walk (the
+		// ServerNow probe failed too) -> don't cache it, so the next
+		// reconcile pays for a fresh walk rather than trusting an unstamped
+		// snapshot.
+		e.remoteTreeAsOf = 0
+	}
+	return files, folders, folderID, nil
+}
+
 func (e *Engine) buildLocalTree() (files map[string]int64, dirs map[string]bool, err error) {
 	files = map[string]int64{}
 	dirs = map[string]bool{}
@@ -255,7 +306,21 @@ func (e *Engine) rewritePrefix(oldRel, newRel string, localDirs map[string]bool,
 // ReconcileAll performs one full two-way reconciliation. Idempotent; the sync
 // index makes already-synced files free. Deletions push from whichever side
 // removed a file to the other; on content conflicts remote wins.
-func (e *Engine) ReconcileAll(ctx context.Context) (err error) {
+func (e *Engine) ReconcileAll(ctx context.Context) error {
+	return e.reconcileAll(ctx, false)
+}
+
+// reconcileAll is ReconcileAll's body. forceFullRemoteWalk, when true, makes
+// the remote-tree fetch below always perform a real recursive ListChildren
+// walk of every folder, bypassing the remote tree cache entirely — set only
+// by ForceReconcile, for its periodic hard-delete backstop pass (see its doc
+// comment for why a cached or check-updates-gated walk can't substitute for a
+// true one there). Deliberately a parameter rather than an engine field: e.mu
+// below only serializes the body, not however a caller decided to invoke it,
+// and ForceReconcile runs on a different goroutine than the debounce worker —
+// a field set outside the lock could race a concurrent call reading it inside
+// the lock.
+func (e *Engine) reconcileAll(ctx context.Context, forceFullRemoteWalk bool) (err error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -272,7 +337,7 @@ func (e *Engine) ReconcileAll(ctx context.Context) (err error) {
 		}
 	}()
 
-	remoteFiles, remoteFolders, folderID, err := e.buildRemoteTree(ctx)
+	remoteFiles, remoteFolders, folderID, err := e.fetchRemoteTree(ctx, forceFullRemoteWalk)
 	if err != nil {
 		return err
 	}
@@ -463,13 +528,18 @@ func (e *Engine) PollRemoteChanges(ctx context.Context) (reconciled bool, err er
 }
 
 // ForceReconcile runs a full reconcile unconditionally — the backstop for
-// hard-deletes the incremental feed can't report.
+// hard-deletes the incremental feed can't report (a permanently deleted or
+// purged node leaves no row to surface as changed). Forces a real remote tree
+// walk rather than letting reconcileAll reuse the remote tree cache via its
+// own CheckUpdates probe, which is exactly the kind of check that can't see a
+// hard delete either — this pass exists specifically to not be satisfied by
+// one.
 func (e *Engine) ForceReconcile(ctx context.Context) error {
 	serverTime, stErr := e.sc.ServerNow(ctx)
 	if stErr != nil {
 		serverTime = 0
 	}
-	if err := e.ReconcileAll(ctx); err != nil {
+	if err := e.reconcileAll(ctx, true); err != nil {
 		return err
 	}
 	if serverTime > 0 {

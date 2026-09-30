@@ -138,6 +138,32 @@ type Engine struct {
 	mu    sync.Mutex // serializes reconcile + state access
 	state *SyncState
 
+	// remoteTree* mirror the last full remote tree walk ReconcileAll's
+	// fetch step actually performed (buildRemoteTree's three maps), tagged
+	// with the server clock as of that walk in remoteTreeAsOf (0 = no cache
+	// yet). Reused on a later pass whenever a cheap CheckUpdates probe
+	// against remoteTreeAsOf confirms nothing has changed remotely since —
+	// sparing a full recursive ListChildren walk of every folder on every
+	// reconcile, which would otherwise happen even for one triggered purely
+	// by a local filesystem change (the debounce worker in Run).
+	//
+	// Safe to reuse across passes despite ReconcileAll mutating these same
+	// maps in place while it runs (ensureRemoteFolder adds folders it just
+	// created; pruneRemoteSubtree removes a trashed folder's descendants):
+	// Go maps are reference types, so the cache picks up those in-pass
+	// changes too. Any OTHER change — including ones this same pass just
+	// made itself, like an upload or a delete, which reconcileFile never
+	// reflects back into these maps — is still caught: it necessarily
+	// post-dates remoteTreeAsOf, so the next pass's probe reports it and
+	// forces a fresh walk rather than reusing a now-stale cache.
+	//
+	// Guarded by e.mu like everything else ReconcileAll touches: only ever
+	// read or written from inside a locked reconcileAll call.
+	remoteTreeFiles    map[string]storage.Node
+	remoteTreeFolders  map[string]storage.Node
+	remoteTreeFolderID map[string]string
+	remoteTreeAsOf     int64
+
 	downloaded atomic.Int64
 	uploaded   atomic.Int64
 	deleted    atomic.Int64

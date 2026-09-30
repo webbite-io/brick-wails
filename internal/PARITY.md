@@ -5,7 +5,7 @@ directory are **ports** of brick-cli code, not shared code (the repos
 deliberately don't share a Go module). When brick-cli changes any of the
 functions below, mirror the change here and bump the "synced at" commit.
 
-**Synced at:** brick-cli `3cde073` (2026-09-30)
+**Synced at:** brick-cli `ff63a7c` (2026-09-30)
 
 | brick-wails | brick-cli origin (`cmd/brick/`) | Notes |
 |---|---|---|
@@ -19,6 +19,7 @@ functions below, mirror the change here and bump the "synced at" commit.
 | `syncengine.Engine.ReconcileAll` and helpers (`reconcile.go`) | `sync.go`: `reconcileAll`, `buildRemoteTree`, `buildLocalTree`, `applyRemoteFolderMoves`, `applyRemoteFileMoves`, `rewritePrefix`, `pruneRemoteSubtree`, `reconcileFile`, `reconcileExcludedFile`, `applyFirstSyncConflict`, `keepBothFile`, `downloadFile`, `deleteRemoteFile`, `ensureRemoteFolder`, `uploadNewFile`, `replaceFile`, `verifyUnsyncedFileMatches`, `hashFileMD5` | **semantics must stay identical** — the reconcile matrix in `syncengine/engine_test.go` pins them |
 | `syncengine.Engine.DryRun`, `dryRunClassify` (`dryrun.go`) | `sync.go`: `runSyncDryRun`, `dryRunClassify` | classification identical; returns `[]Change` instead of printing, so the app can render it. The CLI's spinners and instance-lock-free framing have no counterpart here |
 | `syncengine.Engine.PollRemoteChanges`, `ForceReconcile`, `setCursor` | `sync.go`: `pollRemoteChanges`, `forceReconcile`, `setCursor` | |
+| `syncengine.Engine.fetchRemoteTree`, the `remoteTree*` cache fields, `reconcileAll(ctx, forceFullRemoteWalk)` | `sync.go`: `reconcileAll`'s `fetchRemote`, `remoteTreeCache` fields, `reconcileAllImpl` | reuses the last walk when a check-updates probe says nothing changed; `ForceReconcile` always bypasses it |
 | `syncengine.Engine.Run` (`loop.go`) | `sync.go`: `runSyncLoop` | no TUI/signals/detach; timings via `Options` (same defaults) |
 | `syncengine` status/activity/pause | `sync.go`: `setState` … `statusSnapshot`, `setPaused`, `checkInterrupted` | logging via `Sink` |
 | `lock` | `lock.go`, `lock_unix.go`, `lock_windows.go` | same file path → mutual exclusion with the CLI |
