@@ -1,11 +1,14 @@
 package logfile
 
 import (
+	"bytes"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // readLines returns the log's lines, without the trailing empty one.
@@ -198,5 +201,41 @@ func TestOpenInheritsLineCount(t *testing.T) {
 	}
 	if lines[0] != "old 1" || lines[len(lines)-1] != "fresh" {
 		t.Fatalf("first = %q, last = %q", lines[0], lines[len(lines)-1])
+	}
+}
+
+func TestTimestampWriterStampsLinesWithDashedDate(t *testing.T) {
+	var buf bytes.Buffer
+	lg := log.New(NewTimestampWriter(&buf), "UI: ", 0)
+	lg.Printf("▶ sync resumed")
+
+	got := buf.String()
+	if !strings.HasSuffix(got, "UI: ▶ sync resumed\n") {
+		t.Errorf("line = %q, want it to end with the tagged message", got)
+	}
+	stamp, _, ok := strings.Cut(strings.TrimSuffix(got, "UI: ▶ sync resumed\n"), " UI")
+	if !ok {
+		stamp = strings.TrimSpace(strings.TrimSuffix(got, "UI: ▶ sync resumed\n"))
+	}
+	if _, err := time.Parse(TimestampLayout, strings.TrimSpace(stamp)); err != nil {
+		t.Errorf("timestamp %q does not parse as %q: %v", stamp, TimestampLayout, err)
+	}
+	if strings.Contains(got, "/") {
+		t.Errorf("line = %q, want a dashed date, not the log package's slashed default", got)
+	}
+}
+
+// The writer must report the caller's own byte count, not its stamped copy's
+// — log.Logger treats a short write as a failure.
+func TestTimestampWriterReportsCallerLength(t *testing.T) {
+	var buf bytes.Buffer
+	w := NewTimestampWriter(&buf)
+	p := []byte("hello\n")
+	n, err := w.Write(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != len(p) {
+		t.Errorf("n = %d, want %d (the caller's length)", n, len(p))
 	}
 }

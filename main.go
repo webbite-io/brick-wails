@@ -71,8 +71,15 @@ func defaults() brickcfg.Defaults {
 
 // openLog writes to <configDir>/brick.log — brick-cli's log file, kept to the
 // same 10,000-line cap (see internal/logfile) — plus stderr when DEBUG=true.
-// Lines are tagged "UI: " after the timestamp (Lmsgprefix), so a shared log
-// says which app wrote what; brick-cli's own lines carry no tag.
+// Lines are tagged "UI: " after the timestamp, so a shared log says which app
+// wrote what; brick-cli tags its own "CLI: ".
+//
+// Timestamps come from logfile.NewTimestampWriter rather than the log
+// package's own Ldate|Ltime, whose "2026/09/30 17:37:08" format can't be
+// customized — the flags are 0 here precisely so that writer supplies
+// "2026-09-30 17:37:08" instead, matching what brick-cli writes to the same
+// file.
+//
 // Logging is best-effort: a log file that can't be opened (a read-only home,
 // say) leaves the app running with stderr-only output.
 func openLog(dir string, debug bool) *log.Logger {
@@ -85,7 +92,7 @@ func openLog(dir string, debug bool) *log.Logger {
 	if debug {
 		out = io.MultiWriter(out, os.Stderr)
 	}
-	return log.New(out, "UI: ", log.LstdFlags|log.Lmsgprefix)
+	return log.New(logfile.NewTimestampWriter(out), "UI: ", 0)
 }
 
 // appEvents forwards runner output to the frontend and the log.
