@@ -151,6 +151,12 @@ func TestMintHandoffCodeWithoutConsent(t *testing.T) {
 	if !errors.Is(err, ErrNoConsent) {
 		t.Errorf("err = %v, want ErrNoConsent", err)
 	}
+	// The server's own reason has to survive into the message: access_denied
+	// is also how a hand-off between clients of different owners is refused,
+	// and the log is the only place that distinction shows up.
+	if !strings.Contains(err.Error(), "user has not consented") {
+		t.Errorf("err = %v, want it to quote the server's description", err)
+	}
 }
 
 func TestMintHandoffCodeNotLoggedIn(t *testing.T) {

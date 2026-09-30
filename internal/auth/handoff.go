@@ -17,6 +17,12 @@ import (
 // minted for, so there is no silent hand-off to be had yet. Nothing is wrong:
 // the caller falls back to the plain URL and the user signs in over there
 // once, after which every later hand-off goes through silently.
+//
+// Errors wrapping it carry the server's own description, because access_denied
+// is also how the authorize endpoint refuses a hand-off between two clients
+// that do not share an owner — a misconfigured WEB_OAUTH_CLIENT_ID, which is
+// permanent and needs fixing, not a user who has yet to sign in. Nothing
+// branches on the difference; the log has to name it.
 var ErrNoConsent = errors.New("the user has not consented to this client")
 
 // HandoffCode is an authorization code minted for another OIDC client, with
@@ -150,7 +156,10 @@ func authorizeJSON(ctx context.Context, authURL, accessToken string) (string, er
 	if resp.StatusCode != http.StatusOK {
 		switch {
 		case parsed.Error == "access_denied":
-			return "", ErrNoConsent
+			if parsed.ErrorDesc == "" {
+				return "", ErrNoConsent
+			}
+			return "", fmt.Errorf("%w: %s", ErrNoConsent, parsed.ErrorDesc)
 		case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
 			return "", errHandoffUnauthorized
 		case parsed.Error != "":

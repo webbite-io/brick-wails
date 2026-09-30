@@ -58,12 +58,14 @@ func (o *Opener) url(target string) string {
 	code, err := auth.MintHandoffCode(ctx, o.Tokens, o.Env.WebOAuthClientID,
 		auth.WebCallbackURL(o.Env.WebURL), o.Env.OAuthScopes)
 	if err != nil {
-		// Said out loud, and with the reason: a misconfiguration on the auth
-		// server — an unregistered redirect_uri, a web client id that is not
-		// the one the web app redeems as — otherwise looks exactly like a
+		// Always said out loud, and always with the reason, including for the
+		// declined case: a misconfiguration on the auth server — an
+		// unregistered redirect_uri, a web client id that is not the one the
+		// web app redeems as, two clients that do not share an owner — is
+		// refused as access_denied too, and otherwise looks exactly like a
 		// user who simply needs to sign in on the web.
 		if errors.Is(err, auth.ErrNoConsent) {
-			o.Logger.Printf("no consent for the web client yet; opening the plain URL")
+			o.Logger.Printf("web hand-off declined, opening the plain URL: %v", err)
 		} else {
 			o.Logger.Printf("web hand-off failed, opening the plain URL: %v", err)
 		}
