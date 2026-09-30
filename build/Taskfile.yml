@@ -187,8 +187,16 @@ tasks:
       - go.sum
     generates:
       - frontend/bindings/**/*
+    # BUILD_FLAGS carries -ldflags="-w -s -X 'main.X=...'" (see BRICK_LDFLAGS in
+    # the root Taskfile). Interpolating that into a single-quoted shell word
+    # would let its inner single quotes toggle quoting *off*, so the spaces in
+    # OAUTH_SCOPES split -f into several words and wails3 only sees the first,
+    # failing with "build flags contain an unmatched quote". Passing the flags
+    # through the environment keeps them one argument with their quotes intact.
+    env:
+      BRICK_BUILD_FLAGS: '{{.BUILD_FLAGS}}'
     cmds:
-      - wails3 generate bindings -f '{{.BUILD_FLAGS}}' -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
+      - wails3 generate bindings -f "$BRICK_BUILD_FLAGS" -clean=true{{if eq .OBFUSCATED "true"}} -obfuscated{{end}} -ts -i
 
   generate:icons:
     summary: Generates Windows `.ico` and Mac `.icns` from an image; on macOS, `-iconcomposerinput appicon.icon -macassetdir darwin` also produces `Assets.car` from a `.icon` file (skipped on other platforms).
