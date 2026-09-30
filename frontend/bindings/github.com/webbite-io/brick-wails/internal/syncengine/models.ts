@@ -4,7 +4,8 @@
 /**
  * ActivityEvent is one recent-activity entry. Kinds: upload, update,
  * download, trash, trash-folder, remove, remove-folder, move, move-folder,
- * keep-both.
+ * keep-both, verify (content confirmed identical, so nothing was
+ * transferred — see Engine.verifyUnsyncedFileMatches).
  */
 export interface ActivityEvent {
     "kind": string;
