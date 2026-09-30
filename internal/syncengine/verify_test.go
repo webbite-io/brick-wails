@@ -2,10 +2,19 @@ package syncengine
 
 import (
 	"context"
+	"crypto/md5"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/webbite-io/brick-wails/internal/storage"
 )
+
+func md5Hex(s string) string {
+	sum := md5.Sum([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 // A file present on both sides at first sync, whose content-MD5 (as already
 // returned by the children listing, on the specific remote node at that exact
@@ -27,9 +36,7 @@ func TestFirstSyncSkipsTransferWhenMD5Verified(t *testing.T) {
 	}
 	f.wantLocal("same.txt", "identical content")
 	f.wantRemote("same.txt", "identical content")
-	if !f.sink.has("verify:same.txt") {
-		t.Errorf("activity %v, want a verify event", f.sink.kinds)
-	}
+	f.wantSilent()
 	entry, ok := f.eng.State().Entries["same.txt"]
 	if !ok {
 		t.Fatal("same.txt has no sync entry after a verified-identical pass")
@@ -55,11 +62,24 @@ func TestUnsyncedFileSkipsTransferWhenMD5VerifiedAfterOnboarding(t *testing.T) {
 	if n := f.transfers(); n != 0 {
 		t.Errorf("%d file transfers, want 0: content was verified identical", n)
 	}
-	if !f.sink.has("verify:same.txt") {
-		t.Errorf("activity %v, want a verify event", f.sink.kinds)
-	}
+	f.wantSilent()
 	if _, ok := f.eng.State().Entries["same.txt"]; !ok {
 		t.Error("same.txt has no sync entry after a verified-identical pass")
+	}
+}
+
+// wantSilent asserts the pass neither published an activity event nor wrote a
+// log line (which would land in brick.log): an already-identical file is not
+// news.
+func (f *fixture) wantSilent() {
+	f.t.Helper()
+	f.sink.mu.Lock()
+	defer f.sink.mu.Unlock()
+	if len(f.sink.kinds) != 0 {
+		f.t.Errorf("activity %v, want none for an already-identical file", f.sink.kinds)
+	}
+	if len(f.sink.logs) != 0 {
+		f.t.Errorf("logged %q, want nothing for an already-identical file", f.sink.logs)
 	}
 }
 
@@ -94,9 +114,6 @@ func TestUnverifiableFileFallsBackToConflictMode(t *testing.T) {
 	if f.fs.Requests("PUT /files/") == 0 {
 		t.Error("local copy was not uploaded: an unverifiable file should still honor conflictMode \"brick\"")
 	}
-	if f.sink.has("verify:legacy.txt") {
-		t.Errorf("activity %v: a file with no stored MD5 must not be reported as verified", f.sink.kinds)
-	}
 }
 
 // Content that genuinely differs must never be verified away, even though
@@ -109,9 +126,6 @@ func TestDifferingContentIsNotVerified(t *testing.T) {
 	f.reconcile()
 
 	f.wantLocal("dup.txt", "remote")
-	if f.sink.has("verify:dup.txt") {
-		t.Errorf("activity %v: differing content must not be reported as verified", f.sink.kinds)
-	}
 }
 
 // An excluded file is the exclusion path's business (reconcileExcludedFile),
@@ -121,10 +135,11 @@ func TestExcludedFileIsNotVerified(t *testing.T) {
 	f.fs.PutFile("secret/a.txt", "identical content")
 	f.writeLocal("secret/a.txt", "identical content")
 
-	f.reconcile()
+	remote := map[string]storage.Node{"secret/a.txt": {ContentMD5: md5Hex("identical content")}}
+	local := map[string]int64{"secret/a.txt": int64(len("identical content"))}
 
-	if f.sink.has("verify:secret/a.txt") {
-		t.Errorf("activity %v: excluded paths are never verification candidates", f.sink.kinds)
+	if got := f.eng.verifyUnsyncedFileMatches(remote, local); got["secret/a.txt"] {
+		t.Error("secret/a.txt was verified: excluded paths are never verification candidates")
 	}
 }
 

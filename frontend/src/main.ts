@@ -18,7 +18,6 @@ const setupBtn = document.getElementById('setup-btn')! as HTMLButtonElement;
 const ARROW_UP_PATHS = ['m5 12 7-7 7 7', 'M12 19V5'];
 const ARROW_DOWN_PATHS = ['M12 5v14', 'm19 12-7 7-7-7'];
 const ARROW_RIGHT_PATHS = ['M5 12h14', 'm12 5 7 7-7 7'];
-const CHECK_PATHS = ['M20 6 9 17l-5-5'];
 const TRASH_PATHS = [
     'M3 6h18',
     'M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6',
@@ -36,7 +35,6 @@ const ACTIVITY_TEXT_LABELS: Record<string, string> = {
     remove: 'Removed',
     'remove-folder': 'Removed folder',
     'keep-both': 'Kept both copies of',
-    verify: 'Already in sync:',
 };
 
 // Lucide icon (as path data) shown for each activity kind. Kinds without an
@@ -49,7 +47,6 @@ const ACTIVITY_ICON_PATHS: Record<string, string[]> = {
     'trash-folder': TRASH_PATHS,
     remove: TRASH_PATHS,
     'remove-folder': TRASH_PATHS,
-    verify: CHECK_PATHS,
 };
 
 const MOVE_ACTIVITY_KINDS = new Set(['move', 'move-folder']);

@@ -692,7 +692,8 @@ func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[
 			// -> nothing to transfer, just record it as synced. Applies
 			// whether or not this is the account's very first sync: a folder
 			// can end up holding files with no sync-state entry well after
-			// onboarding too.
+			// onboarding too. Deliberately silent: nothing changed, so there
+			// is nothing to report in the activity feed or brick.log.
 			e.state.Entries[rel] = SyncEntry{
 				RelPath:    rel,
 				NodeID:     remoteNode.ID,
@@ -701,8 +702,6 @@ func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[
 				LocalSize:  localFiles[rel],
 				SyncedAt:   time.Now(),
 			}
-			e.logf("✓ %s already in sync (content verified)", rel)
-			e.publishActivity("verify", rel)
 			return nil
 		case e.firstSync && !hasEntry:
 			// Present on both sides with no prior sync history and not
