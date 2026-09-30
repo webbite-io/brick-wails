@@ -116,6 +116,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+
+	// `brick-wails --dry-run` reports what a sync pass would do and exits,
+	// without a window, a tray icon or the instance lock — the headless way
+	// to exercise the reconcile logic. Handled before anything starts up so
+	// it leaves no trace in the log either.
+	maybeRunDryRun(env, store)
+
 	logger := openLog(store.Dir(), env.Debug)
 	logger.Printf("Webbite Brick %s starting (api=%s storage=%s config=%s)", Version, env.APIURL, env.StorageAPIURL, store.Path())
 	if env.OAuthClientID == "" {

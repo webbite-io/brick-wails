@@ -7,6 +7,8 @@
 package fakestorage
 
 import (
+	"crypto/md5"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -30,6 +32,10 @@ type Node struct {
 	Etag      string    `json:"etag"`
 	IsDeleted bool      `json:"isDeleted"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// ContentMD5 mirrors the real API: every write records the content's MD5
+	// on the node, and it comes back with the ordinary children listing. Use
+	// ClearMD5 to model a file uploaded before the server stored one.
+	ContentMD5 string `json:"contentMd5,omitempty"`
 }
 
 type node struct {
@@ -90,6 +96,11 @@ func newServer(accountID string) *Server {
 
 func (s *Server) tick() int64 { s.clock++; return s.clock }
 
+func md5Hex(data []byte) string {
+	sum := md5.Sum(data)
+	return hex.EncodeToString(sum[:])
+}
+
 func (s *Server) newID() string { s.nextID++; return fmt.Sprintf("n%d", s.nextID) }
 
 func (s *Server) newEtag() string { s.nextID++; return fmt.Sprintf("etag-%d", s.nextID) }
@@ -147,10 +158,23 @@ func (s *Server) PutFile(path string, content string) string {
 	}
 	n.data = []byte(content)
 	n.SizeBytes = int64(len(content))
+	n.ContentMD5 = md5Hex(n.data)
 	n.Etag = s.newEtag()
 	n.UpdatedAt = time.Now()
 	n.changedAt = s.tick()
 	return n.ID
+}
+
+// ClearMD5 drops the stored content-MD5 of the file at path, modelling one
+// uploaded before the server recorded hashes (or whose resumable chunks
+// arrived out of order) — the case sync must treat as unverifiable rather
+// than as proof the content differs.
+func (s *Server) ClearMD5(path string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n := s.lookupLocked(path); n != nil {
+		n.ContentMD5 = ""
+	}
 }
 
 // Mkdir creates a folder (and parents) and returns its ID.
@@ -429,7 +453,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "parent not found", 404)
 			return
 		}
-		n := &node{Node: Node{ID: s.newID(), ParentID: parentID, Name: name, NodeType: "file", SizeBytes: int64(len(data)), Etag: s.newEtag(), UpdatedAt: time.Now()}, data: data, changedAt: s.tick()}
+		n := &node{Node: Node{ID: s.newID(), ParentID: parentID, Name: name, NodeType: "file", SizeBytes: int64(len(data)), ContentMD5: md5Hex(data), Etag: s.newEtag(), UpdatedAt: time.Now()}, data: data, changedAt: s.tick()}
 		s.nodes[n.ID] = n
 		s.mu.Unlock()
 		writeJSON(w, 201, map[string]any{"node": n.Node})
@@ -459,6 +483,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			s.mu.Lock()
 			n.data = data
 			n.SizeBytes = int64(len(data))
+			n.ContentMD5 = md5Hex(data)
 			n.Etag = s.newEtag()
 			n.changedAt = s.tick()
 			out := n.Node

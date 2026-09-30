@@ -21,6 +21,7 @@ import (
 	"github.com/webbite-io/brick-wails/internal/brickcfg"
 	"github.com/webbite-io/brick-wails/internal/onboarding"
 	"github.com/webbite-io/brick-wails/internal/runner"
+	"github.com/webbite-io/brick-wails/internal/storage"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
 	"github.com/webbite-io/brick-wails/internal/testutil"
 	"github.com/webbite-io/brick-wails/internal/testutil/fakeoidc"
@@ -325,4 +326,111 @@ func TestFirstSyncConflictModeFromWizard(t *testing.T) {
 	eventually(t, "copy kept", fileIs(filepath.Join(folder, "same (copy).txt"), "local"))
 	eventually(t, "remote wins at original path", fileIs(filepath.Join(folder, "same.txt"), "remote"))
 	eventually(t, "copy uploaded", func() bool { c, _ := w.fs.Read("same (copy).txt"); return c == "local" })
+}
+
+// 5. The sync-state file is lost (deleted, or never carried over from another
+// machine) while the folder and the server already match: restarting must
+// verify the content against the MD5 the children listing already carries and
+// re-record every file as synced, transferring nothing. Before this, every
+// file was re-downloaded on the spot.
+func TestLostSyncStateReTransfersNothing(t *testing.T) {
+	w := newWorld(t)
+	for _, n := range []string{"1", "2", "3"} {
+		w.fs.PutFile("Docs/f"+n+".txt", n)
+	}
+	folder := w.onboard()
+	eventually(t, "initial", fileIs(filepath.Join(folder, "Docs", "f3.txt"), "3"))
+
+	w.run.Stop()
+	cfg, _ := w.store.Load()
+	statePath := syncengine.StatePath(w.cfgDir, cfg.ActiveAccountID)
+	if err := os.Remove(statePath); err != nil {
+		t.Fatalf("could not drop the sync state: %v", err)
+	}
+
+	w.reopen()
+	w.fs.ResetRequests()
+	if err := w.run.Start(runner.StartParams{}); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, "state rebuilt", func() bool {
+		st := syncengine.LoadState(statePath, folder)
+		return len(st.Entries) == 3
+	})
+	time.Sleep(300 * time.Millisecond)
+
+	if n := w.fs.Requests("GET /files/"); n != 0 {
+		t.Errorf("downloads = %d, want 0: identical content must be verified, not re-fetched", n)
+	}
+	if n := w.fs.Requests("POST /files") + w.fs.Requests("PUT /files/"); n != 0 {
+		t.Errorf("uploads = %d, want 0: identical content must be verified, not re-sent", n)
+	}
+	for _, n := range []string{"1", "2", "3"} {
+		fileIs(filepath.Join(folder, "Docs", "f"+n+".txt"), n)
+	}
+}
+
+// 6. A dry run on a configured machine reports what the next pass would do —
+// the MD5-verified files silently skipped, the genuine changes listed — and
+// leaves both sides and the sync state exactly as they were.
+func TestDryRunReportsWithoutTransferring(t *testing.T) {
+	w := newWorld(t)
+	w.fs.PutFile("synced.txt", "S")
+	folder := w.onboard()
+	eventually(t, "initial", fileIs(filepath.Join(folder, "synced.txt"), "S"))
+	w.run.Stop()
+
+	// One file each side that a real pass would move, plus a file that is
+	// already identical on both sides but has no sync-state entry.
+	w.fs.PutFile("remote-only.txt", "R")
+	os.WriteFile(filepath.Join(folder, "local-only.txt"), []byte("L"), 0o644)
+	w.fs.PutFile("pre-existing.txt", "same")
+	os.WriteFile(filepath.Join(folder, "pre-existing.txt"), []byte("same"), 0o644)
+
+	cfg, _ := w.store.Load()
+	sc := &storage.Client{BaseURL: w.env.StorageAPIURL, AccountID: cfg.ActiveAccountID, Auth: auth.NewClient(w.tokens)}
+	root, err := sc.ResolveRoot(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := syncengine.StatePath(w.cfgDir, cfg.ActiveAccountID)
+	eng := syncengine.New(syncengine.Config{
+		Storage: sc, Folder: folder, AccountID: cfg.ActiveAccountID, RootID: root.ID,
+		StatePath: statePath,
+	})
+
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.fs.ResetRequests()
+	changes, err := eng.DryRun(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[string]string{}
+	for _, c := range changes {
+		got[c.RelPath] = c.Label
+	}
+	want := map[string]string{
+		"remote-only.txt": "To be downloaded. Exists remotely but not locally.",
+		"local-only.txt":  "To be uploaded. Exists locally but not remotely.",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("dry run = %v, want %v (pre-existing.txt is MD5-verified, synced.txt unchanged)", got, want)
+	}
+	if n := w.fs.Requests("GET /files/") + w.fs.Requests("POST /files") + w.fs.Requests("PUT /files/"); n != 0 {
+		t.Errorf("%d transfers during a dry run, want 0", n)
+	}
+	if w.fs.Exists("local-only.txt") {
+		t.Error("dry run uploaded local-only.txt")
+	}
+	if _, err := os.Stat(filepath.Join(folder, "remote-only.txt")); err == nil {
+		t.Error("dry run downloaded remote-only.txt")
+	}
+	after, err := os.ReadFile(statePath)
+	if err != nil || !reflect.DeepEqual(before, after) {
+		t.Error("dry run rewrote the sync-state file")
+	}
 }

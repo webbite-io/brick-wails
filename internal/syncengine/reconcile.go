@@ -2,6 +2,7 @@ package syncengine
 
 import (
 	"context"
+	"crypto/md5"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -347,11 +348,21 @@ func (e *Engine) ReconcileAll(ctx context.Context) (err error) {
 	for k := range e.state.Entries {
 		keys[k] = struct{}{}
 	}
+	// A file present on both sides with no sync-state entry — whether that's
+	// because this is the account's very first sync, or because the state
+	// file was reset/lost, or a folder was repopulated from another
+	// already-synced device after onboarding — would otherwise always be
+	// blindly transferred (per e.conflictMode on a true first sync, or
+	// "remote wins" otherwise; see reconcileFile). Check up front, once,
+	// whether such files are already byte-identical to their remote
+	// counterpart (by comparing the content-MD5 the remote tree walk above
+	// already returned — no extra request) so the transfer can be skipped.
+	verifiedIdentical := e.verifyUnsyncedFileMatches(remoteFiles, localFiles)
 	for rel := range keys {
 		if err := e.checkInterrupted(ctx); err != nil {
 			return err
 		}
-		if err := e.reconcileFile(ctx, rel, remoteFiles, localFiles, remoteFolders, folderID); err != nil {
+		if err := e.reconcileFile(ctx, rel, remoteFiles, localFiles, remoteFolders, folderID, verifiedIdentical); err != nil {
 			if errors.Is(err, auth.ErrSessionExpired) {
 				return err
 			}
@@ -512,7 +523,53 @@ func isExcludedPath(rel string, excludeDirs []string) bool {
 	return false
 }
 
-func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[string]storage.Node, localFiles map[string]int64, remoteFolders map[string]storage.Node, folderID map[string]string) error {
+// verifyUnsyncedFileMatches checks, for every file present on both sides with
+// no sync-state entry (the case reconcileFile would otherwise resolve by
+// blind transfer — per e.conflictMode on a true first sync, or "remote wins"
+// on any later pass), whether its content already matches the specific remote
+// file at that path — so a folder that ends up holding files with no
+// sync-state entry (the account's very first sync, the state file having been
+// reset, or files copied in from another already-synced device well after
+// onboarding) doesn't pay to re-transfer every one of them just to record
+// them as synced.
+//
+// This costs no extra request: the remote tree walk that produced remoteFiles
+// (buildRemoteTree, backed by ListChildren) already returns each node's own
+// stored content-MD5 (storage.Node.ContentMD5), so verifying is just hashing
+// the local file and comparing two strings.
+//
+// Returns the set of rel paths confirmed identical. A rel's absence from the
+// returned set is not proof its content differs: the remote node may simply
+// have no stored MD5 to compare against — callers must keep falling back to
+// the ordinary resolution for those.
+func (e *Engine) verifyUnsyncedFileMatches(remoteFiles map[string]storage.Node, localFiles map[string]int64) map[string]bool {
+	var verified map[string]bool
+	for rel := range localFiles {
+		if isExcludedPath(rel, e.excludeDirs) {
+			continue // reconcileExcludedFile handles these, never the conflict case
+		}
+		remoteNode, hasRemote := remoteFiles[rel]
+		if !hasRemote || remoteNode.ContentMD5 == "" {
+			continue
+		}
+		if _, hasEntry := e.state.Entries[rel]; hasEntry {
+			continue
+		}
+		h, err := hashFileMD5(filepath.Join(e.folder, filepath.FromSlash(rel)))
+		if err != nil {
+			continue // unreadable right now -> let the ordinary path handle/report it
+		}
+		if h == remoteNode.ContentMD5 {
+			if verified == nil {
+				verified = map[string]bool{}
+			}
+			verified[rel] = true
+		}
+	}
+	return verified
+}
+
+func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[string]storage.Node, localFiles map[string]int64, remoteFolders map[string]storage.Node, folderID map[string]string, verifiedIdentical map[string]bool) error {
 	if isExcludedPath(rel, e.excludeDirs) {
 		return e.reconcileExcludedFile(rel, remoteFiles, localFiles)
 	}
@@ -558,7 +615,29 @@ func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[
 		switch {
 		case !remoteChanged && !localChanged:
 			return nil
+		case !hasEntry && verifiedIdentical[rel]:
+			// No local record of this file being synced, but the remote
+			// node's own content-MD5 confirms it's byte-identical to the
+			// local file at this exact path (see verifyUnsyncedFileMatches)
+			// -> nothing to transfer, just record it as synced. Applies
+			// whether or not this is the account's very first sync: a folder
+			// can end up holding files with no sync-state entry well after
+			// onboarding too.
+			e.state.Entries[rel] = SyncEntry{
+				RelPath:    rel,
+				NodeID:     remoteNode.ID,
+				RemoteEtag: remoteNode.Etag,
+				LocalHash:  localHash,
+				LocalSize:  localFiles[rel],
+				SyncedAt:   time.Now(),
+			}
+			e.logf("✓ %s already in sync (content verified)", rel)
+			e.publishActivity("verify", rel)
+			return nil
 		case e.firstSync && !hasEntry:
+			// Present on both sides with no prior sync history and not
+			// verified identical above: this is the pre-existing-folder
+			// conflict the onboarding wizard asked about.
 			return e.applyFirstSyncConflict(ctx, rel, remoteNode, remoteFolders, folderID)
 		case localChanged && !remoteChanged:
 			return e.replaceFile(ctx, rel, remoteNode.ID)
@@ -772,6 +851,24 @@ func hashFile(path string) (string, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// hashFileMD5 returns the whole-file MD5 of path, hex-encoded, in the same
+// form the server stores as a node's contentMd5 — compared directly against
+// storage.Node.ContentMD5 by verifyUnsyncedFileMatches. Distinct from
+// hashFile's sha256, which is purely local bookkeeping and never sent to the
+// server.
+func hashFileMD5(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	h := md5.New()
 	if _, err := io.Copy(h, f); err != nil {
 		return "", err
 	}

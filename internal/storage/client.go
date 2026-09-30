@@ -27,6 +27,15 @@ type Node struct {
 	Path      string    `json:"path"`
 	IsDeleted bool      `json:"isDeleted"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// ContentMD5 is the whole-file MD5 the server already has on record for
+	// this node (brick-api's model.Node.ContentMD5), returned as part of the
+	// ordinary node listing — empty when unknown (a file uploaded before
+	// content-MD5 support existed, or whose resumable chunks arrived out of
+	// order). Comparing it against a local file's own MD5 is how
+	// Engine.verifyUnsyncedFileMatches confirms two files are identical
+	// without any extra request: the node from ListChildren already carries
+	// its own hash, so there's nothing left to ask the server.
+	ContentMD5 string `json:"contentMd5,omitempty"`
 }
 
 // NodeList is a paginated list response.
