@@ -61,29 +61,162 @@ func (e *Engine) buildRemoteTree(ctx context.Context) (files, folders map[string
 	return files, folders, folderID, nil
 }
 
-// fetchRemoteTree returns the remote tree for one reconcile pass, reusing the
-// last full walk when a cheap CheckUpdates probe confirms nothing has changed
-// remotely since it was captured — rather than paying for a full recursive
-// ListChildren walk of every folder on every single reconcile, including ones
-// triggered purely by a local filesystem change (the debounce worker in Run),
-// where the remote side is almost always untouched. See the remoteTree*
-// fields for why reuse is safe, and reconcileAll's forceFullRemoteWalk for
-// the one case that must bypass it.
+// buildRemoteIDIndex returns the ID -> rel path index applyRemoteDelta needs,
+// covering both files and folders. Rebuilt from scratch alongside every full
+// buildRemoteTree walk.
+func buildRemoteIDIndex(files, folders map[string]storage.Node) map[string]string {
+	idx := make(map[string]string, len(files)+len(folders))
+	for rel, n := range files {
+		idx[n.ID] = rel
+	}
+	for rel, n := range folders {
+		idx[n.ID] = rel
+	}
+	return idx
+}
+
+// applyRemoteDelta patches the cached remote tree in place from a batch of
+// changed nodes CheckUpdatesDelta returned, in place of a full recursive
+// ListChildren walk of every folder just to rediscover the handful of nodes the
+// server already named. nodes is one CheckUpdatesDelta call's worth; a backlog
+// too big for that is handled by falling back to a real walk instead of calling
+// this, not by calling it repeatedly.
+//
+// A node with IsDeleted true is a trash (a soft delete, or a purge of something
+// already trashed). The server bumps updated_at on every descendant of a
+// trashed folder as well as the folder itself, so each one arrives here as its
+// own row — no manual subtree cascade is needed, unlike pruneRemoteSubtree,
+// which needs one because a trash this client performs is never reported back
+// to it in time.
+//
+// A live node whose path differs from the rel it was cached under has moved or
+// been renamed. For a folder that also has to carry its already-cached
+// descendants along (rewriteRemotePrefix), because a move bumps only the moved
+// row's own timestamp: the server's repointSubtree rewrites each descendant's
+// ancestor chain without touching its updated_at, so the feed never mentions
+// them even though all of their resolved paths just changed.
 //
 // Caller must hold e.mu.
-func (e *Engine) fetchRemoteTree(ctx context.Context, forceFullRemoteWalk bool) (files, folders map[string]storage.Node, folderID map[string]string, err error) {
+func (e *Engine) applyRemoteDelta(nodes []storage.Node) {
+	for _, n := range nodes {
+		rel := strings.Trim(n.Path, "/")
+		oldRel, hadOld := e.remoteTreeIDToRel[n.ID]
+
+		if n.IsDeleted {
+			if hadOld {
+				delete(e.remoteTreeFiles, oldRel)
+				delete(e.remoteTreeFolders, oldRel)
+				delete(e.remoteTreeFolderID, oldRel)
+				delete(e.remoteTreeIDToRel, n.ID)
+			} else if rel != "" {
+				// Never cached under any rel (it arrived and left inside one
+				// delta, or predates this cache) — still delete at the
+				// reported path, in case it sits there under a stale
+				// assumption.
+				delete(e.remoteTreeFiles, rel)
+				delete(e.remoteTreeFolders, rel)
+				delete(e.remoteTreeFolderID, rel)
+			}
+			continue
+		}
+
+		if rel == "" {
+			// A live node with no readable path shouldn't happen; skip it
+			// rather than mis-file the whole subtree at the root.
+			continue
+		}
+		switch n.NodeType {
+		case "folder":
+			if hadOld && oldRel != rel {
+				e.rewriteRemotePrefix(oldRel, rel)
+				delete(e.remoteTreeFolders, oldRel)
+				delete(e.remoteTreeFolderID, oldRel)
+			}
+			e.remoteTreeFolders[rel] = n
+			e.remoteTreeFolderID[rel] = n.ID
+			e.remoteTreeIDToRel[n.ID] = rel
+		case "file":
+			if hadOld && oldRel != rel {
+				delete(e.remoteTreeFiles, oldRel)
+			}
+			e.remoteTreeFiles[rel] = n
+			e.remoteTreeIDToRel[n.ID] = rel
+		}
+	}
+}
+
+// rewriteRemotePrefix re-keys every cached remote entry under oldRel's subtree
+// to sit under newRel instead — the remote-cache counterpart of rewritePrefix,
+// and the step a folder move needs because the change feed reports only the
+// moved folder's own row (see applyRemoteDelta). The folder's own entry is the
+// caller's to handle.
+//
+// Caller must hold e.mu.
+func (e *Engine) rewriteRemotePrefix(oldRel, newRel string) {
+	oldPrefix, newPrefix := oldRel+"/", newRel+"/"
+	// Re-keying while ranging is safe here: a rewritten key always starts with
+	// newPrefix, and a folder can never be moved inside its own subtree (the
+	// server rejects that), so a key this loop inserts can never match
+	// oldPrefix and be rewritten twice.
+	for k, n := range e.remoteTreeFolders {
+		if !strings.HasPrefix(k, oldPrefix) {
+			continue
+		}
+		nk := newPrefix + strings.TrimPrefix(k, oldPrefix)
+		delete(e.remoteTreeFolders, k)
+		e.remoteTreeFolders[nk] = n
+		if id, ok := e.remoteTreeFolderID[k]; ok {
+			delete(e.remoteTreeFolderID, k)
+			e.remoteTreeFolderID[nk] = id
+		}
+		e.remoteTreeIDToRel[n.ID] = nk
+	}
+	for k, n := range e.remoteTreeFiles {
+		if !strings.HasPrefix(k, oldPrefix) {
+			continue
+		}
+		nk := newPrefix + strings.TrimPrefix(k, oldPrefix)
+		delete(e.remoteTreeFiles, k)
+		e.remoteTreeFiles[nk] = n
+		e.remoteTreeIDToRel[n.ID] = nk
+	}
+}
+
+// remoteTree is one pass's view of the remote side: buildRemoteTree's three
+// maps, however this pass came by them.
+type remoteTree struct {
+	files    map[string]storage.Node
+	folders  map[string]storage.Node
+	folderID map[string]string
+}
+
+// fetchRemoteTree returns the remote tree for one reconcile pass without
+// walking it where it can be avoided. A cheap CheckUpdates probe against
+// remoteTreeAsOf settles which of three things happens: nothing changed and the
+// cache is handed back as-is; something changed but it fits CheckUpdatesDelta's
+// page budget, so those nodes are patched straight into the cache
+// (applyRemoteDelta); or the backlog is too big to patch safely (or the probe
+// failed outright), and only then is a real recursive ListChildren walk of every
+// folder paid for. See the remoteTree* fields for why carrying the cache across
+// passes is safe, and reconcileAll's forceFullRemoteWalk for the one case that
+// must bypass all of this.
+//
+// Caller must hold e.mu.
+func (e *Engine) fetchRemoteTree(ctx context.Context, forceFullRemoteWalk bool) (remoteTree, error) {
 	var walkSeed int64
 	haveSeed := false
 	if !forceFullRemoteWalk && e.remoteTreeAsOf > 0 {
-		changed, serverTime, checkErr := e.sc.CheckUpdates(ctx, e.remoteTreeAsOf)
+		deltaNodes, serverTime, tooMany, checkErr := e.sc.CheckUpdatesDelta(ctx, e.remoteTreeAsOf)
+		if checkErr == nil && !tooMany {
+			e.applyRemoteDelta(deltaNodes)
+			e.remoteTreeAsOf = serverTime
+			return remoteTree{e.remoteTreeFiles, e.remoteTreeFolders, e.remoteTreeFolderID}, nil
+		}
 		if checkErr == nil {
-			if !changed {
-				e.remoteTreeAsOf = serverTime
-				return e.remoteTreeFiles, e.remoteTreeFolders, e.remoteTreeFolderID, nil
-			}
-			// Something did change -> a real walk is needed below, but this
-			// probe's serverTime still seeds the refreshed cache, sparing a
-			// second request just to ask the same question again.
+			// Too big a backlog to patch safely -> a real walk is needed
+			// below, but this probe's serverTime still seeds the refreshed
+			// cache, sparing a second request just to ask the same question
+			// again.
 			walkSeed, haveSeed = serverTime, true
 		}
 		// A failed probe falls through to a real walk too: the cache can't be
@@ -95,11 +228,12 @@ func (e *Engine) fetchRemoteTree(ctx context.Context, forceFullRemoteWalk bool) 
 		}
 	}
 
-	files, folders, folderID, err = e.buildRemoteTree(ctx)
+	files, folders, folderID, err := e.buildRemoteTree(ctx)
 	if err != nil {
-		return nil, nil, nil, err
+		return remoteTree{}, err
 	}
 	e.remoteTreeFiles, e.remoteTreeFolders, e.remoteTreeFolderID = files, folders, folderID
+	e.remoteTreeIDToRel = buildRemoteIDIndex(files, folders)
 	if haveSeed {
 		e.remoteTreeAsOf = walkSeed
 	} else {
@@ -109,7 +243,7 @@ func (e *Engine) fetchRemoteTree(ctx context.Context, forceFullRemoteWalk bool) 
 		// snapshot.
 		e.remoteTreeAsOf = 0
 	}
-	return files, folders, folderID, nil
+	return remoteTree{files, folders, folderID}, nil
 }
 
 func (e *Engine) buildLocalTree() (files map[string]int64, dirs map[string]bool, err error) {
@@ -337,10 +471,11 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullRemoteWalk bool) (er
 		}
 	}()
 
-	remoteFiles, remoteFolders, folderID, err := e.fetchRemoteTree(ctx, forceFullRemoteWalk)
+	rt, err := e.fetchRemoteTree(ctx, forceFullRemoteWalk)
 	if err != nil {
 		return err
 	}
+	remoteFiles, remoteFolders, folderID := rt.files, rt.folders, rt.folderID
 	localFiles, localDirs, err := e.buildLocalTree()
 	if err != nil {
 		return err
@@ -550,20 +685,25 @@ func (e *Engine) ForceReconcile(ctx context.Context) error {
 
 func (e *Engine) pruneRemoteSubtree(rel string, remoteFolders, remoteFiles map[string]storage.Node, folderID map[string]string) {
 	prefix := rel + "/"
+	if n, ok := remoteFolders[rel]; ok {
+		delete(e.remoteTreeIDToRel, n.ID)
+	}
 	delete(remoteFolders, rel)
 	delete(folderID, rel)
 	delete(e.state.Folders, rel)
 	delete(e.state.FolderIDs, rel)
-	for k := range remoteFolders {
+	for k, n := range remoteFolders {
 		if strings.HasPrefix(k, prefix) {
+			delete(e.remoteTreeIDToRel, n.ID)
 			delete(remoteFolders, k)
 			delete(folderID, k)
 			delete(e.state.Folders, k)
 			delete(e.state.FolderIDs, k)
 		}
 	}
-	for k := range remoteFiles {
+	for k, n := range remoteFiles {
 		if strings.HasPrefix(k, prefix) {
+			delete(e.remoteTreeIDToRel, n.ID)
 			delete(remoteFiles, k)
 			delete(e.state.Entries, k)
 		}
@@ -844,6 +984,14 @@ func (e *Engine) ensureRemoteFolder(ctx context.Context, rel string, remoteFolde
 	}
 	folderID[rel] = node.ID
 	remoteFolders[rel] = *node
+	// The ID index has to learn about a folder we create as surely as about
+	// one the change feed reports, because the two can race: if this folder is
+	// moved remotely before its creation ever shows up in a delta, the delta
+	// would carry only its new path, with nothing to say which rel it is
+	// moving *from* — leaving the old rel cached as a folder that no longer
+	// exists, recreated locally by pass 2 and then fought over by
+	// applyRemoteFolderMoves, which would see two rels claiming one node ID.
+	e.remoteTreeIDToRel[node.ID] = rel
 	e.state.Folders[rel] = true
 	e.state.FolderIDs[rel] = node.ID
 	return node.ID, nil

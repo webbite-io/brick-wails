@@ -138,24 +138,26 @@ type Engine struct {
 	mu    sync.Mutex // serializes reconcile + state access
 	state *SyncState
 
-	// remoteTree* mirror the last full remote tree walk ReconcileAll's
-	// fetch step actually performed (buildRemoteTree's three maps), tagged
-	// with the server clock as of that walk in remoteTreeAsOf (0 = no cache
-	// yet). Reused on a later pass whenever a cheap CheckUpdates probe
-	// against remoteTreeAsOf confirms nothing has changed remotely since —
-	// sparing a full recursive ListChildren walk of every folder on every
-	// reconcile, which would otherwise happen even for one triggered purely
-	// by a local filesystem change (the debounce worker in Run).
+	// remoteTree* mirror the remote tree as this engine last knew it
+	// (buildRemoteTree's three maps), tagged with the server clock they are
+	// accurate as of in remoteTreeAsOf (0 = no cache yet). Kept fresh on a
+	// later pass by a cheap CheckUpdates probe against remoteTreeAsOf: either
+	// nothing changed and the cache stands as-is, or the changed nodes the
+	// probe names are patched straight in (applyRemoteDelta). Either way a
+	// full recursive ListChildren walk of every folder is avoided, which
+	// would otherwise happen on every single reconcile — including ones
+	// triggered purely by a local filesystem change (the debounce worker in
+	// Run), where the remote side is usually untouched.
 	//
-	// Safe to reuse across passes despite ReconcileAll mutating these same
+	// Safe to carry across passes despite ReconcileAll mutating these same
 	// maps in place while it runs (ensureRemoteFolder adds folders it just
 	// created; pruneRemoteSubtree removes a trashed folder's descendants):
 	// Go maps are reference types, so the cache picks up those in-pass
-	// changes too. Any OTHER change — including ones this same pass just
-	// made itself, like an upload or a delete, which reconcileFile never
-	// reflects back into these maps — is still caught: it necessarily
-	// post-dates remoteTreeAsOf, so the next pass's probe reports it and
-	// forces a fresh walk rather than reusing a now-stale cache.
+	// changes too. Any OTHER change — including ones this same pass made
+	// itself, like an upload, which reconcileFile never reflects back into
+	// these maps — is still caught: it necessarily post-dates
+	// remoteTreeAsOf, so the next pass's probe reports it as a change like
+	// any other and it is patched in then.
 	//
 	// Guarded by e.mu like everything else ReconcileAll touches: only ever
 	// read or written from inside a locked reconcileAll call.
@@ -163,6 +165,19 @@ type Engine struct {
 	remoteTreeFolders  map[string]storage.Node
 	remoteTreeFolderID map[string]string
 	remoteTreeAsOf     int64
+
+	// remoteTreeIDToRel maps a remote node's ID to the rel path it is
+	// currently cached under, across both remoteTreeFiles and
+	// remoteTreeFolders. It exists so applyRemoteDelta can tell "this changed
+	// node moved" apart from "this is the first time we have seen it" without
+	// a linear scan of the tree: a changed node's row says where it lives
+	// now, and only this index says where it used to. Rebuilt from scratch
+	// alongside every full walk (buildRemoteIDIndex) and maintained
+	// incrementally by everything that moves a cached node —
+	// applyRemoteDelta, rewriteRemotePrefix, ensureRemoteFolder,
+	// pruneRemoteSubtree. Never nil: New seeds it, so the writers above need
+	// no nil check.
+	remoteTreeIDToRel map[string]string
 
 	downloaded atomic.Int64
 	uploaded   atomic.Int64
@@ -200,19 +215,20 @@ func New(cfg Config) *Engine {
 		st = NewState(cfg.Folder)
 	}
 	e := &Engine{
-		sc:              cfg.Storage,
-		folder:          cfg.Folder,
-		accountID:       cfg.AccountID,
-		rootID:          cfg.RootID,
-		statePath:       cfg.StatePath,
-		sink:            sink,
-		opts:            cfg.Options.withDefaults(),
-		excludeDirs:     cfg.ExcludeDirs,
-		firstSync:       cfg.FirstSync,
-		conflictMode:    cfg.ConflictMode,
-		state:           st,
-		recentlyWritten: map[string]time.Time{},
-		trigger:         make(chan struct{}, 1),
+		sc:                cfg.Storage,
+		folder:            cfg.Folder,
+		accountID:         cfg.AccountID,
+		rootID:            cfg.RootID,
+		statePath:         cfg.StatePath,
+		sink:              sink,
+		opts:              cfg.Options.withDefaults(),
+		excludeDirs:       cfg.ExcludeDirs,
+		firstSync:         cfg.FirstSync,
+		conflictMode:      cfg.ConflictMode,
+		state:             st,
+		recentlyWritten:   map[string]time.Time{},
+		remoteTreeIDToRel: map[string]string{},
+		trigger:           make(chan struct{}, 1),
 	}
 	e.ctrlState = "starting"
 	return e

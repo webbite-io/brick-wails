@@ -2,9 +2,12 @@ package syncengine
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/webbite-io/brick-wails/internal/storage"
 )
 
 // walks counts the recursive ListChildren requests the remote tree walk makes
@@ -30,10 +33,11 @@ func TestReconcileReusesRemoteTreeCacheWhenNothingChanged(t *testing.T) {
 	}
 }
 
-// The moment check-updates reports a real change, the next pass must fall
-// back to a true walk rather than trusting the now-stale cache — and must
-// actually pick the change up.
-func TestReconcileRefreshesRemoteTreeCacheWhenSomethingChanged(t *testing.T) {
+// When check-updates reports a change small enough to collect in full, the
+// next pass must patch those rows straight into the cached tree rather than
+// re-walking every folder to rediscover what it was just told — and must of
+// course still act on the change.
+func TestReconcilePatchesRemoteTreeFromDeltaInsteadOfWalking(t *testing.T) {
 	f := newFixture(t, nil)
 	f.reconcile()
 	f.fs.PutFile("from-web.txt", "W")
@@ -41,10 +45,31 @@ func TestReconcileRefreshesRemoteTreeCacheWhenSomethingChanged(t *testing.T) {
 
 	f.reconcile()
 
-	if n := f.walks(); n == 0 {
-		t.Error("no children request after a reported remote change: a stale cache was reused")
+	if n := f.walks(); n != 0 {
+		t.Errorf("%d children requests for a change the feed already described in full, want 0", n)
 	}
 	f.wantLocal("from-web.txt", "W")
+}
+
+// A backlog too big to collect within the page budget must fall back to a real
+// walk rather than risk patching from half a feed.
+func TestReconcileFallsBackToWalkWhenDeltaTooLarge(t *testing.T) {
+	f := newFixture(t, nil)
+	f.reconcile()
+
+	// One row per page, so a handful of changes outruns the page budget.
+	f.fs.PageLimit = 1
+	for i := 0; i <= storage.CheckUpdatesDeltaMaxPages; i++ {
+		f.fs.PutFile(fmt.Sprintf("bulk/f%d.txt", i), "B")
+	}
+	f.fs.ResetRequests()
+
+	f.reconcile()
+
+	if n := f.walks(); n == 0 {
+		t.Error("a backlog too big to collect was patched in anyway, want a real walk")
+	}
+	f.wantLocal("bulk/f0.txt", "B")
 }
 
 // The point of the cache: a pass triggered purely by a local change costs one
@@ -69,10 +94,11 @@ func TestLocalOnlyChangeDoesNotWalkRemoteTree(t *testing.T) {
 }
 
 // A change the pass makes itself (an upload) is never reflected back into the
-// cached maps, so it must be caught by the next pass's probe — which sees it
-// postdates the cache stamp — rather than leaving the engine working from a
-// tree that is missing its own upload.
-func TestCacheIsRefreshedAfterOwnUpload(t *testing.T) {
+// cached maps, so the next pass has to learn of it from the change feed — which
+// reports a client's own writes like anyone else's — rather than work from a
+// tree missing its own upload and transfer it all over again. No walk is needed
+// for that: the delta describes the upload as precisely as any other change.
+func TestOwnUploadIsPatchedBackFromTheFeed(t *testing.T) {
 	f := newFixture(t, nil)
 	f.reconcile()
 	f.writeLocal("mine.txt", "M")
@@ -81,10 +107,12 @@ func TestCacheIsRefreshedAfterOwnUpload(t *testing.T) {
 
 	f.reconcile()
 
-	if n := f.walks(); n == 0 {
-		t.Error("no children request on the pass after an upload: the cache must not outlive the change it missed")
+	if n := f.walks(); n != 0 {
+		t.Errorf("%d children requests, want 0: the feed describes our own upload too", n)
 	}
-	// The refreshed tree now has mine.txt, so it must not be uploaded again.
+	if _, ok := f.eng.remoteTreeFiles["mine.txt"]; !ok {
+		t.Error("the engine's own upload never made it into the cached tree")
+	}
 	if n := f.fs.Requests("POST /files"); n != 0 {
 		t.Errorf("%d re-uploads of an already-uploaded file, want 0", n)
 	}
