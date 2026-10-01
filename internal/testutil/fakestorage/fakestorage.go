@@ -36,6 +36,14 @@ type Node struct {
 	// on the node, and it comes back with the ordinary children listing. Use
 	// ClearMD5 to model a file uploaded before the server stored one.
 	ContentMD5 string `json:"contentMd5,omitempty"`
+	// Path is the node's full resolved path ("/docs/a.txt"), computed per
+	// response rather than stored — brick-api does the same (every handler
+	// calls node.ToResponse(path) with a path built from the ancestor chain).
+	// It is what lets a sync client patch a cached tree from a check-updates
+	// row instead of re-walking every folder to find out where the changed
+	// node now lives. Set on serialization by withPathLocked; the stored node
+	// never carries one, so a move only has to update ParentID/Name.
+	Path string `json:"path,omitempty"`
 }
 
 type node struct {
@@ -53,6 +61,10 @@ type Server struct {
 	Authorize func(token string) bool
 	// OnDownload, if set, runs before each file download is served.
 	OnDownload func(id string)
+	// PageLimit, if > 0, caps the check-updates page size below whatever the
+	// client asked for — the knob for forcing a multi-page feed from a handful
+	// of changed nodes, e.g. to drive a client past its own page budget.
+	PageLimit int
 
 	mu       sync.Mutex
 	nodes    map[string]*node
@@ -129,6 +141,35 @@ func (s *Server) lookupLocked(path string) *node {
 
 func split(path string) []string {
 	return strings.FieldsFunc(path, func(r rune) bool { return r == '/' })
+}
+
+// pathOfLocked returns n's full resolved path, leading slash included ("/" for
+// the root). Trashed nodes keep their parent chain on the real server, so this
+// resolves them too — a trashed node's check-updates row carries the path it
+// was trashed from, which is how a client knows what to remove locally.
+func (s *Server) pathOfLocked(n *node) string {
+	var segs []string
+	for cur := n; cur != nil && cur.ID != "root"; cur = s.nodes[cur.ParentID] {
+		segs = append(segs, cur.Name)
+	}
+	var b strings.Builder
+	for i := len(segs) - 1; i >= 0; i-- {
+		b.WriteString("/")
+		b.WriteString(segs[i])
+	}
+	if b.Len() == 0 {
+		return "/"
+	}
+	return b.String()
+}
+
+// withPathLocked is the node as the API would serialize it: the stored fields
+// plus the resolved Path. Every handler goes through this, so no response ever
+// carries an empty path the way a hand-built Node literal would.
+func (s *Server) withPathLocked(n *node) Node {
+	out := n.Node
+	out.Path = s.pathOfLocked(n)
+	return out
 }
 
 func (s *Server) mkdirAllLocked(path string) *node {
@@ -363,12 +404,16 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && rest == "/resolve":
 		s.mu.Lock()
 		n := s.lookupLocked(r.URL.Query().Get("path"))
+		var out Node
+		if n != nil {
+			out = s.withPathLocked(n)
+		}
 		s.mu.Unlock()
 		if n == nil {
 			http.NotFound(w, r)
 			return
 		}
-		writeJSON(w, 200, n.Node)
+		writeJSON(w, 200, out)
 
 	case r.Method == "GET" && rest == "/quota":
 		s.mu.Lock()
@@ -396,7 +441,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		var kids []Node
 		for _, n := range s.nodes {
 			if n.ParentID == id && !n.IsDeleted && n.ID != "root" {
-				kids = append(kids, n.Node)
+				kids = append(kids, s.withPathLocked(n))
 			}
 		}
 		s.mu.Unlock()
@@ -428,8 +473,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		n := &node{Node: Node{ID: s.newID(), ParentID: body.ParentID, Name: body.Name, NodeType: "folder", UpdatedAt: time.Now()}, changedAt: s.tick()}
 		s.nodes[n.ID] = n
+		out := s.withPathLocked(n)
 		s.mu.Unlock()
-		writeJSON(w, 201, n.Node)
+		writeJSON(w, 201, out)
 
 	case r.Method == "DELETE" && strings.HasPrefix(rest, "/nodes/"):
 		id := strings.TrimPrefix(rest, "/nodes/")
@@ -455,8 +501,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		n := &node{Node: Node{ID: s.newID(), ParentID: parentID, Name: name, NodeType: "file", SizeBytes: int64(len(data)), ContentMD5: md5Hex(data), Etag: s.newEtag(), UpdatedAt: time.Now()}, data: data, changedAt: s.tick()}
 		s.nodes[n.ID] = n
+		out := s.withPathLocked(n)
 		s.mu.Unlock()
-		writeJSON(w, 201, map[string]any{"node": n.Node})
+		writeJSON(w, 201, map[string]any{"node": out})
 
 	case strings.HasPrefix(rest, "/files/"):
 		id := strings.TrimPrefix(rest, "/files/")
@@ -486,7 +533,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 			n.ContentMD5 = md5Hex(data)
 			n.Etag = s.newEtag()
 			n.changedAt = s.tick()
-			out := n.Node
+			out := s.withPathLocked(n)
 			s.mu.Unlock()
 			writeJSON(w, 200, map[string]any{"node": out})
 		default:
@@ -502,29 +549,56 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// checkUpdates serves nodes changed at or after ?since, one per page when
-// there are several, with serverTime = clock+1 (so a returned change is never
-// reported again once its serverTime is adopted as the cursor).
+// checkUpdates serves nodes changed at or after ?since, ordered by
+// (changedAt, ID) like brick-api's keyset pagination, each row carrying its
+// resolved path. serverTime is clock+1, so a returned change is never reported
+// again once its serverTime is adopted as the cursor.
+//
+// Pages hold ?limit rows (further capped by PageLimit, which tests set to
+// force pagination). Soft-deleted rows are included — their changedAt is
+// bumped on deletion, cascading to descendants, exactly as the real server's
+// SoftDeleteNode does — so a client can propagate a trashing. Hard deletes
+// (Purge) leave no row and so are invisible here, which is what the periodic
+// full walk exists to catch.
 func (s *Server) checkUpdates(w http.ResponseWriter, r *http.Request) {
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	offset, _ := strconv.Atoi(r.URL.Query().Get("cursor"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 500
+	}
+
 	s.mu.Lock()
-	var changed []Node
+	var changed []*node
 	for _, n := range s.nodes {
 		if n.changedAt >= since && n.ID != "root" {
-			changed = append(changed, n.Node)
+			changed = append(changed, n)
 		}
+	}
+	sort.Slice(changed, func(i, j int) bool {
+		if changed[i].changedAt != changed[j].changedAt {
+			return changed[i].changedAt < changed[j].changedAt
+		}
+		return changed[i].ID < changed[j].ID
+	})
+	if s.PageLimit > 0 && limit > s.PageLimit {
+		limit = s.PageLimit
+	}
+	if offset > len(changed) {
+		offset = len(changed)
+	}
+	rows := changed[offset:]
+	next := ""
+	if len(rows) > limit {
+		rows = rows[:limit]
+		next = strconv.Itoa(offset + limit)
+	}
+	page := make([]Node, 0, len(rows))
+	for _, n := range rows {
+		page = append(page, s.withPathLocked(n))
 	}
 	serverTime := s.clock + 1
 	s.mu.Unlock()
-	sort.Slice(changed, func(i, j int) bool { return changed[i].ID < changed[j].ID })
-	page := []Node{}
-	next := ""
-	if offset < len(changed) {
-		page = changed[offset : offset+1]
-		if offset+1 < len(changed) {
-			next = strconv.Itoa(offset + 1)
-		}
-	}
+
 	writeJSON(w, 200, map[string]any{"data": page, "count": len(page), "serverTime": serverTime, "nextCursor": next})
 }
