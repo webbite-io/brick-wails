@@ -97,6 +97,12 @@ func (e *Engine) Run(parent context.Context) error {
 	} else {
 		defer watcher.Close()
 		e.AddWatchesRecursive(watcher)
+		// Only now may a pass patch the cached local tree from reported paths
+		// instead of walking the folder: until something is actually reporting
+		// them, there would be nothing to patch with. In poll-only mode this
+		// stays false and every pass keeps walking.
+		e.watching.Store(true)
+		defer e.watching.Store(false)
 	}
 
 	var wg sync.WaitGroup
@@ -126,7 +132,13 @@ func (e *Engine) Run(parent context.Context) error {
 				if e.paused.Load() {
 					continue
 				}
-				if err := e.ReconcileAll(ctx); err != nil {
+				// The paths the watcher reported since the last drain, so the
+				// pass can patch the cached local tree for just those instead
+				// of walking the whole folder. A wake from Notify (a resume, or
+				// an out-of-band change) comes through as unknown, and then it
+				// walks after all.
+				changed, unknown := e.drainLocalChanges()
+				if err := e.reconcileLocalChanges(ctx, localScope{changed: changed, unknown: unknown}); err != nil {
 					if errors.Is(err, auth.ErrSessionExpired) {
 						e.logf("session expired — log in again to resume syncing")
 						fail(err)
@@ -204,7 +216,7 @@ func (e *Engine) Run(parent context.Context) error {
 					if strings.HasSuffix(ev.Name, TmpSuffix) || e.isRecentlyWritten(ev.Name) {
 						continue
 					}
-					e.Notify()
+					e.notifyPath(filepath.ToSlash(mustRel(e.folder, ev.Name)))
 				case werr, ok := <-watcher.Errors:
 					if !ok {
 						return
