@@ -33,7 +33,9 @@ const (
 // Errors returned by Start.
 var (
 	ErrNotConfigured = errors.New("brick is not set up yet")
-	ErrLocked        = errors.New("the Brick CLI is already syncing on this computer")
+	// lockedBy differs per OS: only Linux and macOS share the lock with
+	// brick-cli (see locked_unix.go / locked_windows.go).
+	ErrLocked = errors.New(lockedBy)
 )
 
 // Status is what the UI renders (engine status plus app-level state). JSON

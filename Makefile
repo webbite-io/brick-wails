@@ -69,7 +69,7 @@ LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev l
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
 FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
 
-.PHONY: all setup doctor dev build build-dev build-prod build-windows-dev build-windows-prod check-release-env run release release-to-github clean install version help test test-go test-frontend test-integration test-all fonts
+.PHONY: all setup doctor dev build build-dev build-prod build-windows-dev build-windows-prod package-windows-msix check-release-env run release release-to-github clean install version help test test-go test-frontend test-integration test-all fonts
 
 # Default target
 all: build-prod
@@ -131,14 +131,14 @@ build-dev:
 
 # Production build: stripped, trimmed, -tags production, with the values
 # from .env.prod (or the environment) baked in.
-build-prod build-windows-prod: export ACC_API_URL := $(ACC_API_URL)
-build-prod build-windows-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
-build-prod build-windows-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
-build-prod build-windows-prod: export OAUTH_SCOPES := $(OAUTH_SCOPES)
-build-prod build-windows-prod: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
-build-prod build-windows-prod: export WEB_OAUTH_CLIENT_ID := $(WEB_OAUTH_CLIENT_ID)
-build-prod build-windows-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
-build-prod build-windows-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
+build-prod build-windows-prod package-windows-msix: export ACC_API_URL := $(ACC_API_URL)
+build-prod build-windows-prod package-windows-msix: export STORAGE_API_URL := $(STORAGE_API_URL)
+build-prod build-windows-prod package-windows-msix: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
+build-prod build-windows-prod package-windows-msix: export OAUTH_SCOPES := $(OAUTH_SCOPES)
+build-prod build-windows-prod package-windows-msix: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
+build-prod build-windows-prod package-windows-msix: export WEB_OAUTH_CLIENT_ID := $(WEB_OAUTH_CLIENT_ID)
+build-prod build-windows-prod package-windows-msix: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
+build-prod build-windows-prod package-windows-msix: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (production)...$(COLOR_RESET)"
 	wails3 task build
@@ -185,6 +185,37 @@ build-windows-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) for windows/$(WIN_ARCH) (production)...$(COLOR_RESET)"
 	wails3 task build ARCH=$(WIN_ARCH)
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME).exe$(COLOR_RESET)"
+
+# MSIX wants a four-part numeric version whose last part is zero — the Store
+# reserves the revision field. VERSION comes from `git describe`, so drop any
+# -gHASH suffix and pad the rest out: 0.0.3-abc1234 -> 0.0.3.0
+MSIX_VERSION := $(shell v='$(VERSION)'; v=$${v%%-*}; \
+	while [ $$(echo "$$v" | tr -cd . | wc -c) -lt 2 ]; do v="$$v.0"; done; \
+	echo "$$v.0")
+
+# Stage (and, where makeappx exists, pack) an MSIX for Microsoft Store
+# submission. Partner Center re-signs the package, so unlike the bare .exe this
+# needs no code-signing certificate — but it does need the publisher ID from
+# your Partner Center account, which must match the manifest exactly:
+#
+#   make package-windows-msix MSIX_PUBLISHER='CN=1234ABCD-…'
+#
+# Note that an MSIX install does NOT share state with brick-cli: Windows
+# redirects the package's %AppData% writes into its own per-package store. That
+# is a deliberate trade — coexistence is a Linux/macOS guarantee only (see
+# README.md's "Coexisting with brick-cli").
+package-windows-msix: export GOOS := windows
+package-windows-msix: check-release-env build-windows-prod
+	@if [ "$(VERSION)" = "dev" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to package version 'dev' — the Store needs a real version."; \
+		echo "Tag the commit first (git tag v1.2.3), then re-run."; \
+		exit 1; \
+	fi
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Packaging $(APP_NAME) $(MSIX_VERSION) for windows/$(WIN_ARCH) (MSIX)...$(COLOR_RESET)"
+	wails3 task windows:create:msix:package \
+		ARCH=$(WIN_ARCH) \
+		MSIX_VERSION=$(MSIX_VERSION) \
+		MSIX_PUBLISHER='$(MSIX_PUBLISHER)'
 
 # Fail fast rather than silently baking empty values into a production build,
 # which would then fall back to the localhost dev URLs at runtime.
@@ -423,6 +454,7 @@ help:
 	@echo "  build-prod         - Build for current platform, stripped (production; needs .env.prod)"
 	@echo "  build-windows-dev  - Cross-compile a Windows .exe, unstripped, with a console (dev)"
 	@echo "  build-windows-prod - Cross-compile a Windows .exe, stripped (production; needs .env.prod)"
+	@echo "  package-windows-msix - Stage an MSIX for Microsoft Store submission (needs MSIX_PUBLISHER)"
 	@echo "  test               - Go unit tests (-race) + frontend typecheck and unit tests"
 	@echo "  test-integration   - End-to-end sync/onboarding tests"
 	@echo "  test-all           - test + test-integration"
@@ -444,6 +476,7 @@ help:
 	@echo "  make release-to-github                         # Publish dist/ to GitHub"
 	@echo "  make build-windows-prod                        # Windows .exe → bin/brick-ui.exe"
 	@echo "  make build-windows-prod WIN_ARCH=arm64         # ...for Windows on ARM"
+	@echo "  make package-windows-msix MSIX_PUBLISHER='CN=…' # MSIX for the Store"
 	@echo ""
 	@echo "$(COLOR_BOLD)Note:$(COLOR_RESET) unlike brick-cli, there is no build-all target, and"
 	@echo "'release' produces a Linux artifact only. Linux and macOS builds are CGO"

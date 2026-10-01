@@ -134,31 +134,115 @@ tasks:
       ARG_FLAG: '{{if eq .ARCH "amd64"}}AMD64{{else}}ARM64{{end}}'
       INSTALL_SCOPE: '{{.INSTALL_SCOPE | default "machine"}}'
 
+  # Stages an MSIX package layout and, where makeappx is available, packs it.
+  #
+  # This deliberately does not use `wails3 tool msix`: that subcommand does not
+  # exist in the wails3 version this module pins (v3.0.0-alpha2.113 — check
+  # `wails3 tool` for the current list), and the invocation it replaced also
+  # pointed `--config` at a wails.json this project does not have, since it
+  # configures through build/config.yml. Both failed before reaching a compiler.
+  #
+  # Driven by `make package-windows-msix`, which computes MSIX_VERSION from the
+  # git tag and passes MSIX_PUBLISHER through. Staging runs on any OS; packing
+  # needs makeappx.exe from the Windows SDK, so the usual split is to stage on
+  # the build host and pack on Windows (or in a Windows CI job) against the
+  # staged directory this leaves behind.
   create:msix:package:
-    summary: Creates an MSIX package
+    summary: Stages an MSIX layout (and packs it when makeappx is present)
     deps:
       - task: build
+    preconditions:
+      - sh: test -n '{{.MSIX_PUBLISHER}}'
+        msg: |
+          MSIX_PUBLISHER is required and must match the publisher ID that
+          Partner Center assigns your account, e.g.
+            make package-windows-msix MSIX_PUBLISHER='CN=1234ABCD-…'
+          Find it in Partner Center under Account settings → Identity details
+          ("Package/Identity/Publisher"). A mismatch is rejected at ingestion.
+      - sh: test -n '{{.MSIX_VERSION}}'
+        msg: "MSIX_VERSION is required (four parts, e.g. 1.2.3.0). Use `make package-windows-msix`, which derives it from the git tag."
+      - sh: command -v magick >/dev/null 2>&1 || command -v convert >/dev/null 2>&1
+        msg: "ImageMagick is required to generate the MSIX logo assets from build/appicon.png. Install it (Debian/Ubuntu: sudo apt install imagemagick)."
     cmds:
-      - |-
-        wails3 tool msix \
-          --config "{{.ROOT_DIR}}/wails.json" \
-          --name "{{.APP_NAME}}" \
-          --executable "{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe" \
-          --arch "{{.ARCH}}" \
-          --out "{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}-{{.ARCH}}.msix" \
-          {{if .CERT_PATH}}--cert "{{.CERT_PATH}}"{{end}} \
-          {{if .PUBLISHER}}--publisher "{{.PUBLISHER}}"{{end}} \
-          {{if .USE_MSIX_TOOL}}--use-msix-tool{{else}}--use-makeappx{{end}}
+      - task: generate:msix:assets
+        vars:
+          STAGE: '{{.STAGE}}'
+      - |
+        set -euo pipefail
+        STAGE='{{.STAGE}}'
+
+        # AppxManifest.xml from the checked-in template. ProcessorArchitecture
+        # takes MSIX's spelling (x64), not Go's (amd64).
+        sed -e 's|__MSIX_PUBLISHER__|{{.MSIX_PUBLISHER}}|g' \
+            -e 's|__MSIX_VERSION__|{{.MSIX_VERSION}}|g' \
+            -e 's|__MSIX_ARCH__|{{.MSIX_ARCH}}|g' \
+            '{{.ROOT_DIR}}/build/windows/msix/app_manifest.xml' > "$STAGE/AppxManifest.xml"
+
+        cp '{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}.exe' "$STAGE/{{.APP_NAME}}.exe"
+        echo "Staged MSIX layout: $STAGE"
+      - |
+        set -euo pipefail
+        STAGE='{{.STAGE}}'
+        OUT='{{.ROOT_DIR}}/{{.BIN_DIR}}/{{.APP_NAME}}-{{.ARCH}}.msix'
+        if command -v makeappx >/dev/null 2>&1 || command -v makeappx.exe >/dev/null 2>&1; then
+          makeappx pack /d "$STAGE" /p "$OUT" /o
+          echo "Packed: $OUT"
+          echo "Submit this to Partner Center — it re-signs the package, so no code-signing certificate is needed for the Store."
+          echo "To install it locally for testing, sign it first: wails3 task windows:sign:msix"
+        else
+          echo ""
+          echo "makeappx not found, so the package was staged but not packed."
+          echo "Pack it on Windows (makeappx ships with the Windows 10/11 SDK):"
+          echo "  makeappx pack /d $STAGE /p $OUT /o"
+        fi
     vars:
       ARCH: '{{.ARCH | default ARCH}}'
-      CERT_PATH: '{{.CERT_PATH | default ""}}'
-      PUBLISHER: '{{.PUBLISHER | default ""}}'
-      USE_MSIX_TOOL: '{{.USE_MSIX_TOOL | default "false"}}'
+      # MSIX names x86_64 "x64"; Go calls it amd64. arm64 is spelled the same.
+      MSIX_ARCH: '{{if eq (.ARCH | default ARCH) "arm64"}}arm64{{else}}x64{{end}}'
+      STAGE: '{{.ROOT_DIR}}/{{.BIN_DIR}}/msix/{{.ARCH | default ARCH}}'
+      MSIX_PUBLISHER: '{{.MSIX_PUBLISHER | default ""}}'
+      MSIX_VERSION: '{{.MSIX_VERSION | default ""}}'
 
-  install:msix:tools:
-    summary: Installs tools required for MSIX packaging
+  # The five logos AppxManifest.xml references, derived from the 1024x1024
+  # build/appicon.png so there is one source of truth for the app's icon.
+  # Square150x150Logo and Square44x44Logo are what Windows actually shows in
+  # the Start menu and taskbar; the rest are Store/tile furniture.
+  generate:msix:assets:
+    summary: Generates the MSIX logo assets from build/appicon.png
+    internal: true
     cmds:
-      - wails3 tool msix-install-tools
+      - |
+        set -euo pipefail
+        STAGE='{{.STAGE}}'
+        SRC='{{.ROOT_DIR}}/build/appicon.png'
+        IM=magick; command -v magick >/dev/null 2>&1 || IM=convert
+
+        rm -rf "$STAGE"
+        mkdir -p "$STAGE/Assets"
+
+        # Square logos scale directly. The wide tile and splash screen have a
+        # non-square aspect, so the icon is fitted to the short edge and then
+        # centred on a transparent canvas rather than stretched.
+        "$IM" "$SRC" -resize 50x50       "$STAGE/Assets/StoreLogo.png"
+        "$IM" "$SRC" -resize 150x150     "$STAGE/Assets/Square150x150Logo.png"
+        "$IM" "$SRC" -resize 44x44       "$STAGE/Assets/Square44x44Logo.png"
+        "$IM" "$SRC" -resize x150 -background none -gravity center -extent 310x150 "$STAGE/Assets/Wide310x150Logo.png"
+        "$IM" "$SRC" -resize x300 -background none -gravity center -extent 620x300 "$STAGE/Assets/SplashScreen.png"
+
+  # Signing an MSIX is only needed to install it outside the Store (local
+  # testing, or sideloading). A Store submission is re-signed by Microsoft.
+  sign:msix:
+    summary: Signs a staged .msix for local installation or sideloading
+    desc: |
+      Store submissions do NOT need this — Partner Center re-signs the package.
+      Use it to install the .msix on your own machine, where Windows refuses an
+      unsigned package. The certificate's subject must equal the manifest's
+      Publisher, so a self-signed test certificate means staging with
+      MSIX_PUBLISHER set to that certificate's subject.
+    cmds:
+      - wails3 tool sign --input "{{.BIN_DIR}}/{{.APP_NAME}}-{{.ARCH}}.msix" {{if .SIGN_CERTIFICATE}}--certificate "{{.SIGN_CERTIFICATE}}"{{end}} {{if .SIGN_THUMBPRINT}}--thumbprint "{{.SIGN_THUMBPRINT}}"{{end}} {{if .TIMESTAMP_SERVER}}--timestamp "{{.TIMESTAMP_SERVER}}"{{end}}
+    vars:
+      ARCH: '{{.ARCH | default ARCH}}'
 
   run:
     cmds:

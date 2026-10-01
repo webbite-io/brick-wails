@@ -144,7 +144,7 @@ func (f *Flow) Route(ctx context.Context) Route {
 	if lp, err := lock.PathIn(f.store.Dir()); err == nil {
 		if lk, err := lock.Acquire(lp); err != nil {
 			if errors.Is(err, lock.ErrLocked) {
-				return Route{Step: StepLocked, Message: runner.ErrLocked.Error() + ". Stop it (Ctrl+C in its terminal, or quit its background daemon) and press Retry."}
+				return Route{Step: StepLocked, Message: runner.ErrLocked.Error() + ". " + runner.LockedHint}
 			}
 		} else {
 			lk.Release()

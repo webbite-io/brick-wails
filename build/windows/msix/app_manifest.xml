@@ -7,11 +7,16 @@
   xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
   IgnorableNamespaces="uap3">
   
+  <!-- Publisher, Version and ProcessorArchitecture are placeholders: this file
+       is a template, and `make package-windows-msix` substitutes them into the
+       AppxManifest.xml it stages. Publisher must match the publisher ID that
+       Partner Center assigns the account (CN=<guid>), or Store ingestion
+       rejects the package. Don't hand-edit them here. -->
   <Identity
     Name="io.webbite.brick"
-    Publisher="CN=Webbite"
-    Version="0.1.0.0" 
-    ProcessorArchitecture="x64" />
+    Publisher="__MSIX_PUBLISHER__"
+    Version="__MSIX_VERSION__"
+    ProcessorArchitecture="__MSIX_ARCH__" />
   
   <Properties>
     <DisplayName>Webbite Brick</DisplayName>
@@ -29,7 +34,7 @@
   </Resources>
   
   <Applications>
-    <Application Id="io.webbite.brick" Executable="brick-ui" EntryPoint="Windows.FullTrustApplication">
+    <Application Id="io.webbite.brick" Executable="brick-ui.exe" EntryPoint="Windows.FullTrustApplication">
       <uap:VisualElements
         DisplayName="Webbite Brick"
         Description="Tray companion for the Webbite Brick CLI"
@@ -41,7 +46,7 @@
       </uap:VisualElements>
       
       <Extensions>
-        <desktop:Extension Category="windows.fullTrustProcess" Executable="brick-ui" />
+        <desktop:Extension Category="windows.fullTrustProcess" Executable="brick-ui.exe" />
         
         
       </Extensions>

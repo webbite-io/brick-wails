@@ -48,6 +48,14 @@ expires while syncing, the setup window opens at the login step.
 
 ## Coexisting with brick-cli
 
+This is a **Linux and macOS** guarantee only. Windows builds deliberately don't
+share state with brick-cli: an MSIX package has its `%AppData%` writes
+redirected into its own per-package store, so the two can't see each other's
+config, tokens or lock file even when both are installed. Nothing is restricted
+to preserve coexistence there — Windows just gets its own state, and the
+lock-held messaging says "another Brick" rather than naming the CLI (see
+`internal/runner/locked_windows.go`).
+
 - **Shared files**: `config.yaml`, `sync-state-*.json` and `brick.lock` in
   `~/.config/brick` (`%AppData%\brick` on Windows). Config writes are
   read-modify-write and keep keys this app doesn't know about, so neither app
@@ -250,6 +258,44 @@ smoke-test it on a real Windows machine before shipping.
 **macOS** isn't set up. It needs Objective-C through CGO, so it needs a Mac or
 a CI runner; `build/darwin` holds the Wails-generated scaffolding (`.dmg`). See
 the [Wails v3 packaging docs](https://v3.wails.io/).
+
+### Microsoft Store (MSIX)
+
+```bash
+make package-windows-msix MSIX_PUBLISHER='CN=1234ABCD-…'   # → bin/msix/<arch>/
+```
+
+**A Store submission needs no code-signing certificate.** Partner Center strips
+your signature and re-signs the package with Microsoft's own, and Store installs
+don't hit SmartScreen's unknown-publisher prompt. That only holds for the MSIX
+route: the Store also accepts plain EXE/MSI installers, and *those* you must
+sign yourself, exactly as [below](#signing-for-windows). A direct download from
+your own site is likewise your own to sign.
+
+`MSIX_PUBLISHER` must equal the publisher ID Partner Center assigns the account
+(Account settings → Identity details), or ingestion rejects the package. The
+target derives a four-part `MSIX_VERSION` from the git tag and refuses to
+package version `dev`, so tag first. `WIN_ARCH=arm64` works here too.
+
+Staging runs anywhere and produces `AppxManifest.xml`, the five logo assets
+(generated from `build/appicon.png`, so ImageMagick is needed) and the `.exe`.
+Packing needs `makeappx.exe` from the Windows SDK, so on Linux the target stops
+after staging and prints the `makeappx` command to run on Windows. You only
+need `wails3 task windows:sign:msix` to install the package locally for
+testing, where Windows refuses an unsigned one — never for the Store.
+
+Two caveats before submitting:
+
+- **No brick-cli coexistence**, by design — see
+  [Coexisting with brick-cli](#coexisting-with-brick-cli).
+- `runFullTrust` is a *restricted* capability, so Store review asks for a
+  justification. Normally granted for desktop apps; just expect the extra step.
+  The Store-facing description in `build/windows/msix/app_manifest.xml` still
+  calls the app a "Tray companion for the Webbite Brick CLI", which is worth
+  rewording given there is no CLI to companion on Windows.
+
+None of the MSIX path is verified end to end from Linux: staging is, packing and
+installing are not.
 
 ### Signing for Windows
 

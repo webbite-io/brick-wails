@@ -15,9 +15,9 @@
     <PackageInformation
         PackageName="Webbite Brick"
         PackageDisplayName="Webbite Brick"
-        PublisherName="CN=Webbite"
+        PublisherName="__MSIX_PUBLISHER__"
         PublisherDisplayName="Webbite"
-        Version="0.1.0.0"
+        Version="__MSIX_VERSION__"
         PackageDescription="Tray companion for the Webbite Brick CLI">
         <Capabilities>
             <Capability Name="runFullTrust" />
