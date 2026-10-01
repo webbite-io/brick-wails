@@ -114,6 +114,7 @@ make doctor           # check build prerequisites
 make setup            # install wails3 + frontend deps
 make dev              # hot reload (uses .env.local)
 make build-dev        # dev build → bin/brick-ui
+make build-windows-dev # dev build cross-compiled for Windows → bin/brick-ui.exe
 wails3 generate bindings -clean=true -ts -i   # after changing a service's methods/types
 ```
 
@@ -216,9 +217,82 @@ already floors this at Ubuntu 24.04 / Debian 13.
 (`wails3 task linux:create:deb` and friends, configured in
 `build/linux/nfpm/nfpm.yaml`) but aren't part of `make release`.
 
-**macOS and Windows** aren't set up. This is a CGO GUI app, so each needs its
-own native toolchain or CI runner; `build/darwin` and `build/windows` hold the
-Wails-generated scaffolding (`.dmg`, `.msi`/NSIS). See the [Wails v3 packaging
-docs](https://v3.wails.io/).
+**Windows** cross-compiles from any host, this Linux box included.
+
+```bash
+make build-windows-prod                 # → bin/brick-ui.exe (amd64, production)
+make build-windows-prod WIN_ARCH=arm64  # Windows on ARM
+make build-windows-dev                  # unstripped, keeps a console for logs
+```
+
+Windows is the only backend that isn't CGO: Wails reaches WebView2 through
+pure-Go `go-winloader`, so `CGO_ENABLED=0` suffices and no mingw, Zig or Docker
+toolchain is involved. (`build/windows/Taskfile.yml` does have a Zig/Docker
+`build:docker` path, but it is only taken when `CGO_ENABLED=1`.) The app icon
+and manifest are linked in through a generated `.syso`, so the bare `.exe`
+carries them. `make build-windows-dev` omits `-H windowsgui`, so the dev build
+keeps a console window and bakes nothing in — it reads `.env.local` from the
+working directory, so copy that next to the `.exe`.
+
+Two things the `.exe` needs that the Linux build doesn't:
+
+- **The WebView2 runtime** on the target machine. It ships with Windows 11 and
+  current Windows 10, so it is normally already there. `wails3 task
+  windows:package` builds an NSIS installer that bundles Microsoft's
+  bootstrapper for machines without it; a bare `.exe` assumes it is present.
+  (That route needs `makensis`, and is untested from Linux here.)
+- **An Authenticode signature**, or SmartScreen greets the first run with
+  "Windows protected your PC" — see [Signing for Windows](#signing-for-windows).
+
+Only the build is verified from Linux: the `.exe` is a valid PE binary, but
+smoke-test it on a real Windows machine before shipping.
+
+**macOS** isn't set up. It needs Objective-C through CGO, so it needs a Mac or
+a CI runner; `build/darwin` holds the Wails-generated scaffolding (`.dmg`). See
+the [Wails v3 packaging docs](https://v3.wails.io/).
+
+### Signing for Windows
+
+SmartScreen keys off **reputation**, not merely the presence of a signature, so
+the two decisions are "which certificate" and "where does the signing run".
+
+| Option | Cost (check current) | SmartScreen |
+| --- | --- | --- |
+| Unsigned | — | Warns, always |
+| OV certificate | ~$200–400/yr | Warns until reputation accumulates |
+| EV certificate | ~$300–700/yr | Clean essentially from the first download |
+| [Azure Trusted Signing](https://learn.microsoft.com/azure/trusted-signing/) | ~$10/mo | OV-level, Microsoft-operated |
+
+Azure Trusted Signing is the cheapest and by far the least painful to automate
+— Microsoft mints short-lived certificates per signing request, so there is no
+token to babysit. The catch is eligibility: it wants a verified legal entity,
+historically with three or more years of verifiable history (there is an
+individual track). Buy an **EV** certificate instead if you need zero warnings
+from day one and can't wait out reputation build-up.
+
+Either way, obtaining a certificate means a registered legal entity, a
+verifiable business address and phone number, and someone to take the CA's
+verification call. Budget days to a couple of weeks.
+
+Note that since the June 2023 CA/Browser Forum baseline, code-signing private
+keys must live on FIPS 140-2 Level 2 (or CC EAL4+) hardware. A new OV/EV
+certificate therefore does **not** arrive as a `.pfx` you can drop in a secret:
+it is a USB token shipped to you, or the CA's cloud HSM. A physical token is
+effectively unusable from CI; cloud signing (Azure Trusted Signing, DigiCert
+KeyLocker, SSL.com eSigner) is not.
+
+The Task scaffolding is already in place — `wails3 task windows:sign` and
+`windows:sign:installer`, taking `SIGN_CERTIFICATE` (a `.pfx` path),
+`SIGN_THUMBPRINT` (a certificate in the Windows store, which is how tokens and
+HSMs are reached), and `TIMESTAMP_SERVER`, with the password read from the
+system keychain via `wails3 setup signing` or `WAILS_WINDOWS_CERT_PASSWORD`.
+Always pass a timestamp server, so signatures outlive the certificate.
+
+One wrinkle: `wails3 tool sign` has no built-in Windows signing and fails with
+*"built-in Windows signing not yet implemented — please use signtool.exe on
+Windows, or install osslsigncode"*. So signing from Linux needs
+`apt install osslsigncode`, and `SIGN_THUMBPRINT` is Windows-only. With a token
+or Trusted Signing the practical shape is: cross-compile the `.exe` here or in
+Linux CI, then sign on a Windows runner.
 
 The tray icon still uses Wails' placeholder logo (see `build/tray`).

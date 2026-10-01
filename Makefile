@@ -4,10 +4,12 @@
 # workflow across both repos.
 #
 # Unlike brick-cli (a plain Go CLI that cross-compiles trivially), this is a
-# native GUI app: it uses CGO and per-OS webview/tray libraries, so builds
-# only work for the OS you're running on. There is no build-all, and `release`
-# only produces a Linux artifact — macOS/Windows packaging needs those native
-# toolchains (or CI), see README.md's "Packaging" section.
+# native GUI app, so there is no build-all. Linux and macOS builds use CGO
+# (GTK4/WebKitGTK and Objective-C respectively) and only work on that OS.
+# Windows is the exception: its webview is reached through pure-Go
+# go-winloader, so `make build-windows-prod` cross-compiles from any host (see
+# the "Windows cross-compilation" block below). `release` still produces a
+# Linux artifact only — see README.md's "Packaging" section.
 
 APP_NAME := brick-ui
 BIN_DIR := bin
@@ -25,9 +27,9 @@ APPIMAGE_ARCH := $(if $(filter arm64,$(GOARCH)),aarch64,x86_64)
 # exists (gitignored); CI sets them as real env vars instead. Dev builds
 # (make dev / build-dev) don't bake anything and read .env.local at runtime.
 #
-# They are only exported for build-prod (target-specific exports below):
-# exporting them globally would hand `make dev` *empty* env vars when there's
-# no .env.prod, which would hide the values in .env.local.
+# They are only exported for the production targets (target-specific exports
+# below): exporting them globally would hand `make dev` *empty* env vars when
+# there's no .env.prod, which would hide the values in .env.local.
 -include .env.prod
 
 # Pin the wails3 CLI to the exact version this module depends on (go.mod),
@@ -67,7 +69,7 @@ LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev l
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
 FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
 
-.PHONY: all setup doctor dev build build-dev build-prod check-release-env run release release-to-github clean install version help test test-go test-frontend test-integration test-all fonts
+.PHONY: all setup doctor dev build build-dev build-prod build-windows-dev build-windows-prod check-release-env run release release-to-github clean install version help test test-go test-frontend test-integration test-all fonts
 
 # Default target
 all: build-prod
@@ -129,20 +131,60 @@ build-dev:
 
 # Production build: stripped, trimmed, -tags production, with the values
 # from .env.prod (or the environment) baked in.
-build-prod: export ACC_API_URL := $(ACC_API_URL)
-build-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
-build-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
-build-prod: export OAUTH_SCOPES := $(OAUTH_SCOPES)
-build-prod: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
-build-prod: export WEB_OAUTH_CLIENT_ID := $(WEB_OAUTH_CLIENT_ID)
-build-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
-build-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
+build-prod build-windows-prod: export ACC_API_URL := $(ACC_API_URL)
+build-prod build-windows-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
+build-prod build-windows-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
+build-prod build-windows-prod: export OAUTH_SCOPES := $(OAUTH_SCOPES)
+build-prod build-windows-prod: export OAUTH_CALLBACK_URL := $(OAUTH_CALLBACK_URL)
+build-prod build-windows-prod: export WEB_OAUTH_CLIENT_ID := $(WEB_OAUTH_CLIENT_ID)
+build-prod build-windows-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
+build-prod build-windows-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (production)...$(COLOR_RESET)"
 	wails3 task build
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
 build: build-prod
+
+# --- Windows cross-compilation ---
+#
+# Windows is the one target that builds from a non-Windows host. The Linux
+# backend needs GTK4/WebKitGTK through CGO and macOS needs Objective-C, but
+# Wails reaches WebView2 through pure-Go go-winloader (see go-winloader and
+# wails/webview2 in go.mod), so CGO_ENABLED=0 is enough — no mingw or Zig
+# toolchain, and no Docker. Exporting GOOS makes the root Taskfile dispatch to
+# build/windows/Taskfile.yml, which cross-compiles with plain `go build` and
+# links the icon/manifest resources in via a generated .syso.
+#
+# Set WIN_ARCH=arm64 for Windows on ARM; the default targets amd64 regardless
+# of the host arch, since that's what the overwhelming majority of Windows
+# machines run.
+#
+# Two things the .exe still needs that a Linux build doesn't:
+#   - the Microsoft WebView2 runtime on the target machine. Preinstalled on
+#     Windows 11 and current Windows 10; the NSIS installer
+#     (`wails3 task windows:package`, needs makensis) bundles the bootstrapper
+#     for older machines, but a bare .exe assumes it is already there.
+#   - an Authenticode signature, or SmartScreen warns on first run. See
+#     README.md's "Signing for Windows" section.
+WIN_ARCH ?= amd64
+
+# Dev build: unstripped and *without* -H windowsgui, so the app keeps a console
+# window and its logs are visible. Bakes nothing in — it reads .env.local from
+# the working directory at runtime, so copy that next to the .exe.
+build-windows-dev: export GOOS := windows
+build-windows-dev:
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) for windows/$(WIN_ARCH) (dev)...$(COLOR_RESET)"
+	wails3 task build DEV=true ARCH=$(WIN_ARCH)
+	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME).exe$(COLOR_RESET)"
+
+# Production build: stripped, trimmed, -tags production, -H windowsgui (no
+# console window), with the .env.prod values baked in.
+build-windows-prod: export GOOS := windows
+build-windows-prod: check-release-env
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) for windows/$(WIN_ARCH) (production)...$(COLOR_RESET)"
+	wails3 task build ARCH=$(WIN_ARCH)
+	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME).exe$(COLOR_RESET)"
 
 # Fail fast rather than silently baking empty values into a production build,
 # which would then fall back to the localhost dev URLs at runtime.
@@ -374,21 +416,23 @@ help:
 	@echo "  make [target]"
 	@echo ""
 	@echo "$(COLOR_BOLD)Targets:$(COLOR_RESET)"
-	@echo "  doctor     - Check that build tools and system libraries are present"
-	@echo "  setup      - Install wails3 CLI and frontend (npm) dependencies"
-	@echo "  dev        - Run with hot reload (frontend + backend)"
-	@echo "  build-dev  - Build for current platform, unstripped (dev)"
-	@echo "  build-prod - Build for current platform, stripped (production; needs .env.prod)"
-	@echo "  test       - Go unit tests (-race) + frontend typecheck and unit tests"
-	@echo "  test-integration - End-to-end sync/onboarding tests"
-	@echo "  test-all   - test + test-integration"
-	@echo "  run        - Run the last build"
-	@echo "  release    - Build the Linux release tarball (AppImage) into dist/"
-	@echo "  release-to-github - Publish dist/ artifacts as a GitHub release (prompts before replacing)"
-	@echo "  clean      - Remove build artifacts (bin/, dist/, frontend/dist, .task)"
-	@echo "  install    - Build using build-prod and install to ~/.local/bin (for testing)"
-	@echo "  version    - Show version information"
-	@echo "  help       - Show this help message"
+	@echo "  doctor             - Check that build tools and system libraries are present"
+	@echo "  setup              - Install wails3 CLI and frontend (npm) dependencies"
+	@echo "  dev                - Run with hot reload (frontend + backend)"
+	@echo "  build-dev          - Build for current platform, unstripped (dev)"
+	@echo "  build-prod         - Build for current platform, stripped (production; needs .env.prod)"
+	@echo "  build-windows-dev  - Cross-compile a Windows .exe, unstripped, with a console (dev)"
+	@echo "  build-windows-prod - Cross-compile a Windows .exe, stripped (production; needs .env.prod)"
+	@echo "  test               - Go unit tests (-race) + frontend typecheck and unit tests"
+	@echo "  test-integration   - End-to-end sync/onboarding tests"
+	@echo "  test-all           - test + test-integration"
+	@echo "  run                - Run the last build"
+	@echo "  release            - Build the Linux release tarball (AppImage) into dist/"
+	@echo "  release-to-github  - Publish dist/ artifacts as a GitHub release (prompts before replacing)"
+	@echo "  clean              - Remove build artifacts (bin/, dist/, frontend/dist, .task)"
+	@echo "  install            - Build using build-prod and install to ~/.local/bin (for testing)"
+	@echo "  version            - Show version information"
+	@echo "  help               - Show this help message"
 	@echo ""
 	@echo "$(COLOR_BOLD)Examples:$(COLOR_RESET)"
 	@echo "  make doctor                                   # Check prerequisites first"
@@ -398,11 +442,14 @@ help:
 	@echo "  make install                                   # Build + install locally"
 	@echo "  make release                                   # Linux tarball in dist/"
 	@echo "  make release-to-github                         # Publish dist/ to GitHub"
+	@echo "  make build-windows-prod                        # Windows .exe → bin/brick-ui.exe"
+	@echo "  make build-windows-prod WIN_ARCH=arm64         # ...for Windows on ARM"
 	@echo ""
 	@echo "$(COLOR_BOLD)Note:$(COLOR_RESET) unlike brick-cli, there is no build-all target, and"
-	@echo "'release' produces a Linux artifact only. This is a native GUI app (CGO +"
-	@echo "per-OS webview/tray libs), so builds only work for the OS you're running"
-	@echo "on; macOS/Windows need CI or a native machine of that OS (see README.md's"
-	@echo "Packaging section)."
+	@echo "'release' produces a Linux artifact only. Linux and macOS builds are CGO"
+	@echo "(GTK4/WebKitGTK, Objective-C) and only work on that OS, so macOS needs CI"
+	@echo "or a Mac. Windows is the exception: its webview is pure Go, so"
+	@echo "build-windows-{dev,prod} cross-compile from here. The .exe is unsigned —"
+	@echo "see README.md's Packaging section for SmartScreen and signing."
 	@echo ""
 	@echo "$(COLOR_BOLD)Current version:$(COLOR_RESET) $(VERSION)"
