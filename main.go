@@ -24,7 +24,6 @@ import (
 	"github.com/webbite-io/brick-wails/internal/runner"
 	"github.com/webbite-io/brick-wails/internal/syncengine"
 	"github.com/webbite-io/brick-wails/internal/trayicon"
-	"github.com/webbite-io/brick-wails/internal/update"
 	"github.com/webbite-io/brick-wails/internal/webapp"
 )
 
@@ -36,11 +35,6 @@ var trayIconLight []byte
 
 //go:embed build/tray/logo-wails-dark.png
 var trayIconDark []byte
-
-// menuDotSize is the pixel size of the blue dot drawn beside the tray menu's
-// "Install Update" item — menu item icons are rendered at roughly the text
-// height, so it's sized for that rather than for the tray icon.
-const menuDotSize = 16
 
 // trayIconSet is one theme's tray icon in each of its three faces: plain, a
 // blue dot for a waiting update, a yellow one for paused sync.
@@ -148,14 +142,14 @@ func main() {
 	run := runner.New(runner.Config{Env: env, Store: store, Tokens: tokens, Version: Version, Events: evs})
 	flow := onboarding.New(env, store, tokens)
 
-	var setupWindow, updateWindow *application.WebviewWindow
+	var setupWindow *application.WebviewWindow
 	syncSvc := &SyncService{runner: run}
 	onbSvc := &OnboardingService{flow: flow, runner: run, window: func() *application.WebviewWindow { return setupWindow }}
-	updSvc := &UpdateService{
-		logger:  logger,
-		version: Version,
-		window:  func() *application.WebviewWindow { return updateWindow },
-	}
+	// Bound on every platform, macOS included where Sparkle takes its place,
+	// so the generated frontend bindings don't depend on the OS that
+	// generates them.
+	updSvc := &UpdateService{logger: logger, version: Version}
+	updater := newAppUpdater(logger, updSvc)
 
 	app := application.New(application.Options{
 		Name:        "Webbite Brick",
@@ -229,32 +223,10 @@ func main() {
 		e.Cancel()
 	})
 
-	// The update window is a small, fixed-size prompt: it starts hidden, and
-	// UpdateService shows it when the launch check finds a newer release or
-	// when the user picks the tray's update item themselves.
-	updateWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "Update",
-		Title:            "Webbite Brick",
-		Width:            380,
-		Height:           210,
-		MinWidth:         380,
-		MinHeight:        210,
-		MaxWidth:         380,
-		MaxHeight:        210,
-		Hidden:           true,
-		AlwaysOnTop:      true,
-		Windows:          application.WindowsWindow{HiddenOnTaskbar: true},
-		BackgroundColour: application.NewRGB(24, 24, 27),
-		URL:              "/update.html",
-	})
-	updateWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		updateWindow.Hide()
-		e.Cancel()
-	})
-
 	// On macOS, be in the Dock and Cmd-Tab while any window is open and
-	// tray-only otherwise.
-	trackAppSwitcher(app, popover, setupWindow, updateWindow)
+	// tray-only otherwise. Sparkle's windows count too (setUpdaterUIOpen);
+	// the update window of the other platforms doesn't exist there.
+	trackAppSwitcher(app, popover, setupWindow)
 	// The frontend shows the window itself once it has routed and laid out the
 	// screen (OnboardingService.ShowWindow). Showing it here instead would
 	// present the previous screen's frame for an instant before the new one
@@ -354,11 +326,9 @@ func main() {
 		}
 	})
 	menu.AddSeparator()
-	// Offers whatever a check has already turned up, and otherwise runs one on
-	// the spot — see updSvc.onPending below for the "Install Update" face of
-	// this item.
-	updateItem := menu.Add("Check for Updates")
-	updateItem.OnClick(func(*application.Context) { go updSvc.offerOrCheck() })
+	// Wired by updater.start below: Sparkle on macOS, the app's own check
+	// elsewhere.
+	updateItem := menu.Add(updateMenuLabel)
 	menu.AddSeparator()
 	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
@@ -374,43 +344,11 @@ func main() {
 		tray.OnClick(tray.OpenMenu)
 	}
 
-	// One place where a found update changes the tray: the icon gains its blue
-	// dot and the menu item becomes the offer to install it, carrying the same
-	// dot. Both stay until the app is actually replaced, so dismissing the
-	// window doesn't hide that an update is still waiting.
-	updateDot, err := trayicon.Dot(menuDotSize, trayicon.UpdateBlue)
-	if err != nil {
-		logger.Printf("menu dot: %v", err)
-	}
-	updSvc.onPending = func(*update.Info) {
-		updatePending.Store(true)
-		updateItem.SetLabel("Install Update")
-		if updateDot != nil {
-			updateItem.SetBitmap(updateDot)
+	updater.start(app, updateItem, func(pending bool) {
+		if updatePending.Swap(pending) != pending {
+			applyTrayIcon()
 		}
-		applyTrayIcon()
-	}
-
-	// The launch check runs immediately, then every CheckInterval — a tray app
-	// can stay running for weeks. A dev build (Version == "dev") never checks,
-	// matching brick-cli's own isRunningInDevelopment gate.
-	if Version != "dev" {
-		app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {
-			go func() {
-				updSvc.checkOnStartup()
-				t := time.NewTicker(update.CheckInterval)
-				defer t.Stop()
-				for {
-					select {
-					case <-t.C:
-						updSvc.checkInBackground()
-					case <-app.Context().Done():
-						return
-					}
-				}
-			}()
-		})
-	}
+	})
 
 	// Keep the tray in step with status. Also opens the setup window when a
 	// running sync loses its session, so the user is asked to log in again.

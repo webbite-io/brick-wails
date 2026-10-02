@@ -11,6 +11,14 @@ vars:
   # see. The dev bundle gets the same name in its own directory rather than a
   # ".dev" suffix, which would be shown too.
   BUNDLE_NAME: 'Webbite Brick'
+  # Sparkle, the updater (see updates_darwin.go). The release tarball is
+  # fetched by the `sparkle` task and unpacked to SPARKLE_DIR (gitignored):
+  # the framework is linked at build time and embedded in the bundle, and its
+  # bin/ tools sign updates at release time (build/darwin/release.sh). Bump
+  # both together: SPARKLE_SHA256 is the tarball's checksum.
+  SPARKLE_VERSION: '2.10.0'
+  SPARKLE_SHA256: 'c2bf58aa8387266ac179357b1415d6f2635f044da8be41042af32425dae6da0c'
+  SPARKLE_DIR: 'build/darwin/sparkle'
 
 tasks:
   build:
@@ -32,6 +40,7 @@ tasks:
     summary: Builds the application natively on macOS
     internal: true
     deps:
+      - task: sparkle
       - task: common:go:mod:tidy
       - task: common:build:frontend
         vars:
@@ -63,6 +72,7 @@ tasks:
     summary: Cross-compiles for macOS using Docker (for Linux/Windows hosts)
     internal: true
     deps:
+      - task: sparkle
       - task: common:build:frontend
         vars:
           OBFUSCATED:
@@ -133,8 +143,35 @@ tasks:
       - task: create:app:bundle
 
 
+  sparkle:
+    summary: Downloads the pinned Sparkle release into build/darwin/sparkle
+    status:
+      - test "$(cat {{.SPARKLE_DIR}}/.version 2>/dev/null)" = "{{.SPARKLE_VERSION}}"
+    cmds:
+      - |
+        set -eu
+        tmp=$(mktemp -d)
+        curl -fsSL "https://github.com/sparkle-project/Sparkle/releases/download/{{.SPARKLE_VERSION}}/Sparkle-{{.SPARKLE_VERSION}}.tar.xz" -o "$tmp/sparkle.tar.xz"
+        if command -v sha256sum >/dev/null 2>&1; then
+          sum=$(sha256sum "$tmp/sparkle.tar.xz" | awk '{print $1}')
+        else
+          sum=$(shasum -a 256 "$tmp/sparkle.tar.xz" | awk '{print $1}')
+        fi
+        if [ "$sum" != "{{.SPARKLE_SHA256}}" ]; then
+          rm -rf "$tmp"
+          echo "Sparkle {{.SPARKLE_VERSION}} checksum mismatch: got $sum, want {{.SPARKLE_SHA256}}" >&2
+          exit 1
+        fi
+        rm -rf "{{.SPARKLE_DIR}}"
+        mkdir -p "{{.SPARKLE_DIR}}"
+        tar -xJf "$tmp/sparkle.tar.xz" -C "{{.SPARKLE_DIR}}" Sparkle.framework bin
+        rm -rf "$tmp"
+        echo "{{.SPARKLE_VERSION}}" > "{{.SPARKLE_DIR}}/.version"
+
   create:app:bundle:
     summary: Creates an `.app` bundle
+    deps:
+      - task: sparkle
     cmds:
       - mkdir -p "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/MacOS"
       - mkdir -p "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/Resources"
@@ -144,14 +181,53 @@ tasks:
           cp build/darwin/Assets.car "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/Resources"
         fi
       - cp "{{.BIN_DIR}}/{{.APP_NAME}}" "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/MacOS"
+      # A fresh copy each time: a framework left from an older Sparkle would
+      # keep files the new one doesn't have. ditto (or cp -a) rather than
+      # cp -R, which would flatten the framework's Versions/Current symlinks
+      # and break its signature.
+      - rm -rf "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/Frameworks"
+      - mkdir -p "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/Frameworks"
+      - '{{if eq OS "darwin"}}ditto{{else}}cp -a{{end}} "{{.SPARKLE_DIR}}/Sparkle.framework" "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/Frameworks/Sparkle.framework"'
       - cp build/darwin/Info.plist "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents"
+      - task: stamp:plist
+        vars:
+          PLIST: '{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app/Contents/Info.plist'
       - task: '{{if eq OS "darwin"}}codesign:adhoc{{else}}codesign:skip{{end}}'
+
+  stamp:plist:
+    summary: Writes the build's version and Sparkle settings into a bundle's Info.plist
+    internal: true
+    platforms: [darwin]
+    cmds:
+      - |
+        set -eu
+        plist="{{.PLIST}}"
+        # Sparkle decides whether an appcast item is newer by comparing its
+        # sparkle:version with CFBundleVersion, so a release bundle has to
+        # carry the release's version. Dev builds keep the placeholder.
+        v="{{.BRICK_VERSION}}"
+        if [ -n "$v" ] && [ "$v" != "dev" ]; then
+          plutil -replace CFBundleVersion -string "$v" "$plist"
+          plutil -replace CFBundleShortVersionString -string "$v" "$plist"
+        fi
+        # The key updates are verified against. Without it Sparkle refuses to
+        # start, and the app runs without updates (the reason is logged).
+        if [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ]; then
+          plutil -replace SUPublicEDKey -string "$SPARKLE_PUBLIC_ED_KEY" "$plist"
+        fi
+        # Test builds only: point Sparkle at another appcast, a local one say.
+        if [ -n "${SPARKLE_FEED_URL:-}" ]; then
+          plutil -replace SUFeedURL -string "$SPARKLE_FEED_URL" "$plist"
+        fi
 
   codesign:adhoc:
     summary: Ad-hoc signs the app bundle (macOS only)
     internal: true
     cmds:
-      - codesign --force --deep --sign - "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app"
+      # Inside out rather than --deep, which Sparkle's helpers don't survive;
+      # release builds are signed the same way with a Developer ID
+      # (build/darwin/release.sh).
+      - build/darwin/sign.sh "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app"
 
   codesign:skip:
     summary: Skips codesigning when cross-compiling
@@ -172,27 +248,3 @@ tasks:
       - cp "build/darwin/Info.dev.plist" "{{.BIN_DIR}}/dev/{{.BUNDLE_NAME}}.app/Contents/Info.plist"
       - codesign --force --deep --sign - "{{.BIN_DIR}}/dev/{{.BUNDLE_NAME}}.app"
       - '"{{.BIN_DIR}}/dev/{{.BUNDLE_NAME}}.app/Contents/MacOS/{{.APP_NAME}}"'
-
-  sign:
-    summary: Signs the application bundle with Developer ID
-    desc: |
-      Signs the .app bundle for distribution.
-      Uses signing identity from `wails3 setup` (stored in ~/.config/wails/defaults.yaml).
-      Override with: task darwin:sign -- --identity "Developer ID Application: ..."
-    deps:
-      - task: package
-    cmds:
-      - wails3 tool sign --input "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app" {{.CLI_ARGS}}
-
-  sign:notarize:
-    summary: Signs and notarizes the application bundle
-    desc: |
-      Signs the .app bundle and submits it for notarization.
-      Uses signing identity and keychain profile from `wails3 setup`.
-
-      First-time setup:
-        wails3 setup
-    deps:
-      - task: package
-    cmds:
-      - wails3 tool sign --input "{{.BIN_DIR}}/{{.BUNDLE_NAME}}.app" --notarize {{.CLI_ARGS}}

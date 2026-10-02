@@ -66,6 +66,38 @@ import (
 //go:embed build/appicon.png
 var bareBinaryIcon []byte
 
+// The state syncAppSwitcher works from. Main thread only.
+var (
+	// switcherWindows are the windows trackAppSwitcher watches.
+	switcherWindows []*application.WebviewWindow
+	// updaterUIOpen is set while Sparkle may have a window up: its windows
+	// aren't Wails windows, so they can't be found among switcherWindows.
+	updaterUIOpen bool
+)
+
+// syncAppSwitcher puts Brick in the Dock and Cmd-Tab if any of its windows is
+// open, and takes it out otherwise. Main thread only.
+func syncAppSwitcher() {
+	open := updaterUIOpen
+	for _, w := range switcherWindows {
+		if p := w.NativeWindow(); p != nil && bool(C.isOrderedIn(p)) {
+			open = true
+		}
+	}
+	C.setInAppSwitcher(C.bool(open))
+}
+
+// setUpdaterUIOpen tells the app switcher whether Sparkle may have a window
+// up. An accessory app made regular is activated too (see setInAppSwitcher),
+// so the window Sparkle is about to show isn't left behind the app that had
+// focus. Not on the main thread.
+func setUpdaterUIOpen(open bool) {
+	application.InvokeSync(func() {
+		updaterUIOpen = open
+		syncAppSwitcher()
+	})
+}
+
 // trackAppSwitcher keeps Brick in the Dock and Cmd-Tab while any of windows
 // is open, and a menu bar-only (accessory) app otherwise: an open window has
 // to be reachable with Cmd-Tab like any other, which an accessory app never
@@ -77,17 +109,10 @@ var bareBinaryIcon []byte
 // to catch a window hidden while it was fully covered, which changes no
 // occlusion state and so sends no WindowHide.
 func trackAppSwitcher(app *application.App, windows ...*application.WebviewWindow) {
-	sync := func(*application.WindowEvent) {
-		application.InvokeSync(func() {
-			open := false
-			for _, w := range windows {
-				if p := w.NativeWindow(); p != nil && bool(C.isOrderedIn(p)) {
-					open = true
-				}
-			}
-			C.setInAppSwitcher(C.bool(open))
-		})
-	}
+	// Set directly: this runs before the app does, so nothing reads it yet
+	// (and InvokeSync would wait forever for a run loop that hasn't started).
+	switcherWindows = windows
+	sync := func(*application.WindowEvent) { application.InvokeSync(syncAppSwitcher) }
 
 	// The window that last had focus, to give it back on activation.
 	var lastKey *application.WebviewWindow

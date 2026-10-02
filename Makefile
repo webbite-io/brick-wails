@@ -5,9 +5,10 @@
 #
 # Unlike brick-cli (a plain Go CLI that cross-compiles trivially), this is a
 # native GUI app: it uses CGO and per-OS webview/tray libraries, so builds
-# only work for the OS you're running on. There is no build-all, and `release`
-# only produces a Linux artifact — macOS/Windows packaging needs those native
-# toolchains (or CI), see README.md's "Packaging" section.
+# only work for the OS you're running on. There is no build-all: `release`
+# produces the artifact of the OS it runs on — the AppImage tarball on Linux,
+# a notarized DMG plus Sparkle appcast on macOS — and Windows packaging isn't
+# wired up. See README.md's "Packaging" section.
 
 APP_NAME := brick-ui
 BIN_DIR := bin
@@ -102,7 +103,7 @@ LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev l
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
 FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
 
-.PHONY: all setup doctor dev build build-dev build-prod check-release-env run release release-to-github clean install version help test test-go test-frontend test-integration test-all fonts
+.PHONY: all setup doctor dev build build-dev build-prod check-release-env run release release-to-github clean install sparkle-keys version help test test-go test-frontend test-integration test-all fonts
 
 # Default target
 all: build-prod
@@ -213,7 +214,10 @@ build-dev:
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
 # Production build: stripped, trimmed, -tags production, with the values
-# from .env.prod (or the environment) baked in.
+# from .env.prod (or the environment) baked in. BUILD_TASK is the Task that
+# builds it: the host's own arch by default, while the macOS release sets it
+# to the universal (x86_64 + arm64) build.
+BUILD_TASK := build
 build-prod: export ACC_API_URL := $(ACC_API_URL)
 build-prod: export STORAGE_API_URL := $(STORAGE_API_URL)
 build-prod: export OAUTH_CLIENT_ID := $(OAUTH_CLIENT_ID)
@@ -224,7 +228,7 @@ build-prod: export STORAGE_WEB_URL := $(STORAGE_WEB_URL)
 build-prod: export STORAGE_HELP_URL := $(STORAGE_HELP_URL)
 build-prod: check-release-env
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Building $(APP_NAME) v$(VERSION) (production)...$(COLOR_RESET)"
-	$(WAILS3) task build
+	$(WAILS3) task $(BUILD_TASK)
 	@echo "$(COLOR_GREEN)✓ Build complete: $(BIN_DIR)/$(APP_NAME)$(COLOR_RESET)"
 
 build: build-prod
@@ -290,6 +294,25 @@ fonts:
 run:
 	$(WAILS3) task run
 
+ifeq ($(HOST_OS),darwin)
+# Build the macOS release: a universal production build, bundled with
+# Sparkle, Developer ID signed and notarized, in a DMG that is both the
+# download and the update — plus the Sparkle appcast that offers it, and
+# SHA256SUMS-macos. See build/darwin/release.sh for the steps and what each
+# of these variables is; set them in .env.prod or the environment.
+# RELEASE_FLAGS=--skip-notarize packages a local test build without
+# submitting it to Apple (release-to-github refuses the result).
+release: BUILD_TASK := darwin:build:universal
+release: export SPARKLE_PUBLIC_ED_KEY := $(SPARKLE_PUBLIC_ED_KEY)
+release: export SPARKLE_ED_KEY_FILE := $(SPARKLE_ED_KEY_FILE)
+release: export SPARKLE_FEED_URL := $(SPARKLE_FEED_URL)
+release: export MAC_SIGN_IDENTITY := $(MAC_SIGN_IDENTITY)
+release: export MAC_NOTARY_PROFILE := $(MAC_NOTARY_PROFILE)
+release: build-prod
+	@VERSION="$(VERSION)" WAILS3="$(WAILS3)" build/darwin/release.sh $(RELEASE_FLAGS)
+	@echo ""
+	@echo "Publish it with: make release-to-github"
+else
 # Build the Linux release artifact: the AppImage and its icon, wrapped in a
 # tarball named like brick-cli's (brick-ui-<version>-linux-<arch>.tar.gz).
 # The tarball carries the app and nothing else — build/linux/appimage/install.sh
@@ -346,18 +369,39 @@ release: build-prod
 	@cat $(DIST_DIR)/SHA256SUMS
 	@echo ""
 	@echo "Publish it with: make release-to-github"
+endif
 
-# Publish the artifacts already sitting in dist/ (built by `make release`) as a
-# GitHub release. Does not rebuild anything — the version published is whatever
-# dist/SHA256SUMS says was actually built. Prompts before replacing a release
-# that already exists. Mirrors brick-cli's target of the same name.
+# Publish the artifacts already sitting in dist/ (built by `make release`) to
+# a GitHub release. Does not rebuild anything — the version published is
+# whatever dist/'s checksum file says was actually built: SHA256SUMS for the
+# Linux tarballs, SHA256SUMS-macos for the DMG and its appcast. Mirrors
+# brick-cli's target of the same name.
+#
+# Linux and macOS are released from different machines, so a release that
+# already exists is added to rather than replaced: this platform's files are
+# uploaded over any of the same name (after a prompt), and the other
+# platform's are left alone.
+#
+# On macOS the appcast goes up last, by hand, once the DMG it points at is
+# downloadable: Sparkle clients fetch it from webbite.io (SUFeedURL).
 release-to-github:
-	@if [ ! -f "$(DIST_DIR)/SHA256SUMS" ]; then \
-		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) $(DIST_DIR)/SHA256SUMS not found. Run 'make release' first."; \
+	@if [ ! -f "$(DIST_DIR)/SHA256SUMS" ] && [ ! -f "$(DIST_DIR)/SHA256SUMS-macos" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) no checksum file in $(DIST_DIR)/. Run 'make release' first."; \
 		exit 1; \
 	fi; \
 	if ! command -v gh >/dev/null 2>&1; then \
 		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) gh CLI is required (https://cli.github.com/) — install it and run 'gh auth login' first."; \
+		exit 1; \
+	fi; \
+	rel_version=$$(cat $(DIST_DIR)/SHA256SUMS* | awk '{print $$2}' | grep -v '^appcast\.xml$$' | sed -E \
+		-e 's/^$(APP_NAME)-(.+)-(linux)-(amd64|arm64)\.tar\.gz$$/\1/' \
+		-e 's/^Webbite-Brick-(.+)-macos-universal\.dmg$$/\1/' | sort -u); \
+	if [ -z "$$rel_version" ] || [ $$(echo "$$rel_version" | wc -l) -ne 1 ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) could not determine a single version from $(DIST_DIR)/'s checksums; re-run 'make release' to rebuild a clean dist/."; \
+		exit 1; \
+	fi; \
+	if [ "$$rel_version" = "dev" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to publish version 'dev' — tag the commit first (git tag v0.1.0) and re-run 'make release'."; \
 		exit 1; \
 	fi; \
 	echo "$(COLOR_BOLD)$(COLOR_BLUE)Verifying release artifacts have production URLs baked in...$(COLOR_RESET)"; \
@@ -381,46 +425,50 @@ release-to-github:
 		grep -aqF "$(ACC_API_URL)" "$$bin" && grep -aqF "$(STORAGE_API_URL)" "$$bin" || bad="$$bad $$f"; \
 	done; \
 	rm -rf "$$tmp"; \
+	for f in $(DIST_DIR)/*.dmg; do \
+		[ -f "$$f" ] || continue; \
+		build/darwin/verify-release.sh "$$f" "$$rel_version" "$(ACC_API_URL)" "$(STORAGE_API_URL)" || bad="$$bad $$f"; \
+	done; \
 	if [ -n "$$bad" ]; then \
-		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to publish — these artifacts don't have the expected production URLs ($(ACC_API_URL), $(STORAGE_API_URL)) baked in:$$bad"; \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to publish — these artifacts aren't production-ready (see above for macOS):$$bad"; \
 		echo "Re-run 'make release' with production values set (see .env.prod) before publishing."; \
 		exit 1; \
 	fi; \
 	echo "$(COLOR_GREEN)✓ Artifacts look production-ready$(COLOR_RESET)"; \
 	repo=$$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1; \
-	rel_version=$$(awk '{print $$2}' $(DIST_DIR)/SHA256SUMS | sed -E 's/^$(APP_NAME)-(.+)-(linux)-(amd64|arm64)\.tar\.gz$$/\1/' | sort -u); \
-	if [ -z "$$rel_version" ] || [ $$(echo "$$rel_version" | wc -l) -ne 1 ]; then \
-		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) could not determine a single version from $(DIST_DIR)/SHA256SUMS; re-run 'make release' to rebuild a clean dist/."; \
-		exit 1; \
-	fi; \
-	if [ "$$rel_version" = "dev" ]; then \
-		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) refusing to publish version 'dev' — tag the commit first (git tag v0.1.0) and re-run 'make release'."; \
-		exit 1; \
-	fi; \
-	assets="$(DIST_DIR)/SHA256SUMS"; \
-	for f in $(DIST_DIR)/*.tar.gz; do \
+	assets=""; \
+	for f in $(DIST_DIR)/SHA256SUMS* $(DIST_DIR)/*.tar.gz $(DIST_DIR)/*.dmg $(DIST_DIR)/appcast.xml; do \
 		[ -f "$$f" ] && assets="$$assets $$f"; \
 	done; \
 	if gh release view "$$rel_version" --repo "$$repo" >/dev/null 2>&1; then \
 		echo "$(COLOR_YELLOW)Release $$rel_version already exists on $$repo.$(COLOR_RESET)"; \
-		printf "Replace it with the artifacts currently in $(DIST_DIR)/? (y/N): "; \
+		echo "Uploading replaces its files of the same name:$$(for a in $$assets; do printf ' %s' "$$(basename $$a)"; done)"; \
+		echo "and keeps the rest (another platform's artifacts)."; \
+		printf "Upload? (y/N): "; \
 		read -r resp; \
 		resp=$$(echo "$$resp" | tr '[:upper:]' '[:lower:]'); \
 		if [ "$$resp" != "y" ] && [ "$$resp" != "yes" ]; then \
 			echo "Aborted — existing release left untouched."; \
 			exit 1; \
 		fi; \
-		echo "$(COLOR_BOLD)$(COLOR_BLUE)Replacing release $$rel_version on $$repo...$(COLOR_RESET)"; \
-		gh release delete "$$rel_version" --repo "$$repo" --yes || exit 1; \
-		gh release create "$$rel_version" $$assets --repo "$$repo" --title "$$rel_version" --generate-notes || exit 1; \
+		echo "$(COLOR_BOLD)$(COLOR_BLUE)Uploading to release $$rel_version on $$repo...$(COLOR_RESET)"; \
+		gh release upload "$$rel_version" $$assets --repo "$$repo" --clobber || exit 1; \
 	else \
 		echo "$(COLOR_BOLD)$(COLOR_BLUE)Creating release $$rel_version on $$repo...$(COLOR_RESET)"; \
 		gh release create "$$rel_version" $$assets --repo "$$repo" --title "$$rel_version" --generate-notes || exit 1; \
 	fi; \
 	echo "$(COLOR_GREEN)✓ Released $$rel_version to $$repo$(COLOR_RESET)"; \
 	echo ""; \
-	echo "Users can now install with:"; \
-	echo "  curl -fsSL https://raw.githubusercontent.com/$$repo/main/build/linux/appimage/install.sh | bash"
+	if [ -f "$(DIST_DIR)/SHA256SUMS" ]; then \
+		echo "Linux users can now install with:"; \
+		echo "  curl -fsSL https://raw.githubusercontent.com/$$repo/main/build/linux/appimage/install.sh | bash"; \
+	fi; \
+	if [ -f "$(DIST_DIR)/appcast.xml" ]; then \
+		echo "$(COLOR_BOLD)Last step for macOS:$(COLOR_RESET) publish $(DIST_DIR)/appcast.xml as"; \
+		echo "  https://webbite.io/desktop/macos/appcast.xml"; \
+		echo "which is what tells installed copies (Sparkle) about the update. The DMG is"; \
+		echo "downloadable from the release page for new installs."; \
+	fi
 
 # Clean build artifacts (mirrors brick-cli's clean; keeps node_modules).
 clean:
@@ -436,6 +484,10 @@ clean:
 # needs to run from an .app bundle (that's what carries the icon, the bundle
 # identifier and the accessory activation policy), so install that to
 # ~/Applications instead of dropping a bare binary on PATH.
+# The bundle carries the Sparkle key (and, for testing, a feed override) only
+# when they're set; without the key the installed app runs without updates.
+install: export SPARKLE_PUBLIC_ED_KEY := $(SPARKLE_PUBLIC_ED_KEY)
+install: export SPARKLE_FEED_URL := $(SPARKLE_FEED_URL)
 install: build-prod
 ifeq ($(HOST_OS),darwin)
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Bundling $(MAC_BUNDLE)...$(COLOR_RESET)"
@@ -464,6 +516,15 @@ else
 	fi
 endif
 
+# Print the Sparkle public key for SPARKLE_PUBLIC_ED_KEY (.env.prod), creating
+# the key pair in the login keychain first if there isn't one. macOS only. The
+# private key never leaves the keychain: back it up (generate_keys -x <file>)
+# somewhere safe, as installed copies can only be updated by releases signed
+# with it.
+sparkle-keys:
+	@$(WAILS3) task darwin:sparkle
+	@build/darwin/sparkle/bin/generate_keys
+
 # Show version
 version:
 	@echo "$(APP_NAME) v$(VERSION)"
@@ -485,8 +546,10 @@ help:
 	@echo "  test-integration - End-to-end sync/onboarding tests"
 	@echo "  test-all   - test + test-integration"
 	@echo "  run        - Run the last build"
-	@echo "  release    - Build the Linux release tarball (AppImage) into dist/"
-	@echo "  release-to-github - Publish dist/ artifacts as a GitHub release (prompts before replacing)"
+	@echo "  release    - Build this OS's release into dist/: the AppImage tarball on Linux,"
+	@echo "               a notarized DMG + Sparkle appcast on macOS"
+	@echo "  release-to-github - Publish dist/ artifacts to a GitHub release (prompts before replacing files)"
+	@echo "  sparkle-keys - macOS: print (creating if needed) the Sparkle update-signing public key"
 	@echo "  clean      - Remove build artifacts (bin/, dist/, frontend/dist, .task)"
 	@echo "  install    - Build using build-prod and install for testing"
 	@echo "               (~/.local/bin on Linux, ~/Applications/$(MAC_BUNDLE) on macOS)"
@@ -499,15 +562,14 @@ help:
 	@echo "  make dev                                       # Run with hot reload"
 	@echo "  make build-dev                                 # Quick dev build"
 	@echo "  make install                                   # Build + install locally"
-	@echo "  make release                                   # Linux tarball in dist/"
+	@echo "  make release                                   # This OS's release in dist/"
 	@echo "  make release-to-github                         # Publish dist/ to GitHub"
 	@echo ""
 	@echo "$(COLOR_BOLD)Host OS:$(COLOR_RESET) $(HOST_OS)"
 	@echo ""
 	@echo "$(COLOR_BOLD)Note:$(COLOR_RESET) unlike brick-cli, there is no build-all target, and"
-	@echo "'release' produces a Linux artifact only. This is a native GUI app (CGO +"
-	@echo "per-OS webview/tray libs), so builds only work for the OS you're running"
-	@echo "on; macOS/Windows need CI or a native machine of that OS (see README.md's"
-	@echo "Packaging section)."
+	@echo "'release' produces the artifact of the OS it runs on. This is a native GUI"
+	@echo "app (CGO + per-OS webview/tray libs), so builds only work for the OS you're"
+	@echo "running on (see README.md's Packaging section)."
 	@echo ""
 	@echo "$(COLOR_BOLD)Current version:$(COLOR_RESET) $(VERSION)"
