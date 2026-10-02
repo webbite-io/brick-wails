@@ -135,6 +135,9 @@ func main() {
 	if env.OAuthClientID == "" {
 		logger.Printf("warning: OAUTH_CLIENT_ID is not set; login will fail (see .env.example)")
 	}
+	// Before any window exists, so the desktop has the entry to match the
+	// first one against.
+	ensureDesktopEntry(logger)
 
 	tokens, err := auth.NewTokenSource(store, env.APIURL, env.OAuthClientID)
 	if err != nil {
@@ -178,15 +181,19 @@ func main() {
 
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
+	// It is an ordinary window otherwise, not kept above others: that never
+	// took effect on Linux (Wayland has no protocol for it), and on macOS it
+	// covered whatever window had focus.
 	popover := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:   "Brick",
+		Name: "Brick",
+		// Linux falls back to Name for an empty title; macOS leaves it blank.
+		Title:  "Brick",
 		Width:  420,
 		Height: 650,
 		// Same sizing as the setup window: resizable upwards only, with the
 		// default size as the floor.
 		MinWidth:         420,
 		MinHeight:        650,
-		AlwaysOnTop:      true,
 		Hidden:           true,
 		Windows:          application.WindowsWindow{HiddenOnTaskbar: true},
 		BackgroundColour: application.NewRGB(24, 24, 27),
@@ -244,6 +251,10 @@ func main() {
 		updateWindow.Hide()
 		e.Cancel()
 	})
+
+	// On macOS, be in the Dock and Cmd-Tab while any window is open and
+	// tray-only otherwise.
+	trackAppSwitcher(app, popover, setupWindow, updateWindow)
 	// The frontend shows the window itself once it has routed and laid out the
 	// screen (OnboardingService.ShowWindow). Showing it here instead would
 	// present the previous screen's frame for an instant before the new one
@@ -312,7 +323,13 @@ func main() {
 	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) { applyTrayIcon() })
 
 	menu := app.NewMenu()
-	menu.Add("Open Brick Status").OnClick(func(*application.Context) { tray.ShowWindow() })
+	menu.Add("Open Brick Status").OnClick(func(*application.Context) {
+		tray.ShowWindow()
+		// Placing the window under the icon also lifts it to pop-up menu
+		// level on macOS, above every other window and never lowered again;
+		// put it back among ordinary windows. A no-op on Linux.
+		popover.SetAlwaysOnTop(false)
+	})
 	openFolderItem := menu.Add("Open Brick Folder")
 	openFolderItem.OnClick(func(*application.Context) { _ = syncSvc.OpenFolder() })
 	// Off the UI thread: handing the session to the browser takes a round
@@ -346,10 +363,14 @@ func main() {
 	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
 	tray.AttachWindow(popover).WindowOffset(4)
-	if runtime.GOOS == "linux" {
-		// GNOME's AppIndicator support always reveals the menu on click;
-		// Wails' default toggle of the attached window races it (under X11
-		// both open). Route the click to the menu, GNOME's own convention.
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		// Route the click to the menu, which is what both desktops expect of
+		// a tray icon — on Linux, GNOME's AppIndicator support always reveals
+		// the menu on click and Wails' default toggle of the attached window
+		// races it (under X11 both open); on macOS, Wails' smart default
+		// binds the click to the attached window and leaves the menu on
+		// right-click alone, but a menu bar item should drop its menu on a
+		// plain click. The popover stays one item away ("Open Brick Status").
 		tray.OnClick(tray.OpenMenu)
 	}
 

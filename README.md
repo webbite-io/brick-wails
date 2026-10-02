@@ -117,14 +117,39 @@ app's lines are tagged `UI: ` after the timestamp; brick-cli's are untagged.
 
 ## Development
 
+Prerequisites: Go, Node (Vite needs **^20.19 or >=22.12** — a system Node from
+an old installer is a common trap), and the native GUI toolchain for your OS:
+
+| OS | Needs |
+|---|---|
+| Linux | `build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev libayatana-appindicator3-dev` (GTK4 + WebKitGTK 6.0 + AppIndicator) |
+| macOS | Only the Xcode command line tools (`xcode-select --install`) — WKWebView and the status-bar item are system frameworks. Builds target macOS 12+. |
+
+`make doctor` checks all of this for the OS you're on and says what's missing.
+
 ```bash
-make doctor           # check build prerequisites
-make setup            # install wails3 + frontend deps
-make dev              # hot reload (uses .env.local)
-make build-dev        # dev build → bin/brick-ui
+make doctor            # check build prerequisites
+make setup             # install wails3 + frontend deps
+make dev               # hot reload (uses .env.local)
+make build-dev         # dev build → bin/brick-ui
 make build-windows-dev # dev build cross-compiled for Windows → bin/brick-ui.exe
+make run               # run the last build (on macOS: wrapped in bin/dev/Webbite Brick.app)
 wails3 generate bindings -clean=true -ts -i   # after changing a service's methods/types
 ```
+
+`make setup` installs the wails3 CLI with `go install`, i.e. into
+`$(go env GOPATH)/bin`. The Makefile calls it by full path, so the targets work
+whether or not that directory is on your PATH; add it if you want to run
+`wails3` yourself.
+
+On macOS the app runs as a menu bar (accessory) app — look for the tray icon.
+While one of its windows is open it also gets a Dock icon, a menu bar and a
+Cmd-Tab entry, like any other app, and loses them again once they're all
+closed. `make dev`, `make run` and `make install` build a `.app` bundle for it,
+since that is what carries the bundle identifier and the icon; the bare
+`bin/brick-ui` binary works too, but macOS treats it as an unbundled process.
+The bundle is named `Webbite Brick.app` because macOS shows an app by its
+bundle's file name (in Finder, the Dock and Cmd-Tab), not by `CFBundleName`.
 
 Trying the app without the real backend:
 
@@ -215,6 +240,14 @@ instance — is pruned before ours is written. An install made with `--prefix`
 needs the same `--prefix` on `--uninstall`, which is where it looks for the
 binary.
 
+The app also checks for a desktop entry itself on every start, since one is
+what gives the window switcher its name and icon (GNOME matches it to the
+window by `StartupWMClass=org.wails.webbite_brick`). It leaves a correct entry
+alone, fixes the `StartupWMClass` of an older one, and when there is none at
+all — an AppImage run straight from `dist/`, a dev build — writes a hidden
+(`NoDisplay`) entry that names the window without adding a launcher. See
+`internal/desktopentry`.
+
 Two caveats. The first `make release` downloads linuxdeploy and AppRun from
 GitHub, caching them in `build/linux/appimage/build`. And an AppImage only runs
 on glibc **at least** as new as the build host's, so release from the oldest
@@ -255,9 +288,13 @@ Two things the `.exe` needs that the Linux build doesn't:
 Only the build is verified from Linux: the `.exe` is a valid PE binary, but
 smoke-test it on a real Windows machine before shipping.
 
-**macOS** isn't set up. It needs Objective-C through CGO, so it needs a Mac or
-a CI runner; `build/darwin` holds the Wails-generated scaffolding (`.dmg`). See
-the [Wails v3 packaging docs](https://v3.wails.io/).
+**macOS** has no release artifact yet. It needs Objective-C through CGO, so it
+needs a Mac or a CI runner. `make install` builds an ad-hoc signed
+`bin/Webbite Brick.app` bundle and copies it to `~/Applications` for testing;
+still missing for real distribution are a `.dmg` and Developer ID signing +
+notarization (`wails3 task darwin:sign:notarize` after `wails3 setup`).
+`build/darwin` holds the Wails-generated scaffolding (`.dmg`). See the
+[Wails v3 packaging docs](https://v3.wails.io/).
 
 ### Microsoft Store (MSIX)
 
