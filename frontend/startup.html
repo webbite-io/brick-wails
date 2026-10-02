@@ -20,6 +20,8 @@
         </div>
         <h1 class="brand-title">Webbite Brick</h1>
         <p class="brand-subtitle">Storage for all your devices</p>
+        <!-- One dot per wizard step, filled as the setup advances (wizard.ts). -->
+        <div class="wizard-progress" id="wizard-progress" role="progressbar" aria-label="Setup progress"></div>
     </div>
 
     <div class="status-indicator" id="status-indicator">
@@ -32,9 +34,6 @@
     </div>
 
     <p class="startup-detail" id="stage-detail"></p>
-
-    <!-- Completed onboarding steps (brick-cli's numbered ✅ checklist). -->
-    <ol class="checks-list" id="checklist"></ol>
 
     <!-- Per-step form: options, inputs, links. Filled by startup.ts. -->
     <section class="step-body" id="step-body"></section>

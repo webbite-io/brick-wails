@@ -7,9 +7,9 @@ import (
 	"github.com/webbite-io/brick-wails/internal/syncengine"
 )
 
-// SyncService exposes the in-process sync engine to the status popover. It
-// replaces the old control-API client with the same method names and JSON
-// shapes. Bound via application.NewService in main.go.
+// SyncService exposes the in-process sync engine to the status popover,
+// with the method names and JSON shapes the old control-API client used.
+// Bound via application.NewService in main.go.
 type SyncService struct {
 	app    *application.App
 	runner *runner.Runner

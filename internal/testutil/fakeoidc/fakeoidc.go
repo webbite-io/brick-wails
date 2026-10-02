@@ -28,7 +28,12 @@ type Account struct {
 type Server struct {
 	*httptest.Server
 
-	ClientID   string
+	ClientID string
+
+	// HandoffClientID is the client a web hand-off mints codes for — another
+	// client entirely, the way the web app is to the desktop app.
+	HandoffClientID string
+
 	GivenName  string
 	FamilyName string
 	Email      string
@@ -40,6 +45,7 @@ type Server struct {
 	validRefresh  map[string]bool
 	n             int
 	failRefreshes bool
+	denyConsent   bool
 
 	RefreshCalls atomic.Int32
 }
@@ -63,15 +69,32 @@ func NewOn(ln net.Listener) *Server {
 
 func newServer() *Server {
 	return &Server{
-		ClientID:     "test-client",
-		GivenName:    "Ada",
-		FamilyName:   "Lovelace",
-		Email:        "ada@example.com",
-		accounts:     []Account{{ID: "acct-1", Name: "Acme"}},
-		pending:      map[string]string{},
-		validAccess:  map[string]bool{},
-		validRefresh: map[string]bool{},
+		ClientID:        "test-client",
+		HandoffClientID: "test-web-client",
+		GivenName:       "Ada",
+		FamilyName:      "Lovelace",
+		Email:           "ada@example.com",
+		accounts:        []Account{{ID: "acct-1", Name: "Acme"}},
+		pending:         map[string]string{},
+		validAccess:     map[string]bool{},
+		validRefresh:    map[string]bool{},
 	}
+}
+
+// SetDenyConsent makes every hand-off mint fail with access_denied, as the
+// real server does until the user has signed into that client once.
+func (s *Server) SetDenyConsent(v bool) {
+	s.mu.Lock()
+	s.denyConsent = v
+	s.mu.Unlock()
+}
+
+// Challenge returns the PKCE challenge recorded for code, or "" if there is
+// none outstanding.
+func (s *Server) Challenge(code string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pending[code]
 }
 
 // SetAccounts replaces the account list.
@@ -165,6 +188,44 @@ func (s *Server) bearerOK(r *http.Request) bool {
 	return s.ValidAccess(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 }
 
+// handoff answers a bearer-authenticated authorize call: the JSON half of
+// /oauth2/authorize, which mints a code for another client (HandoffClientID).
+func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
+	if !s.bearerOK(r) {
+		writeJSON(w, 401, map[string]string{"error": "invalid_token"})
+		return
+	}
+	q := r.URL.Query()
+	if q.Get("client_id") != s.HandoffClientID {
+		writeJSON(w, 400, map[string]string{"error": "invalid_request", "error_description": "unknown client_id"})
+		return
+	}
+	s.mu.Lock()
+	denied := s.denyConsent
+	if !denied {
+		s.n++
+	}
+	code := fmt.Sprintf("handoff-%d", s.n)
+	if !denied {
+		s.pending[code] = q.Get("code_challenge")
+	}
+	s.mu.Unlock()
+	if denied {
+		writeJSON(w, 400, map[string]string{"error": "access_denied", "error_description": "user has not consented"})
+		return
+	}
+	cb, err := url.Parse(q.Get("redirect_uri"))
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"error": "invalid_request", "error_description": "bad redirect_uri"})
+		return
+	}
+	cq := cb.Query()
+	cq.Set("code", code)
+	cq.Set("state", q.Get("state"))
+	cb.RawQuery = cq.Encode()
+	writeJSON(w, 200, map[string]string{"redirect": cb.String()})
+}
+
 func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
@@ -175,8 +236,17 @@ func (s *Server) handler() http.Handler {
 	})
 	// A real browser can log in against the fake: authorize auto-approves by
 	// redirecting straight back to the app's callback with a code.
+	//
+	// A request carrying a bearer instead is a web hand-off (see
+	// auth.MintHandoffCode): the token stands in for the browser's session
+	// cookie, the code is minted for another client, and the redirect comes
+	// back as JSON rather than as a 302.
 	mux.HandleFunc("/oauth2/authorize", func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
+		if r.Header.Get("Authorization") != "" {
+			s.handoff(w, r)
+			return
+		}
 		if q.Get("client_id") != s.ClientID {
 			http.Error(w, "unknown client_id", 400)
 			return

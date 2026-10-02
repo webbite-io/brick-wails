@@ -69,15 +69,6 @@ body {
     text-overflow: ellipsis;
 }
 
-.in-flight {
-    margin: 0 0 4px;
-    color: #93c5fd;
-    font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
-
 .error {
     margin: 0 0 8px;
     color: #fca5a5;
@@ -108,7 +99,7 @@ body {
 .counter-label {
     font-size: 10px;
     color: #a1a1aa;
-    text-transform: uppercase;
+    /* text-transform: uppercase; */
     letter-spacing: 0.04em;
 }
 
@@ -128,10 +119,13 @@ body {
     letter-spacing: 0.04em;
 }
 
+/* The list runs 12px into the panel's 16px right padding and pads its rows
+   back by the same amount, so the scrollbar lands in the gutter beside the
+   text instead of on top of it. */
 .activity ul {
     list-style: none;
-    margin: 0;
-    padding: 0;
+    margin: 0 -12px 0 0;
+    padding: 0 12px 0 0;
     overflow-y: auto;
     flex: 1;
 }
@@ -168,6 +162,14 @@ body {
     font-style: italic;
 }
 
+/* The file being transferred right now, at the head of the list: the same row
+   as its finished neighbours, in blue, so nothing shifts when it lands. */
+.activity li.in-flight,
+.activity li.in-flight .activity-icon-slot,
+.activity li.in-flight .activity-icon {
+    color: #93c5fd;
+}
+
 .activity-icon {
     color: #a1a1aa;
 }
@@ -180,16 +182,22 @@ body {
 
 .btn {
     flex: 1;
-    padding: 7px 10px;
+    padding: 8px 10px;
     border-radius: 6px;
     border: 1px solid rgba(255, 255, 255, 0.12);
     background: #27272a;
     color: #e4e4e7;
-    font-size: 12px;
+    font-size: 14px;
     cursor: pointer;
 }
 
 .btn:hover:not(:disabled) {
+    background: #3f3f46;
+}
+
+/* Keyboard focus lightens the button by a shade instead of ringing it. */
+.btn:focus-visible {
+    outline: none;
     background: #3f3f46;
 }
 
@@ -201,3 +209,29 @@ body {
 .btn-quiet {
     background: transparent;
 }
+
+.btn-primary {
+    background: #3b82f6;
+    border-color: #3b82f6;
+    color: #fff;
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #2563eb;
+}
+
+/* Lighter on keyboard focus, like the plain buttons above. */
+.btn-primary:focus-visible {
+    background: #60a5fa;
+    border-color: #60a5fa;
+}
+
+/* Corner radius is inherited from .btn so every button matches. A quiet CTA
+   is the outlined Back button under Continue: same size, no fill, and the
+   plain .btn hover (the blue one belongs to .btn-primary). */
+.btn-cta {
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 600;
+}
+

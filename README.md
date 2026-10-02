@@ -58,11 +58,10 @@ expires while syncing, the setup window opens at the login step.
   (`OAUTH_CLIENT_ID`), since a refresh token can only be refreshed by the
   client it was issued to. Token rotation re-reads the config first, so a
   refresh done by the CLI is adopted rather than replayed.
-- **CLI commands still work**: while syncing, the app serves brick's local
-  control API (the server side only — the app never calls it), so `brick sync
-  -s` pauses the app's engine before deleting newly excluded folders, and
-  `brick switch-accounts` / `brick restart` stop it. The app then shows
-  "Not syncing" with a *Start Syncing* button.
+- **CLI commands that touch a running instance**: the CLI no longer has a
+  control API, so `brick sync -s`, `brick switch-accounts` and `brick restart`
+  can't reach into the app. They detect the held lock and ask the user to quit
+  the app first.
 
 ## Configuration
 
@@ -79,7 +78,9 @@ Settings use the same keys as brick-cli — see [`.env.example`](.env.example).
   directory, which also moves its runtime files — useful to try the app
   without touching a real brick setup.
 
-Logs go to `<config dir>/brick-ui.log` (plus stderr with `DEBUG=true`).
+Logs go to `<config dir>/brick.log` — the same rolling, 10,000-line capped log
+brick-cli writes (see `internal/logfile`) — plus stderr with `DEBUG=true`. This
+app's lines are tagged `UI: ` after the timestamp; brick-cli's are untagged.
 
 ## Project layout
 
@@ -97,8 +98,7 @@ Logs go to `<config dir>/brick-ui.log` (plus stderr with `DEBUG=true`).
   - `syncengine` — the sync engine
   - `lock` — the per-user instance lock (shared with brick-cli)
   - `agent` — the remote-file agent
-  - `controlapi` — brick's local control API (server side)
-  - `runner` — lifecycle: lock + engine + agent + control API, app-level state
+  - `runner` — lifecycle: lock + engine + agent, app-level state
   - `onboarding` — startup routing and wizard steps
   - `testutil` — fake accounts/OIDC and Storage APIs, test helpers, and
     `cmd/brick-fakes` to run the fakes as real servers
@@ -160,28 +160,91 @@ make test-all
   401s, and adopting a CLI-rotated token), the Storage API client, a reconcile
   matrix covering every create/update/delete/move/conflict/exclude case, pause
   semantics, cursor and state-file compatibility, a cross-process lock test,
-  the agent's path sandboxing and tunnel, the control API, the runner lifecycle
-  and every onboarding step.
+  the agent's path sandboxing and tunnel, the runner lifecycle and every
+  onboarding step.
 - **Integration** (`integration/`): onboarding → live two-way sync on a real
   filesystem, session expiry → re-login → resume, incremental restarts, and
-  first-sync conflict handling. When a brick-cli checkout is available
-  (`BRICK_CLI_DIR`, default `../brick-cli`) it also builds the real `brick` and
-  checks `--self-test` accepts an app-onboarded config, the instance lock is
-  shared both ways, `brick switch-accounts` stops the app's engine, and the app
-  reuses sync state written by the CLI.
+  first-sync conflict handling.
 
 ## Packaging
 
-Installers are not set up yet. `make package` (= `wails3 task package`) builds
-what the OS you're on can build natively: an ad-hoc signed `bin/brick-ui.app`
-bundle on macOS, AppImage/`.deb`/`.rpm` on Linux. `make install` then puts it
-where you can run it for testing — `~/Applications` on macOS, `~/.local/bin`
-on Linux.
+**Linux** is wired up.
 
-Still missing for real distribution: a `.dmg` and Developer ID signing +
-notarization on macOS (`wails3 task darwin:sign:notarize` after
-`wails3 setup`), `.msi`/NSIS on Windows, and CI to build each OS on its own
-runner — this is a CGO app with per-OS webview/tray libraries, so it does not
-cross-compile. See `build/darwin`, `build/windows`, `build/linux` and the
-[Wails v3 packaging docs](https://v3.wails.io/). The tray icon still uses
-Wails' placeholder logo (see `build/tray`).
+```bash
+make release            # build dist/brick-ui-<version>-linux-<arch>.tar.gz + SHA256SUMS
+make release-to-github  # publish dist/ as a GitHub release (prompts before replacing)
+```
+
+The tarball contains `brick-ui.AppImage` and `brick-ui.png`, and nothing else:
+the installer is served from the web and downloads this tarball, so there is
+nothing to ship beside the app. The AppImage is self-contained: `wails3 generate appimage` runs linuxdeploy with its GTK
+plugin and pulls in WebKitGTK's out-of-process helpers (`WebKitWebProcess`,
+`WebKitNetworkProcess`, the injected bundle), which a plain linuxdeploy run
+would miss. Expect ~150 MB — that's the GTK4 + WebKitGTK stack, not the ~13 MB
+app binary.
+
+`release-to-github` refuses to publish unless it can prove the artifacts are
+production builds: it extracts the binary back out of the AppImage and greps
+for `ACC_API_URL`/`STORAGE_API_URL`. (Grepping the AppImage directly doesn't
+work — the payload is compressed squashfs.) It also refuses to publish version
+`dev`, so tag the commit first.
+
+### Installing
+
+End users don't touch the tarball. `build/linux/appimage/install.sh` is served
+from the repo and does the whole job — resolve the release, download it, install
+it:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/webbite-io/brick-wails/main/build/linux/appimage/install.sh | bash
+```
+
+It resolves the latest tag via the GitHub API, verifies the download against
+`SHA256SUMS`, installs to `~/.local/bin/brick-ui`, writes the hicolor icons and
+a `~/.local/share/applications/brick-ui.desktop` entry, then refreshes the
+desktop and icon caches. No root required. Flags: `--version X`, `--prefix
+PATH`, `--force`, `--restart`, `--no-restart`, `--uninstall`.
+
+It finishes by asking whether to (re)start the app — the point being that the
+desktop app's own "Update" button opens a terminal on this script, so an upgrade
+should end with the new version running rather than the old one still in the
+tray. Answering yes stops any running instance, starts the new one in its own
+session, and closes the terminal if that terminal was only ever there to run the
+installer (`--restart`/`--no-restart` answer ahead of time, and a run with no
+tty behind it never asks).
+
+One script rather than a fetcher plus a bundled installer: the app's "Update"
+button curls this exact URL (`internal/update/install.go`), so whatever is
+served there has to be able to fetch a release on its own. It lives under
+`build/linux/appimage/` because it is specific to how the AppImage is packaged,
+and the copy served from webbite.io must be kept in step with it.
+
+Re-running upgrades in place rather than accumulating copies: every artifact has
+a fixed destination, the installed version is recorded in
+`~/.local/share/brick-ui/version` (so an unchanged version is a no-op), and any
+stray launcher entry pointing at our binary under a different filename — the
+`appimagekit-*.desktop` that AppImageLauncher writes on first launch, for
+instance — is pruned before ours is written. An install made with `--prefix`
+needs the same `--prefix` on `--uninstall`, which is where it looks for the
+binary.
+
+Two caveats. The first `make release` downloads linuxdeploy and AppRun from
+GitHub, caching them in `build/linux/appimage/build`. And an AppImage only runs
+on glibc **at least** as new as the build host's, so release from the oldest
+distro you intend to support — though the GTK4/WebKitGTK 6.0 requirement
+already floors this at Ubuntu 24.04 / Debian 13.
+
+`.deb`, `.rpm` and AUR packages are still defined as Task targets
+(`wails3 task linux:create:deb` and friends, configured in
+`build/linux/nfpm/nfpm.yaml`) but aren't part of `make release`.
+
+**macOS and Windows** have no release artifact yet. This is a CGO GUI app, so
+each needs its own native toolchain or CI runner. On macOS, `make install`
+builds an ad-hoc signed `bin/brick-ui.app` bundle and copies it to
+`~/Applications` for testing; still missing for real distribution are a `.dmg`
+and Developer ID signing + notarization (`wails3 task darwin:sign:notarize`
+after `wails3 setup`). `build/darwin` and `build/windows` hold the
+Wails-generated scaffolding (`.dmg`, `.msi`/NSIS). See the [Wails v3 packaging
+docs](https://v3.wails.io/).
+
+The tray icon still uses Wails' placeholder logo (see `build/tray`).

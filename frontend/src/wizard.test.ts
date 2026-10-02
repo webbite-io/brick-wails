@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   CONFLICT_OPTIONS,
+  GENERIC_ERROR,
   describeError,
+  presentable,
   displayPath,
   folderOptions,
   needsWindow,
+  progressDots,
   remoteRootOptions,
   scopeOptions,
   screenForRoute,
@@ -36,6 +39,25 @@ describe("screenForRoute", () => {
   });
 });
 
+describe("progressDots", () => {
+  it("fills the steps left behind and empties the ones still ahead", () => {
+    // Logging in is behind the user by the sync-folder step, so its dot is green.
+    expect(progressDots("folder")).toEqual([true, false, false, false, false]);
+    expect(progressDots("conflict")).toEqual([true, true, false, false, false]);
+    expect(progressDots("remote")).toEqual([true, true, true, true, false]);
+  });
+
+  it("counts skipped steps as done so the bar never stalls", () => {
+    // Nothing to resolve and nothing to scope: straight from folder to remote.
+    expect(progressDots("remote").filter(Boolean)).toHaveLength(4);
+  });
+
+  it("fills every dot on the last screen and shows none outside the wizard", () => {
+    expect(progressDots("done")).toEqual([true, true, true, true, true]);
+    expect(progressDots(null)).toEqual([]);
+  });
+});
+
 describe("displayPath", () => {
   it("renders paths under home with ~ like brick-cli", () => {
     expect(displayPath("/home/ada/Brick", "/home/ada")).toBe("~/Brick");
@@ -47,9 +69,9 @@ describe("displayPath", () => {
 });
 
 describe("options", () => {
-  it("offers the three CLI sync-folder choices", () => {
+  it("offers the default folder and the native picker", () => {
     const opts = folderOptions("/home/ada/Brick", "/home/ada");
-    expect(opts.map((o) => o.value)).toEqual(["default", "pick", "create"]);
+    expect(opts.map((o) => o.value)).toEqual(["default", "pick"]);
     expect(opts[0].label).toBe("Use ~/Brick");
     expect(opts[1].label).toBe("Pick existing folder in ~");
   });
@@ -73,5 +95,21 @@ describe("describeError", () => {
     expect(describeError(new Error("boom"))).toBe("boom");
     expect(describeError({ message: "from go" })).toBe("from go");
     expect(describeError("plain")).toBe("plain");
+  });
+
+  it("never surfaces a raw payload", () => {
+    expect(describeError(new Error('{"kind":"ReferenceError","message":"x"}'))).toBe(GENERIC_ERROR);
+    expect(describeError({})).toBe(GENERIC_ERROR);
+    expect(describeError("[1,2]")).toBe(GENERIC_ERROR);
+    expect(describeError(new Error(" "))).toBe(GENERIC_ERROR);
+  });
+});
+
+describe("presentable", () => {
+  it("passes sentences through and drops payloads", () => {
+    expect(presentable("Could not reach Brick")).toBe("Could not reach Brick");
+    expect(presentable('{"code":401}')).toBe("");
+    expect(presentable(undefined)).toBe("");
+    expect(presentable("{oops}", "fallback")).toBe("fallback");
   });
 });

@@ -2,7 +2,7 @@
 // counterpart of brick-cli's interactive setup). The window starts hidden:
 // on load this routes, and a fully configured machine goes straight to
 // syncing without ever showing it. Anything needing the user shows the
-// window. The Go side emits "setup:open" (tray "Set Up Brick…", popover
+// window. The Go side emits "setup:open" (tray "Set Up Brick", popover
 // buttons, or an expired session) to run the flow again.
 
 import { Events } from "@wailsio/runtime";
@@ -12,15 +12,17 @@ import {
   CONFLICT_OPTIONS,
   REMOTE_OPTIONS,
   describeError,
-  displayPath,
   folderOptions,
   needsWindow,
+  presentable,
+  progressDots,
   remoteRootOptions,
   scopeOptions,
   screenForRoute,
   type Icon,
   type Option,
   type Screen,
+  type WizardStep,
 } from "./wizard";
 
 const panelEl = document.getElementById("startup-panel")! as HTMLElement;
@@ -29,8 +31,9 @@ const iconEl = document.getElementById("stage-icon")! as HTMLSpanElement;
 const titleEl = document.getElementById("stage-title")! as HTMLParagraphElement;
 const messageEl = document.getElementById("stage-message")! as HTMLParagraphElement;
 const detailEl = document.getElementById("stage-detail")! as HTMLParagraphElement;
-const checklistEl = document.getElementById("checklist")! as HTMLOListElement;
+const progressEl = document.getElementById("wizard-progress")! as HTMLElement;
 const bodyEl = document.getElementById("step-body")! as HTMLElement;
+const actionsEl = document.getElementById("startup-actions")! as HTMLElement;
 const primaryBtn = document.getElementById("primary-btn")! as HTMLButtonElement;
 const secondaryBtn = document.getElementById("secondary-btn")! as HTMLButtonElement;
 
@@ -42,6 +45,8 @@ interface Action {
   label: string;
   onClick: () => void;
   cta?: boolean;
+  // A chevron marks the step buttons: "Back" points back, "Next" points on.
+  icon?: "prev" | "next";
 }
 
 function render(s: Screen) {
@@ -52,9 +57,12 @@ function render(s: Screen) {
   iconEl.textContent = icon === "ok" ? "✓" : icon === "spinner" ? "" : "!";
   if (icon !== "spinner") iconEl.classList.add(`icon-${icon}`);
   titleEl.textContent = s.title;
-  messageEl.textContent = s.message;
-  detailEl.textContent = s.detail ?? "";
-  detailEl.classList.toggle("visible", !!s.detail);
+  // Backend copy reaches the window unfiltered, so drop anything that is a raw
+  // payload rather than a sentence (see presentable).
+  messageEl.textContent = presentable(s.message);
+  const detail = presentable(s.detail);
+  detailEl.textContent = detail;
+  detailEl.classList.toggle("visible", !!detail);
 }
 
 // reveal shows the panel contents once a screen is laid out. boot() hides them
@@ -81,13 +89,32 @@ function busy(title: string, message = "") {
   bodyEl.innerHTML = "";
 }
 
+// chevron draws the arrow on the step buttons. Drawn rather than typed: "<"
+// and ">" sit on the text baseline and read as punctuation.
+function chevron(dir: "prev" | "next"): SVGSVGElement {
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("class", "chevron");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const arrow = document.createElementNS(ns, "polyline");
+  arrow.setAttribute("points", dir === "prev" ? "15 18 9 12 15 6" : "9 18 15 12 9 6");
+  svg.appendChild(arrow);
+  return svg;
+}
+
 function applyButton(btn: HTMLButtonElement, a: Action | undefined, variant: "primary" | "quiet") {
   if (!a) {
     btn.onclick = null;
+    btn.replaceChildren();
     btn.classList.remove("visible", "btn-cta", "btn-primary", "btn-quiet");
     return;
   }
-  btn.textContent = a.label;
+  const label = document.createElement("span");
+  label.textContent = a.label;
+  if (a.icon === "prev") btn.replaceChildren(chevron("prev"), label);
+  else if (a.icon === "next") btn.replaceChildren(label, chevron("next"));
+  else btn.replaceChildren(label);
   btn.onclick = a.onClick;
   btn.classList.toggle("btn-primary", variant === "primary");
   btn.classList.toggle("btn-quiet", variant === "quiet");
@@ -98,27 +125,67 @@ function applyButton(btn: HTMLButtonElement, a: Action | undefined, variant: "pr
 function setActions(primary?: Action, secondary?: Action) {
   applyButton(primaryBtn, primary, "primary");
   applyButton(secondaryBtn, secondary, "quiet");
+  // A step pair sits side by side, Back on the left. Everything else — a lone
+  // "Log in", or "Try again" over "Not now" — keeps stacking.
+  actionsEl.classList.toggle("nav", !!primary && secondary?.icon === "prev");
 }
 
-async function refreshChecklist() {
-  const items = (await OnboardingService.Checklist().catch(() => [])) ?? [];
-  checklistEl.innerHTML = "";
-  items.forEach((text, i) => {
-    const li = document.createElement("li");
-    const mark = document.createElement("span");
-    mark.className = "check";
-    mark.textContent = `${i + 1}. ✓`;
-    const label = document.createElement("span");
-    label.textContent = text;
-    li.append(mark, label);
-    checklistEl.appendChild(li);
-  });
-  checklistEl.classList.toggle("visible", items.length > 0);
+// --- step history ---
+//
+// Once past login the wizard can be walked backwards: each step that moves on
+// remembers how to redraw itself, and Back replays the screen on top of the
+// stack. A step the user returns to saves its answer again on the way forward,
+// and the services overwrite what the first pass wrote (Flow.SetRemoteAccess
+// replaces the root it added, ConfirmSyncFolder the sync folder, and so on).
+
+type StepFn = () => void;
+
+const history: StepFn[] = [];
+
+// remember records the screen being left, so Back can return to it. Steps call
+// it only when they actually move on — not when they redraw themselves with an
+// error, and not when a native dialog is cancelled.
+function remember(step: StepFn) {
+  history.push(step);
 }
 
-// radioGroup renders options as radio rows and returns a getter for the
-// selected value.
-function radioGroup(name: string, options: Option[], selected?: string, onChange?: (v: string) => void): () => string {
+// backAction is the Back button for the current screen, or nothing on the
+// first step of the wizard.
+function backAction(): Action | undefined {
+  if (!history.length) return undefined;
+  return {
+    label: "Back",
+    cta: true,
+    icon: "prev",
+    onClick: () => history.pop()?.(),
+  };
+}
+
+// setProgress draws the dot bar under the tagline for the wizard step now on
+// screen; null takes it away (welcome, login, errors — anything that isn't a
+// walk through the wizard).
+function setProgress(step: WizardStep | null) {
+  const dots = progressDots(step);
+  progressEl.innerHTML = "";
+  for (const done of dots) {
+    const dot = document.createElement("span");
+    dot.className = done ? "dot done" : "dot";
+    progressEl.appendChild(dot);
+  }
+  progressEl.setAttribute("aria-valuenow", String(dots.filter(Boolean).length));
+  progressEl.setAttribute("aria-valuemax", String(dots.length));
+  progressEl.classList.toggle("visible", dots.length > 0);
+}
+
+interface Radios {
+  value: () => string;
+  // setEnabled greys the rows out and makes them inert, for a group that is
+  // still worth showing but no longer answerable (see remoteStep).
+  setEnabled: (on: boolean) => void;
+}
+
+// radioGroup renders options as radio rows.
+function radioGroup(name: string, options: Option[], selected?: string, onChange?: (v: string) => void): Radios {
   const group = document.createElement("div");
   group.style.display = "contents";
   for (const [i, o] of options.entries()) {
@@ -142,15 +209,24 @@ function radioGroup(name: string, options: Option[], selected?: string, onChange
     group.appendChild(label);
   }
   bodyEl.appendChild(group);
-  return () => (group.querySelector<HTMLInputElement>("input:checked")?.value ?? "");
+  return {
+    value: () => group.querySelector<HTMLInputElement>("input:checked")?.value ?? "",
+    setEnabled: (on) => {
+      for (const row of group.querySelectorAll<HTMLElement>(".option")) row.classList.toggle("disabled", !on);
+      for (const input of group.querySelectorAll<HTMLInputElement>("input")) input.disabled = !on;
+    },
+  };
 }
 
+// checkboxGroup renders a plain, tight list rather than the boxed rows of
+// radioGroup: an account's folder list can run long, and the boxes would push
+// the buttons off the bottom of the window.
 function checkboxGroup(options: string[], checked: string[]): () => string[] {
   const group = document.createElement("div");
-  group.style.display = "contents";
+  group.className = "check-list";
   for (const name of options) {
     const label = document.createElement("label");
-    label.className = "option";
+    label.className = "check-row";
     const input = document.createElement("input");
     input.type = "checkbox";
     input.value = name;
@@ -164,11 +240,12 @@ function checkboxGroup(options: string[], checked: string[]): () => string[] {
   return () => Array.from(group.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.value);
 }
 
-function stepLabel(text: string) {
+function stepLabel(text: string): HTMLParagraphElement {
   const p = document.createElement("p");
   p.className = "step-label";
   p.textContent = text;
   bodyEl.appendChild(p);
+  return p;
 }
 
 function fieldError(text: string) {
@@ -206,8 +283,8 @@ async function boot() {
   const gen = ++generation;
   panelEl.classList.remove("ready");
   busy("Starting Brick…");
-  checklistEl.innerHTML = "";
-  checklistEl.classList.remove("visible");
+  setProgress(null);
+  history.length = 0;
   home = await OnboardingService.HomeDir().catch(() => "");
   const route = await OnboardingService.Route();
   if (gen !== generation) return;
@@ -227,7 +304,9 @@ async function handleRoute(route: Route) {
     await startSync(false);
     return;
   }
-  await refreshChecklist();
+  // The bar belongs to the wizard: it appears with the sync-folder step
+  // (folderStep) and is gone on welcome, login and the error screens.
+  setProgress(null);
   bodyEl.innerHTML = "";
   render(screenForRoute(route));
   setWelcomeMode(route.step === "welcome");
@@ -263,6 +342,10 @@ async function handleRoute(route: Route) {
 async function startSync(fromWizard: boolean) {
   busy("Starting Brick…", "Starting to sync your files…");
   reveal();
+  // Finishing hands the wizard's decisions (first sync, conflict mode) to the
+  // runner and ends the session, so it waits until the user commits: up to
+  // here every step is still open to a Back.
+  if (fromWizard) await OnboardingService.FinishOnboarding();
   const res = await OnboardingService.StartSync();
   if (res.ok) {
     render({ icon: "ok", title: "Brick is syncing", message: "" });
@@ -297,7 +380,7 @@ async function doLogin() {
     const res = await OnboardingService.AwaitLogin();
     render({ icon: "ok", title: res?.greeting ?? "Login successful 🎉", message: "" });
     bodyEl.innerHTML = "";
-    await refreshChecklist();
+    history.length = 0; // the wizard starts here: there is nothing behind it
     await new Promise((r) => setTimeout(r, 700));
     await reroute();
   } catch (err) {
@@ -312,13 +395,15 @@ async function doLogin() {
 async function accountStep() {
   const accounts = (await OnboardingService.Accounts()) ?? [];
   stepLabel("Select an account");
-  const get = radioGroup("account", accounts.map((a) => ({ value: a.id, label: a.name })));
+  const account = radioGroup("account", accounts.map((a) => ({ value: a.id, label: a.name })));
   setActions({
-    label: "Continue",
+    label: "Next",
     cta: true,
+    icon: "next",
     onClick: async () => {
       try {
-        await OnboardingService.SelectAccount(get());
+        await OnboardingService.SelectAccount(account.value());
+        remember(() => void accountStep());
         await reroute();
       } catch (err) {
         fieldError(describeError(err));
@@ -331,69 +416,40 @@ async function accountStep() {
 
 async function folderStep(error?: string) {
   const def = await OnboardingService.DefaultSyncFolder();
-  render({ icon: "ok", title: "Sync folder", message: "You have no sync folder configured. Choose a sync folder." });
+  render({ icon: "ok", title: "Sync folder", message: "Please choose a sync folder." });
+  setProgress("folder");
   bodyEl.innerHTML = "";
   stepLabel("Choose a sync folder");
-  const get = radioGroup("folder", folderOptions(def, home));
+  const folder = radioGroup("folder", folderOptions(def, home));
   if (error) fieldError(error);
-  setActions({
-    label: "Continue",
-    cta: true,
-    onClick: async () => {
-      switch (get()) {
-        case "default":
+  setActions(
+    {
+      label: "Next",
+      cta: true,
+      icon: "next",
+      onClick: async () => {
+        if (folder.value() === "default") {
           await chooseFolder(def);
-          break;
-        case "pick": {
-          const picked = await OnboardingService.PickDirectory(home, "Pick a folder to sync");
-          if (picked) await chooseFolder(picked); // cancelled: stay here
-          break;
+          return;
         }
-        case "create":
-          createFolderStep();
-          break;
-      }
+        const picked = await OnboardingService.PickDirectory(home, "Pick a folder to sync");
+        if (picked) await chooseFolder(picked); // cancelled: stay here
+      },
     },
-  });
-}
-
-function createFolderStep(error?: string) {
-  render({ icon: "ok", title: "Create folder", message: `Create folder in ${displayPath(home, home)}` });
-  bodyEl.innerHTML = "";
-  const input = document.createElement("input");
-  input.className = "text-input";
-  input.placeholder = "folder or folder1/folder2";
-  bodyEl.appendChild(input);
-  if (error) fieldError(error);
-  const submit = async () => {
-    if (!input.value.trim()) {
-      void folderStep(); // empty = back, like brick-cli
-      return;
-    }
-    try {
-      const created = await OnboardingService.CreateFolderInHome(input.value);
-      await chooseFolder(created);
-    } catch (err) {
-      createFolderStep(describeError(err));
-    }
-  };
-  input.onkeydown = (e) => {
-    if (e.key === "Enter") void submit();
-    if (e.key === "Escape") void folderStep();
-  };
-  setActions({ label: "Create", cta: true, onClick: () => void submit() }, { label: "Back", onClick: () => void folderStep() });
-  input.focus();
+    backAction(),
+  );
 }
 
 async function chooseFolder(path: string) {
   try {
     const choice = await OnboardingService.ChooseSyncFolder(path);
     if (choice?.hasFiles) {
+      remember(() => void folderStep());
       conflictStep(choice.display);
       return;
     }
     await OnboardingService.ConfirmSyncFolder("");
-    await refreshChecklist();
+    remember(() => void folderStep());
     await connectStep();
   } catch (err) {
     await folderStep(describeError(err));
@@ -408,30 +464,32 @@ function conflictStep(display: string) {
     title: "Conflict resolution",
     message: `${display} contains files. How should possible conflicts be handled on first sync?`,
   });
+  setProgress("conflict");
   bodyEl.innerHTML = "";
-  const get = radioGroup("conflict", CONFLICT_OPTIONS);
+  const conflict = radioGroup("conflict", CONFLICT_OPTIONS);
   setActions(
     {
-      label: "Continue",
+      label: "Next",
       cta: true,
+      icon: "next",
       onClick: async () => {
         try {
-          await OnboardingService.ConfirmSyncFolder(get());
-          await refreshChecklist();
+          await OnboardingService.ConfirmSyncFolder(conflict.value());
+          remember(() => conflictStep(display));
           await connectStep();
         } catch (err) {
           fieldError(describeError(err));
         }
       },
     },
-    { label: "Back", onClick: () => void folderStep() },
+    backAction(),
   );
 }
 
 // --- connect + scope (runSyncScopeOnboarding) ---
 
 async function connectStep() {
-  busy("Connecting to Brick…");
+  busy("Connecting to Brick…", "Fetching quota and folder details for selective sync.");
   let info: ScopeInfo | null;
   try {
     info = await OnboardingService.Connect();
@@ -445,87 +503,117 @@ async function connectStep() {
   } else if (info?.showRemote) {
     remoteStep();
   } else {
-    await doneStep();
+    doneStep();
   }
 }
 
 function scopeStep(info: ScopeInfo) {
   render({ icon: "ok", title: "Sync scope", message: "One last decision to make:" });
+  setProgress("scope");
   bodyEl.innerHTML = "";
   let picking = false;
-  let getExcluded: () => string[] = () => [];
-  const get = radioGroup("scope", scopeOptions(info.totalHuman), "all", (v) => {
-    if (v === "pick" && !picking) {
-      picking = true;
-      stepLabel("Select the folders to EXCLUDE from sync");
-      getExcluded = checkboxGroup(info.folders ?? [], info.alreadyExcluded ?? []);
-    }
+  const folders = info.folders ?? [];
+  const excluded = info.alreadyExcluded ?? [];
+  // The list is phrased as what to sync, so a tick means "sync this" and the
+  // backend gets the unticked ones (it takes exclusions, like brick-cli).
+  let getSelected: () => string[] = () => folders;
+  const listFolders = () => {
+    if (picking) return;
+    picking = true;
+    stepLabel("Select folders to sync");
+    getSelected = checkboxGroup(
+      folders,
+      folders.filter((f) => !excluded.includes(f)),
+    );
+  };
+  // An account that already leaves folders out — including one the user has
+  // just walked back into this step to change — opens on the list, showing
+  // what is synced today rather than resetting them to "all".
+  const scope = radioGroup("scope", scopeOptions(info.totalHuman), excluded.length ? "pick" : "all", (v) => {
+    if (v === "pick") listFolders();
   });
-  setActions({
-    label: "Continue",
-    cta: true,
-    onClick: async () => {
-      try {
-        const all = get() === "all";
-        await OnboardingService.SetSyncScope(all, all ? [] : getExcluded());
-        await refreshChecklist();
-        remoteStep();
-      } catch (err) {
-        fieldError(describeError(err));
-      }
+  if (excluded.length) listFolders();
+  setActions(
+    {
+      label: "Next",
+      cta: true,
+      icon: "next",
+      onClick: async () => {
+        try {
+          const all = scope.value() === "all";
+          const keep = getSelected();
+          const drop = all ? [] : folders.filter((f) => !keep.includes(f));
+          await OnboardingService.SetSyncScope(all, drop);
+          remember(() => scopeStep({ ...info, alreadyExcluded: drop }));
+          remoteStep();
+        } catch (err) {
+          fieldError(describeError(err));
+        }
+      },
     },
-  });
+    backAction(),
+  );
 }
 
 // --- remote access (promptForRemoteControl) ---
 
-function remoteStep(custom?: string) {
+// answer is what the user said last time through, so Back returns to their
+// choice rather than to the default.
+function remoteStep(custom?: string, answer: string = "yes") {
   render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
+  setProgress("remote");
   bodyEl.innerHTML = "";
-  let getRoot: (() => string) | null = null;
-  const showRoots = () => {
-    if (getRoot) return;
-    stepLabel("Which folder should be accessible remotely?");
-    getRoot = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
+  const yesNo = radioGroup("remote", REMOTE_OPTIONS, answer, (v) => enableRoots(v === "yes"));
+  const rootLabel = stepLabel("Which folder should be accessible remotely?");
+  const roots = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
+  // Saying no leaves the folder choice on screen, greyed out and inert: it
+  // answers a question the user has just declined, and taking the rows away
+  // would make the step jump around as they change their mind.
+  const enableRoots = (on: boolean) => {
+    rootLabel.classList.toggle("disabled", !on);
+    roots.setEnabled(on);
   };
-  const getYesNo = radioGroup("remote", REMOTE_OPTIONS, "yes", (v) => {
-    if (v === "yes") showRoots();
-  });
-  showRoots();
-  setActions({
-    label: "Continue",
-    cta: true,
-    onClick: async () => {
-      try {
-        if (getYesNo() === "no") {
-          await OnboardingService.SetRemoteAccess(false, "");
-        } else if (getRoot?.() === "custom") {
-          const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
-          if (!picked) return; // cancelled: stay
-          if (!custom) {
-            remoteStep(picked); // show the choice before saving
-            return;
+  enableRoots(answer === "yes"); // Back into a declined step lands on "no"
+  setActions(
+    {
+      label: "Next",
+      cta: true,
+      icon: "next",
+      onClick: async () => {
+        try {
+          if (yesNo.value() === "no") {
+            await OnboardingService.SetRemoteAccess(false, "");
+          } else if (roots.value() === "custom") {
+            const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
+            if (!picked) return; // cancelled: stay
+            if (!custom) {
+              remoteStep(picked); // show the choice before saving
+              return;
+            }
+            await OnboardingService.SetRemoteAccess(true, picked);
+          } else {
+            await OnboardingService.SetRemoteAccess(true, home);
           }
-          await OnboardingService.SetRemoteAccess(true, picked);
-        } else {
-          await OnboardingService.SetRemoteAccess(true, home);
+          remember(() => remoteStep(custom, yesNo.value()));
+          doneStep();
+        } catch (err) {
+          fieldError(describeError(err));
         }
-        await doneStep();
-      } catch (err) {
-        fieldError(describeError(err));
-      }
+      },
     },
-  });
+    backAction(),
+  );
 }
 
 // --- done ---
 
-async function doneStep() {
-  await OnboardingService.FinishOnboarding();
-  await refreshChecklist();
+// doneStep only shows the summary; the wizard is closed off in startSync, so
+// Back from here still leads to a step that can be answered again.
+function doneStep() {
   bodyEl.innerHTML = "";
   render({ icon: "ok", title: "Done and ready to go!", message: "Brick will now keep your sync folder up to date." });
-  setActions({ label: "Start syncing", cta: true, onClick: () => void startSync(true) });
+  setProgress("done");
+  setActions({ label: "Start syncing", cta: true, onClick: () => void startSync(true) }, backAction());
 }
 
 // --- entry ---

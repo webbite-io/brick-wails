@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STATE_LABELS, actionForState } from "./status";
+import { STATE_LABELS, actionForState, hidesPopoverForState } from "./status";
 
 describe("status", () => {
   it("labels every state the Go side can report", () => {
@@ -15,6 +15,13 @@ describe("status", () => {
     expect(actionForState("stopped")).toBe("Start Syncing");
     for (const s of ["starting", "syncing", "idle", "paused", "error"]) {
       expect(actionForState(s)).toBeNull();
+    }
+  });
+
+  it("closes the popover behind Set Up Brick only", () => {
+    expect(hidesPopoverForState("not-configured")).toBe(true);
+    for (const s of ["auth-required", "locked", "stopped", "idle"]) {
+      expect(hidesPopoverForState(s)).toBe(false);
     }
   });
 });

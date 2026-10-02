@@ -85,6 +85,133 @@ func TestCheckUpdates_PropagatesHTTPError(t *testing.T) {
 	}
 }
 
+func TestCheckUpdatesDelta_CollectsEveryPage(t *testing.T) {
+	var cursors []string
+	c := rawClient(t, func(w http.ResponseWriter, r *http.Request) {
+		cur := r.URL.Query().Get("cursor")
+		cursors = append(cursors, cur)
+		switch cur {
+		case "":
+			writeUpdatesPage(w, []storage.Node{{ID: "a", Path: "/a.txt"}}, 100, "p2")
+		case "p2":
+			writeUpdatesPage(w, nil, 200, "p3") // an entirely filtered-out page
+		default:
+			writeUpdatesPage(w, []storage.Node{{ID: "b", Path: "/b.txt"}}, 300, "")
+		}
+	})
+
+	nodes, st, tooMany, err := c.CheckUpdatesDelta(context.Background(), 1)
+	if err != nil || tooMany {
+		t.Fatalf("err=%v tooMany=%v", err, tooMany)
+	}
+	if len(nodes) != 2 || nodes[0].ID != "a" || nodes[1].ID != "b" {
+		t.Errorf("nodes = %+v, want a and b across both non-empty pages", nodes)
+	}
+	// The first page's clock, not the last — a change landing mid-pagination
+	// must not be skipped by adopting a later snapshot as the cursor.
+	if st != 100 {
+		t.Errorf("serverTime = %d, want the first page's 100", st)
+	}
+	if fmt.Sprint(cursors) != "[ p2 p3]" {
+		t.Errorf("cursors = %v", cursors)
+	}
+}
+
+func TestCheckUpdatesDelta_GivesUpPastPageBudget(t *testing.T) {
+	calls := 0
+	c := rawClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		// Never stops handing back a cursor: an unbounded backlog.
+		writeUpdatesPage(w, []storage.Node{{ID: fmt.Sprint(calls), Path: "/f.txt"}}, 100, "more")
+	})
+
+	nodes, st, tooMany, err := c.CheckUpdatesDelta(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tooMany {
+		t.Error("tooManyPages = false, want true for a feed that never ends")
+	}
+	if nodes != nil {
+		t.Errorf("nodes = %+v, want nil so a partial delta can't be mistaken for a complete one", nodes)
+	}
+	if st != 100 {
+		t.Errorf("serverTime = %d, want it still usable as a walk seed", st)
+	}
+	if calls != storage.CheckUpdatesDeltaMaxPages {
+		t.Errorf("fetched %d pages, want to stop at CheckUpdatesDeltaMaxPages (%d)", calls, storage.CheckUpdatesDeltaMaxPages)
+	}
+}
+
+func TestCheckUpdatesDelta_PropagatesHTTPError(t *testing.T) {
+	c := rawClient(t, func(w http.ResponseWriter, r *http.Request) { http.Error(w, "boom", 500) })
+	if _, _, _, err := c.CheckUpdatesDelta(context.Background(), 1); err == nil {
+		t.Fatal("expected error")
+	}
+}
+
+// The delta is only patchable because each row says where the node now lives;
+// a path-less feed would leave a client unable to place a change without the
+// walk it is trying to avoid. brick-api resolves one per row
+// (filterReadableWithPaths), and so must the fake.
+func TestCheckUpdatesDelta_RowsCarryResolvedPaths(t *testing.T) {
+	c, fs := testutil.NewStorage(t)
+	fs.PutFile("docs/deep/a.txt", "A")
+	fs.Mkdir("docs/empty")
+
+	nodes, _, tooMany, err := c.CheckUpdatesDelta(context.Background(), 0)
+	if err != nil || tooMany {
+		t.Fatalf("err=%v tooMany=%v", err, tooMany)
+	}
+	got := map[string]string{}
+	for _, n := range nodes {
+		got[n.Path] = n.NodeType
+	}
+	for path, wantType := range map[string]string{
+		"/docs": "folder", "/docs/deep": "folder",
+		"/docs/deep/a.txt": "file", "/docs/empty": "folder",
+	} {
+		if got[path] != wantType {
+			t.Errorf("path %q = %q, want a %s row", path, got[path], wantType)
+		}
+	}
+}
+
+// A trashed node still resolves to the path it was trashed from — that path is
+// the only thing telling a client which local file to remove.
+func TestCheckUpdatesDelta_TrashedRowsKeepTheirPath(t *testing.T) {
+	c, fs := testutil.NewStorage(t)
+	fs.PutFile("docs/a.txt", "A")
+	cursor, err := c.ServerNow(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fs.Trash("docs")
+
+	nodes, _, _, err := c.CheckUpdatesDelta(context.Background(), cursor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The folder and its descendant are both reported: the real server bumps
+	// every descendant on a soft delete, so no client-side cascade is needed.
+	want := map[string]bool{"/docs": false, "/docs/a.txt": false}
+	for _, n := range nodes {
+		if _, ok := want[n.Path]; !ok {
+			t.Errorf("unexpected row %q", n.Path)
+			continue
+		}
+		if !n.IsDeleted {
+			t.Errorf("row %q: isDeleted = false, want true", n.Path)
+		}
+		want[n.Path] = true
+	}
+	for path, seen := range want {
+		if !seen {
+			t.Errorf("no row for %q", path)
+		}
+	}
+}
+
 func TestServerNow_ProbesWithFutureSince(t *testing.T) {
 	c := rawClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Query().Get("since") != fmt.Sprint(int64(1)<<62) {

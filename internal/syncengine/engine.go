@@ -137,6 +137,84 @@ type Engine struct {
 	mu    sync.Mutex // serializes reconcile + state access
 	state *SyncState
 
+	// remoteTree* mirror the remote tree as this engine last knew it
+	// (buildRemoteTree's three maps), tagged with the server clock they are
+	// accurate as of in remoteTreeAsOf (0 = no cache yet). Kept fresh on a
+	// later pass by a cheap CheckUpdates probe against remoteTreeAsOf: either
+	// nothing changed and the cache stands as-is, or the changed nodes the
+	// probe names are patched straight in (applyRemoteDelta). Either way a
+	// full recursive ListChildren walk of every folder is avoided, which
+	// would otherwise happen on every single reconcile — including ones
+	// triggered purely by a local filesystem change (the debounce worker in
+	// Run), where the remote side is usually untouched.
+	//
+	// Safe to carry across passes despite ReconcileAll mutating these same
+	// maps in place while it runs (ensureRemoteFolder adds folders it just
+	// created; pruneRemoteSubtree removes a trashed folder's descendants):
+	// Go maps are reference types, so the cache picks up those in-pass
+	// changes too. Any OTHER change — including ones this same pass made
+	// itself, like an upload, which reconcileFile never reflects back into
+	// these maps — is still caught: it necessarily post-dates
+	// remoteTreeAsOf, so the next pass's probe reports it as a change like
+	// any other and it is patched in then.
+	//
+	// Guarded by e.mu like everything else ReconcileAll touches: only ever
+	// read or written from inside a locked reconcileAll call.
+	remoteTreeFiles    map[string]storage.Node
+	remoteTreeFolders  map[string]storage.Node
+	remoteTreeFolderID map[string]string
+	remoteTreeAsOf     int64
+
+	// remoteTreeIDToRel maps a remote node's ID to the rel path it is
+	// currently cached under, across both remoteTreeFiles and
+	// remoteTreeFolders. It exists so applyRemoteDelta can tell "this changed
+	// node moved" apart from "this is the first time we have seen it" without
+	// a linear scan of the tree: a changed node's row says where it lives
+	// now, and only this index says where it used to. Rebuilt from scratch
+	// alongside every full walk (buildRemoteIDIndex) and maintained
+	// incrementally by everything that moves a cached node —
+	// applyRemoteDelta, rewriteRemotePrefix, ensureRemoteFolder,
+	// pruneRemoteSubtree. Never nil: New seeds it, so the writers above need
+	// no nil check.
+	remoteTreeIDToRel map[string]string
+
+	// localTree* mirror the local sync folder the way remoteTree* mirror the
+	// remote one: a snapshot carried across passes, kept fresh either by a full
+	// buildLocalTree walk or by patching just the paths the filesystem watcher
+	// named (applyLocalChanges), so a single edit doesn't cost a stat of every
+	// file in the folder. localTreeValid is false until the first walk fills
+	// them.
+	//
+	// Patched directly by anything that changes the folder from inside a pass
+	// (downloadFile, the folder create/remove passes, a local removal in
+	// reconcileFile), because our own writes are deliberately hidden from the
+	// watcher — see markRecentlyWritten — and so would otherwise never reach
+	// the cache. Guarded by e.mu, like remoteTree*.
+	localTreeFiles map[string]int64
+	localTreeDirs  map[string]bool
+	localTreeValid bool
+
+	// filesConverged is true once a pass has run the file pass over every
+	// known file without being interrupted and without any of them failing.
+	// Only then may the next pass trust a scoped set of affected rels; see the
+	// file pass in reconcileAll for why.
+	filesConverged bool
+
+	// watching reports whether a filesystem watcher is actually feeding
+	// notifyPath. Until Run says so — and never, if no watcher could be
+	// created and the engine is polling only — no pass may trust the local
+	// cache, since nothing would be reporting the changes it is meant to be
+	// patched with.
+	watching atomic.Bool
+
+	// pendingMu guards the local-change set the watcher fills and the debounce
+	// worker drains. Deliberately separate from e.mu: watcher events arrive on
+	// their own goroutine at any time, including while a pass already holds
+	// e.mu, and recording where a change happened must never wait on one.
+	pendingMu    sync.Mutex
+	pendingLocal map[string]bool
+	pendingAll   bool
+
 	downloaded atomic.Int64
 	uploaded   atomic.Int64
 	deleted    atomic.Int64
@@ -173,19 +251,20 @@ func New(cfg Config) *Engine {
 		st = NewState(cfg.Folder)
 	}
 	e := &Engine{
-		sc:              cfg.Storage,
-		folder:          cfg.Folder,
-		accountID:       cfg.AccountID,
-		rootID:          cfg.RootID,
-		statePath:       cfg.StatePath,
-		sink:            sink,
-		opts:            cfg.Options.withDefaults(),
-		excludeDirs:     cfg.ExcludeDirs,
-		firstSync:       cfg.FirstSync,
-		conflictMode:    cfg.ConflictMode,
-		state:           st,
-		recentlyWritten: map[string]time.Time{},
-		trigger:         make(chan struct{}, 1),
+		sc:                cfg.Storage,
+		folder:            cfg.Folder,
+		accountID:         cfg.AccountID,
+		rootID:            cfg.RootID,
+		statePath:         cfg.StatePath,
+		sink:              sink,
+		opts:              cfg.Options.withDefaults(),
+		excludeDirs:       cfg.ExcludeDirs,
+		firstSync:         cfg.FirstSync,
+		conflictMode:      cfg.ConflictMode,
+		state:             st,
+		recentlyWritten:   map[string]time.Time{},
+		remoteTreeIDToRel: map[string]string{},
+		trigger:           make(chan struct{}, 1),
 	}
 	e.ctrlState = "starting"
 	return e
@@ -193,8 +272,67 @@ func New(cfg Config) *Engine {
 
 func (e *Engine) logf(format string, args ...any) { e.sink.Logf(format, args...) }
 
-// Notify wakes the debounced reconcile worker.
+// Notify wakes the debounced reconcile worker for a local change whose location
+// the caller cannot name — an out-of-band touch of the sync folder (see
+// PauseAndWait), or a resume. The pass it triggers re-walks the sync folder
+// rather than trusting the cached local tree, since there is nothing to say
+// which part of the cache is now wrong. Callers that do know use notifyPath.
 func (e *Engine) Notify() {
+	e.pendingMu.Lock()
+	e.pendingAll = true
+	e.pendingMu.Unlock()
+	e.wake()
+}
+
+// notifyPath is Notify for a change the filesystem watcher located: rel (slash
+// separated, relative to the sync folder) is recorded so the pass it triggers
+// can patch the cached local tree for just that path instead of walking the
+// whole folder. Safe to call while a pass holds e.mu.
+func (e *Engine) notifyPath(rel string) {
+	if rel == "" || rel == "." {
+		// No usable path — fall back to "something changed, somewhere" rather
+		// than silently recording nothing.
+		e.Notify()
+		return
+	}
+	e.pendingMu.Lock()
+	if e.pendingLocal == nil {
+		e.pendingLocal = map[string]bool{}
+	}
+	e.pendingLocal[rel] = true
+	e.pendingMu.Unlock()
+	e.wake()
+}
+
+// drainLocalChanges takes the local changes recorded since the last drain:
+// changed are the located ones, and unknown is set if anything arrived through
+// Notify without a path, in which case changed cannot be assumed complete.
+func (e *Engine) drainLocalChanges() (changed []string, unknown bool) {
+	e.pendingMu.Lock()
+	defer e.pendingMu.Unlock()
+	if len(e.pendingLocal) > 0 {
+		changed = make([]string, 0, len(e.pendingLocal))
+		for rel := range e.pendingLocal {
+			changed = append(changed, rel)
+		}
+		e.pendingLocal = nil
+	}
+	unknown, e.pendingAll = e.pendingAll, false
+	return changed, unknown
+}
+
+// hasPendingLocal reports whether the watcher has reported anything the
+// debounce worker hasn't acted on yet — i.e. whether the cached local tree is
+// known to be out of date. Deliberately a peek and not a drain: the reports
+// belong to the debounce worker, whose quiet period is what keeps a burst of
+// writes from being uploaded half-written.
+func (e *Engine) hasPendingLocal() bool {
+	e.pendingMu.Lock()
+	defer e.pendingMu.Unlock()
+	return e.pendingAll || len(e.pendingLocal) > 0
+}
+
+func (e *Engine) wake() {
 	select {
 	case e.trigger <- struct{}{}:
 	default:

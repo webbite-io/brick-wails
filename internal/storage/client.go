@@ -27,6 +27,15 @@ type Node struct {
 	Path      string    `json:"path"`
 	IsDeleted bool      `json:"isDeleted"`
 	UpdatedAt time.Time `json:"updatedAt"`
+	// ContentMD5 is the whole-file MD5 the server already has on record for
+	// this node (brick-api's model.Node.ContentMD5), returned as part of the
+	// ordinary node listing — empty when unknown (a file uploaded before
+	// content-MD5 support existed, or whose resumable chunks arrived out of
+	// order). Comparing it against a local file's own MD5 is how
+	// Engine.verifyUnsyncedFileMatches confirms two files are identical
+	// without any extra request: the node from ListChildren already carries
+	// its own hash, so there's nothing left to ask the server.
+	ContentMD5 string `json:"contentMd5,omitempty"`
 }
 
 // NodeList is a paginated list response.
@@ -164,6 +173,62 @@ func (c *Client) CheckUpdates(ctx context.Context, since int64) (changed bool, s
 		}
 		if out.NextCursor == "" {
 			return false, serverTime, nil
+		}
+		cursor = out.NextCursor
+	}
+}
+
+// CheckUpdatesDeltaMaxPages bounds how many pages CheckUpdatesDelta collects
+// before giving up and telling its caller to fall back to a real tree walk. A
+// handful of pages covers the ordinary "someone edited a few files" case
+// incremental patching exists for; a bigger backlog (a long time offline, a
+// bulk operation on the account) is cheaper and far less risky to resolve with
+// one real recursive walk than by replaying thousands of individual
+// moves/renames onto an in-memory tree.
+const CheckUpdatesDeltaMaxPages = 4
+
+// CheckUpdatesDelta is CheckUpdates' payload-carrying sibling: instead of
+// stopping at the first sign of a change, it collects every changed node from
+// since onward, so a caller holding a cached remote tree can patch it directly
+// (see Engine.applyRemoteDelta) instead of re-walking every folder with
+// ListChildren just to rediscover the same handful of nodes the server already
+// named. Each row carries its full resolved Path, which is what makes patching
+// possible at all.
+//
+// tooManyPages is true when the feed didn't finish within
+// CheckUpdatesDeltaMaxPages pages; nodes is nil in that case and the caller
+// must fall back to a real walk rather than trust a partial delta. serverTime
+// is always the first page's — the same "earliest snapshot" invariant
+// CheckUpdates documents — so adopting it as the next cursor can never skip a
+// change that landed mid-pagination.
+func (c *Client) CheckUpdatesDelta(ctx context.Context, since int64) (nodes []Node, serverTime int64, tooManyPages bool, err error) {
+	cursor := ""
+	haveServerTime := false
+	for pages := 0; ; pages++ {
+		if err := ctx.Err(); err != nil {
+			return nil, 0, false, err
+		}
+		path := fmt.Sprintf("/check-updates?since=%d&limit=%d", since, CheckUpdatesPageLimit)
+		if cursor != "" {
+			path += "&cursor=" + cursor
+		}
+		var out struct {
+			Data       []Node `json:"data"`
+			ServerTime int64  `json:"serverTime"`
+			NextCursor string `json:"nextCursor"`
+		}
+		if err := c.getJSON(ctx, path, &out); err != nil {
+			return nil, 0, false, err
+		}
+		if !haveServerTime {
+			serverTime, haveServerTime = out.ServerTime, true
+		}
+		nodes = append(nodes, out.Data...)
+		if out.NextCursor == "" {
+			return nodes, serverTime, false, nil
+		}
+		if pages+1 >= CheckUpdatesDeltaMaxPages {
+			return nil, serverTime, true, nil
 		}
 		cursor = out.NextCursor
 	}

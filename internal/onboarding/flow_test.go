@@ -3,6 +3,7 @@ package onboarding
 import (
 	"context"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,6 +96,44 @@ func TestRouteFreshInstallIsWelcome(t *testing.T) {
 	}
 	if r := e.route(); r.Step != StepWelcome || r.FirstRun {
 		t.Errorf("second route %+v (config exists, no creds)", r)
+	}
+}
+
+// BeginLogin identifies this install to account-api with the instanceKey from
+// config.yaml — created on demand for a config that has none, then reused
+// unchanged by every later login so the device stays one entry in account-hq.
+func TestBeginLoginSendsStableInstanceKey(t *testing.T) {
+	e := newEnv(t)
+	authURL, err := e.flow.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.flow.CancelLogin()
+
+	key := e.cfg().InstanceKey
+	if key == "" {
+		t.Fatal("BeginLogin did not persist an instanceKey")
+	}
+	q, _ := url.ParseQuery(strings.SplitN(authURL, "?", 2)[1])
+	if q.Get("instance_key") != key {
+		t.Errorf("instance_key = %q, want the stored %q", q.Get("instance_key"), key)
+	}
+	if q.Get("device_name") != auth.DeviceName() {
+		t.Errorf("device_name = %q, want %q", q.Get("device_name"), auth.DeviceName())
+	}
+
+	e.login()
+	if got := e.cfg().InstanceKey; got != key {
+		t.Errorf("instanceKey after login = %q, want it unchanged at %q", got, key)
+	}
+	authURL2, err := e.flow.BeginLogin(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.flow.CancelLogin()
+	q2, _ := url.ParseQuery(strings.SplitN(authURL2, "?", 2)[1])
+	if q2.Get("instance_key") != key {
+		t.Errorf("second login instance_key = %q, want the same %q", q2.Get("instance_key"), key)
 	}
 }
 
@@ -320,8 +359,25 @@ func TestSetRemoteAccessAndScopeValidation(t *testing.T) {
 	if err := e.flow.SetRemoteAccess(true, filepath.Join(e.home, "missing")); err == nil {
 		t.Error("missing root accepted")
 	}
-	if err := e.flow.SetRemoteAccess(false, ""); err != nil || len(e.flow.Checklist()) != 3 {
-		t.Errorf("declining should be a no-op: %v %v", err, e.flow.Checklist())
+	// The wizard can be walked backwards, so re-answering the step overwrites
+	// what it saved: a new root replaces the old one instead of piling up.
+	other := filepath.Join(e.home, "other")
+	os.MkdirAll(other, 0o755)
+	if err := e.flow.SetRemoteAccess(true, other); err != nil {
+		t.Fatalf("re-answering: %v", err)
+	}
+	if c := e.cfg(); !reflect.DeepEqual(c.AgentRoots, []string{other}) {
+		t.Errorf("root not replaced: %v", c.AgentRoots)
+	}
+	steps := len(e.flow.Checklist())
+	if err := e.flow.SetRemoteAccess(false, ""); err != nil {
+		t.Fatalf("declining: %v", err)
+	}
+	if c := e.cfg(); c.RemoteControl || len(c.AgentRoots) != 0 {
+		t.Errorf("declining should undo this session's answer: %v %v", c.RemoteControl, c.AgentRoots)
+	}
+	if len(e.flow.Checklist()) != steps {
+		t.Errorf("declining should not tick a step off: %v", e.flow.Checklist())
 	}
 	if err := e.flow.SetSyncScope(false, []string{"NotAFolder"}); err == nil {
 		t.Error("unknown folder accepted")

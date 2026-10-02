@@ -18,6 +18,12 @@ type LoginParams struct {
 	ClientID    string
 	Scopes      string
 	CallbackURL string
+
+	// InstanceKey is this install's stable identifier (brickcfg.Config's
+	// InstanceKey), sent on the authorization request so account-api can tell
+	// this install apart from other installs of the same OAuth client and let
+	// the user revoke it on its own. Empty omits the parameter.
+	InstanceKey string
 }
 
 // ErrLoginCancelled is returned by Wait after Cancel.
@@ -68,6 +74,14 @@ func StartLogin(ctx context.Context, p LoginParams) (*LoginSession, error) {
 	q.Set("state", state)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
+	// Device identity, matching brick-cli's runLogin: instance_key names this
+	// install, device_name is what the user sees in account-hq's device list.
+	if p.InstanceKey != "" {
+		q.Set("instance_key", p.InstanceKey)
+	}
+	if name := DeviceName(); name != "" {
+		q.Set("device_name", name)
+	}
 
 	s := &LoginSession{
 		AuthURL:  oidc.AuthorizationEndpoint + "?" + q.Encode(),

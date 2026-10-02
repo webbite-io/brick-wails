@@ -39,6 +39,15 @@ type Config struct {
 	RefreshToken string `yaml:"refreshToken,omitempty"`
 	IDToken      string `yaml:"idToken,omitempty"`
 
+	// InstanceKey is an opaque per-install identifier sent on every OIDC login
+	// (see auth.StartLogin) so account-api can recognize this specific install
+	// across logins and let the user revoke it individually, rather than only
+	// being able to revoke the app's access as a whole. It must stay stable for
+	// the life of this install — only regenerate it on a genuine fresh install
+	// (i.e. never, once set). Shared with brick-cli, which reads and writes the
+	// same key in the same file.
+	InstanceKey string `yaml:"instanceKey,omitempty"`
+
 	// ActiveAccountID is the account currently in effect; it always keys into
 	// Accounts.
 	ActiveAccountID string `yaml:"activeAccountId,omitempty"`
@@ -111,9 +120,7 @@ func Dir() (string, error) {
 
 // Isolated reports whether BRICK_CONFIG_DIR points somewhere other than the
 // directory brick-cli uses — i.e. this app is deliberately not sharing state
-// with the CLI (dev/testing). Per-user runtime files (the control API socket
-// and discovery file) then move under the config dir too, so an isolated app
-// never touches a real brick-cli's runtime files.
+// with the CLI (dev/testing).
 func Isolated() bool {
 	v := strings.TrimSpace(os.Getenv(ConfigDirEnv))
 	if v == "" {
@@ -200,7 +207,8 @@ func (s *Store) readLocked() (*Config, error) {
 }
 
 // LoadOrCreate reads the config, creating it (and its directory) with a fresh
-// UUIDv4 clientId if it doesn't exist, and backfilling a missing clientId.
+// UUIDv4 clientId/instanceKey if it doesn't exist, and backfilling either if
+// missing (e.g. a config written by a brick version that predates them).
 // created reports whether the file was newly created.
 func (s *Store) LoadOrCreate() (cfg *Config, created bool, err error) {
 	s.mu.Lock()
@@ -210,7 +218,8 @@ func (s *Store) LoadOrCreate() (cfg *Config, created bool, err error) {
 		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 			return nil, false, fmt.Errorf("could not create config directory: %w", err)
 		}
-		c = &Config{ClientID: uuid.New().String()}
+		c = &Config{}
+		ensureIdentity(c)
 		if err := s.writeLocked(c); err != nil {
 			return nil, false, err
 		}
@@ -219,13 +228,27 @@ func (s *Store) LoadOrCreate() (cfg *Config, created bool, err error) {
 	if err != nil {
 		return nil, false, err
 	}
-	if c.ClientID == "" {
-		c.ClientID = uuid.New().String()
+	if ensureIdentity(c) {
 		if err := s.writeLocked(c); err != nil {
 			return nil, false, err
 		}
 	}
 	return c, false, nil
+}
+
+// ensureIdentity fills in a missing clientId/instanceKey, reporting whether it
+// changed anything. Both are generated once per install and never rotated.
+func ensureIdentity(c *Config) bool {
+	dirty := false
+	if c.ClientID == "" {
+		c.ClientID = uuid.New().String()
+		dirty = true
+	}
+	if c.InstanceKey == "" {
+		c.InstanceKey = uuid.New().String()
+		dirty = true
+	}
+	return dirty
 }
 
 // Update re-reads the config from disk (creating it if absent), applies fn and
@@ -239,7 +262,8 @@ func (s *Store) Update(fn func(c *Config) error) (*Config, error) {
 		if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 			return nil, fmt.Errorf("could not create config directory: %w", err)
 		}
-		c = &Config{ClientID: uuid.New().String()}
+		c = &Config{}
+		ensureIdentity(c)
 	} else if err != nil {
 		return nil, err
 	}

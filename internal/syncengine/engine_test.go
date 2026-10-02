@@ -552,6 +552,11 @@ func TestPollRemoteChanges(t *testing.T) {
 	before := f.eng.cursor()
 
 	f.fs.PutFile("new.txt", "N")
+	// Drop the cache stamp so the triggered pass has to walk the tree rather
+	// than patch it from the feed, and fail that walk: the point here is a
+	// poll that saw a real change but whose reconcile then failed, which must
+	// leave the cursor where it was so the change is polled again.
+	f.eng.remoteTreeAsOf = 0
 	f.fs.FailNext("GET /nodes/root/children", 1)
 	if _, err := f.eng.PollRemoteChanges(ctx); err == nil {
 		t.Fatal("expected failed reconcile")
