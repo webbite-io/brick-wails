@@ -11,6 +11,9 @@
 
 APP_NAME := brick-ui
 BIN_DIR := bin
+# The macOS bundle is named for display, as macOS shows an app by its bundle's
+# file name; keep in step with BUNDLE_NAME in build/darwin/Taskfile.yml.
+MAC_BUNDLE := Webbite Brick.app
 DIST_DIR := dist
 
 # Release artifacts are named after the Go arch (amd64/arm64) to match
@@ -435,15 +438,17 @@ clean:
 # ~/Applications instead of dropping a bare binary on PATH.
 install: build-prod
 ifeq ($(HOST_OS),darwin)
-	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Bundling $(APP_NAME).app...$(COLOR_RESET)"
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Bundling $(MAC_BUNDLE)...$(COLOR_RESET)"
 	@$(WAILS3) task darwin:create:app:bundle
 	@mkdir -p ~/Applications
+	@# Also drop a bundle installed under the old name, brick-ui.app.
 	@rm -rf "$$HOME/Applications/$(APP_NAME).app"
-	@cp -R "$(BIN_DIR)/$(APP_NAME).app" ~/Applications/
-	@echo "$(COLOR_GREEN)✓ Installed to ~/Applications/$(APP_NAME).app$(COLOR_RESET)"
+	@rm -rf "$$HOME/Applications/$(MAC_BUNDLE)"
+	@cp -R "$(BIN_DIR)/$(MAC_BUNDLE)" ~/Applications/
+	@echo "$(COLOR_GREEN)✓ Installed to ~/Applications/$(MAC_BUNDLE)$(COLOR_RESET)"
 	@echo ""
-	@echo "Start it with: open -a \"$$HOME/Applications/$(APP_NAME).app\""
-	@echo "It runs as a menu bar app — no Dock icon, look for the tray icon."
+	@echo "Start it with: open -a \"$$HOME/Applications/$(MAC_BUNDLE)\""
+	@echo "It runs as a menu bar app — look for the tray icon. It is in the Dock only while one of its windows is open."
 else
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Installing $(APP_NAME) to ~/.local/bin...$(COLOR_RESET)"
 	@mkdir -p ~/.local/bin
@@ -484,7 +489,7 @@ help:
 	@echo "  release-to-github - Publish dist/ artifacts as a GitHub release (prompts before replacing)"
 	@echo "  clean      - Remove build artifacts (bin/, dist/, frontend/dist, .task)"
 	@echo "  install    - Build using build-prod and install for testing"
-	@echo "               (~/.local/bin on Linux, ~/Applications/$(APP_NAME).app on macOS)"
+	@echo "               (~/.local/bin on Linux, ~/Applications/$(MAC_BUNDLE) on macOS)"
 	@echo "  version    - Show version information"
 	@echo "  help       - Show this help message"
 	@echo ""

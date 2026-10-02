@@ -124,7 +124,7 @@ make doctor           # check build prerequisites
 make setup            # install wails3 + frontend deps
 make dev              # hot reload (uses .env.local)
 make build-dev        # dev build → bin/brick-ui
-make run              # run the last build (on macOS: wrapped in a .dev.app bundle)
+make run              # run the last build (on macOS: wrapped in bin/dev/Webbite Brick.app)
 wails3 generate bindings -clean=true -ts -i   # after changing a service's methods/types
 ```
 
@@ -133,11 +133,14 @@ wails3 generate bindings -clean=true -ts -i   # after changing a service's metho
 whether or not that directory is on your PATH; add it if you want to run
 `wails3` yourself.
 
-On macOS the app runs as a menu bar (accessory) app: no Dock icon, no menu bar
-of its own — look for the tray icon. `make run` and `make install` build a
-`.app` bundle for it, since that is what carries the bundle identifier, the
-icon and the activation policy; the bare `bin/brick-ui` binary works too, but
-macOS treats it as an unbundled process.
+On macOS the app runs as a menu bar (accessory) app — look for the tray icon.
+While one of its windows is open it also gets a Dock icon, a menu bar and a
+Cmd-Tab entry, like any other app, and loses them again once they're all
+closed. `make dev`, `make run` and `make install` build a `.app` bundle for it,
+since that is what carries the bundle identifier and the icon; the bare
+`bin/brick-ui` binary works too, but macOS treats it as an unbundled process.
+The bundle is named `Webbite Brick.app` because macOS shows an app by its
+bundle's file name (in Finder, the Dock and Cmd-Tab), not by `CFBundleName`.
 
 Trying the app without the real backend:
 
@@ -240,7 +243,7 @@ already floors this at Ubuntu 24.04 / Debian 13.
 
 **macOS and Windows** have no release artifact yet. This is a CGO GUI app, so
 each needs its own native toolchain or CI runner. On macOS, `make install`
-builds an ad-hoc signed `bin/brick-ui.app` bundle and copies it to
+builds an ad-hoc signed `bin/Webbite Brick.app` bundle and copies it to
 `~/Applications` for testing; still missing for real distribution are a `.dmg`
 and Developer ID signing + notarization (`wails3 task darwin:sign:notarize`
 after `wails3 setup`). `build/darwin` and `build/windows` hold the
