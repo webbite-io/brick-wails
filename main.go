@@ -135,6 +135,9 @@ func main() {
 	if env.OAuthClientID == "" {
 		logger.Printf("warning: OAUTH_CLIENT_ID is not set; login will fail (see .env.example)")
 	}
+	// Before any window exists, so the desktop has the entry to match the
+	// first one against.
+	ensureDesktopEntry(logger)
 
 	tokens, err := auth.NewTokenSource(store, env.APIURL, env.OAuthClientID)
 	if err != nil {

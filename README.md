@@ -231,6 +231,14 @@ instance — is pruned before ours is written. An install made with `--prefix`
 needs the same `--prefix` on `--uninstall`, which is where it looks for the
 binary.
 
+The app also checks for a desktop entry itself on every start, since one is
+what gives the window switcher its name and icon (GNOME matches it to the
+window by `StartupWMClass=org.wails.webbite_brick`). It leaves a correct entry
+alone, fixes the `StartupWMClass` of an older one, and when there is none at
+all — an AppImage run straight from `dist/`, a dev build — writes a hidden
+(`NoDisplay`) entry that names the window without adding a launcher. See
+`internal/desktopentry`.
+
 Two caveats. The first `make release` downloads linuxdeploy and AppRun from
 GitHub, caching them in `build/linux/appimage/build`. And an AppImage only runs
 on glibc **at least** as new as the build host's, so release from the oldest
