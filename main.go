@@ -178,15 +178,19 @@ func main() {
 
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
+	// It is an ordinary window otherwise, not kept above others: that never
+	// took effect on Linux (Wayland has no protocol for it), and on macOS it
+	// covered whatever window had focus.
 	popover := app.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:   "Brick",
+		Name: "Brick",
+		// Linux falls back to Name for an empty title; macOS leaves it blank.
+		Title:  "Brick",
 		Width:  420,
 		Height: 650,
 		// Same sizing as the setup window: resizable upwards only, with the
 		// default size as the floor.
 		MinWidth:         420,
 		MinHeight:        650,
-		AlwaysOnTop:      true,
 		Hidden:           true,
 		Windows:          application.WindowsWindow{HiddenOnTaskbar: true},
 		BackgroundColour: application.NewRGB(24, 24, 27),
@@ -244,6 +248,10 @@ func main() {
 		updateWindow.Hide()
 		e.Cancel()
 	})
+
+	// On macOS, be in the Dock and Cmd-Tab while any window is open and
+	// tray-only otherwise.
+	trackAppSwitcher(app, popover, setupWindow, updateWindow)
 	// The frontend shows the window itself once it has routed and laid out the
 	// screen (OnboardingService.ShowWindow). Showing it here instead would
 	// present the previous screen's frame for an instant before the new one
@@ -312,7 +320,13 @@ func main() {
 	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) { applyTrayIcon() })
 
 	menu := app.NewMenu()
-	menu.Add("Open Brick Status").OnClick(func(*application.Context) { tray.ShowWindow() })
+	menu.Add("Open Brick Status").OnClick(func(*application.Context) {
+		tray.ShowWindow()
+		// Placing the window under the icon also lifts it to pop-up menu
+		// level on macOS, above every other window and never lowered again;
+		// put it back among ordinary windows. A no-op on Linux.
+		popover.SetAlwaysOnTop(false)
+	})
 	openFolderItem := menu.Add("Open Brick Folder")
 	openFolderItem.OnClick(func(*application.Context) { _ = syncSvc.OpenFolder() })
 	// Off the UI thread: handing the session to the browser takes a round
