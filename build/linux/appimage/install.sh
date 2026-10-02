@@ -25,6 +25,8 @@ set -euo pipefail
 APP_NAME="brick-ui"
 DISPLAY_NAME="Webbite Brick"
 COMMENT="Tray companion for the Webbite Brick CLI"
+# The app id Wails derives from the app Name in main.go; see write_desktop_entry.
+WM_CLASS="org.wails.webbite_brick"
 GITHUB_REPO="webbite-io/brick-wails"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 
@@ -316,8 +318,10 @@ write_desktop_entry() {
   # Exec uses the absolute installed path rather than a bare command name:
   # desktop sessions don't source your shell rc, so ~/.local/bin is frequently
   # absent from the launcher's PATH even when it's in your terminal's.
-  # StartupWMClass matches the app id Wails sets, so the running window groups
-  # under this entry instead of appearing as a second, unnamed icon.
+  # StartupWMClass matches the app id Wails sets — "org.wails." plus the
+  # lowercased, underscored app Name from main.go ("Webbite Brick") — so the
+  # running window groups under this entry, with its name and icon, instead of
+  # showing up in the switcher as a bare "org.wails.webbite_brick".
   cat >"$DESKTOP_FILE" <<EOF
 [Desktop Entry]
 Type=Application
@@ -330,7 +334,7 @@ Categories=Network;FileTransfer;
 Keywords=brick;sync;backup;webbite;
 Terminal=false
 StartupNotify=true
-StartupWMClass=$APP_NAME
+StartupWMClass=$WM_CLASS
 X-AppImage-Version=$version
 EOF
   chmod 644 "$DESKTOP_FILE"

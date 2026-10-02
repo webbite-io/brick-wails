@@ -182,12 +182,18 @@ tasks:
     cmds:
       - mkdir -p {{.ROOT_DIR}}/build/linux/appimage
       - wails3 generate .desktop -name "{{.DISPLAY_NAME}}" -exec "{{.EXEC}}" -icon "{{.ICON}}" -outputfile "{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop" -categories "{{.CATEGORIES}}"
+      # The generator has no flag for this. It ties the running window to this
+      # entry, so the switcher shows its name and icon rather than the bare
+      # app id.
+      - echo "StartupWMClass={{.WM_CLASS}}" >> "{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop"
     vars:
       APP_NAME: '{{.APP_NAME}}'
       DISPLAY_NAME: 'Webbite Brick'
       EXEC: '{{.APP_NAME}}'
       ICON: '{{.APP_NAME}}'
       CATEGORIES: 'Development;'
+      # The app id Wails derives from the app Name in main.go ("Webbite Brick").
+      WM_CLASS: 'org.wails.webbite_brick'
       OUTPUTFILE: '{{.ROOT_DIR}}/build/linux/{{.APP_NAME}}.desktop'
 
   run:
