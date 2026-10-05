@@ -151,11 +151,29 @@ func TestMintHandoffCodeWithoutConsent(t *testing.T) {
 	if !errors.Is(err, ErrNoConsent) {
 		t.Errorf("err = %v, want ErrNoConsent", err)
 	}
-	// The server's own reason has to survive into the message: access_denied
-	// is also how a hand-off between clients of different owners is refused,
-	// and the log is the only place that distinction shows up.
+	// The server's own reason has to survive into the message: the log is the
+	// only place the difference between "not decided yet" and a refusal shows
+	// up.
 	if !strings.Contains(err.Error(), "user has not consented") {
 		t.Errorf("err = %v, want it to quote the server's description", err)
+	}
+}
+
+// access_denied is still read as "no hand-off to be had": it is what a real
+// server sends for a cross-owner refusal, and all an older one sent for the
+// undecided case too — so a desktop build must not start treating it as a
+// hard failure just because the server learned a more specific code.
+func TestMintHandoffCodeAccessDeniedIsStillNoConsent(t *testing.T) {
+	srv := fakeoidc.New()
+	defer srv.Close()
+	ts := loggedIn(t, srv)
+	srv.SetDenyConsent(true)
+	srv.SetDenyConsentCode("access_denied")
+
+	_, err := MintHandoffCode(context.Background(), ts,
+		srv.HandoffClientID, "https://brick.example/oauth2/callback", "openid")
+	if !errors.Is(err, ErrNoConsent) {
+		t.Errorf("err = %v, want ErrNoConsent", err)
 	}
 }
 

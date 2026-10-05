@@ -23,6 +23,10 @@ import (
 // that do not share an owner — a misconfigured WEB_OAUTH_CLIENT_ID, which is
 // permanent and needs fixing, not a user who has yet to sign in. Nothing
 // branches on the difference; the log has to name it.
+//
+// The server says consent_required (OIDC Core §3.1.2.6) for the missing-decision
+// case and keeps access_denied for the refusals; both are accepted here, since
+// an older server only ever sent the latter.
 var ErrNoConsent = errors.New("the user has not consented to this client")
 
 // HandoffCode is an authorization code minted for another OIDC client, with
@@ -155,7 +159,7 @@ func authorizeJSON(ctx context.Context, authURL, accessToken string) (string, er
 
 	if resp.StatusCode != http.StatusOK {
 		switch {
-		case parsed.Error == "access_denied":
+		case parsed.Error == "consent_required", parsed.Error == "access_denied":
 			if parsed.ErrorDesc == "" {
 				return "", ErrNoConsent
 			}
