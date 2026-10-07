@@ -1,7 +1,7 @@
 // Package runner owns the lifecycle of syncing inside the app: the instance
 // lock (shared with brick-cli), the sync engine and the remote-file agent —
 // and the app-level state shown in the UI when no engine is running
-// (not-configured, auth-required, locked, stopped).
+// (not-configured, auth-required, locked, stopped, offline).
 package runner
 
 import (
@@ -28,12 +28,23 @@ const (
 	StateAuthRequired  = "auth-required"
 	StateLocked        = "locked"
 	StateStopped       = "stopped"
+	// StateOffline: Brick could not be reached at start; a retry is pending.
+	StateOffline = "offline"
 )
 
 // Errors returned by Start.
 var (
 	ErrNotConfigured = errors.New("brick is not set up yet")
 	ErrLocked        = errors.New("the Brick CLI is already syncing on this computer")
+	// ErrUnreachable wraps a failure to reach the auth or Storage API. Start
+	// retries by itself after one, with backoff.
+	ErrUnreachable = errors.New("could not reach Brick")
+)
+
+// Default retry backoff after ErrUnreachable: 5s, doubling up to 5 minutes.
+const (
+	defaultRetryMin = 5 * time.Second
+	defaultRetryMax = 5 * time.Minute
 )
 
 // Status is what the UI renders (engine status plus app-level state). JSON
@@ -61,6 +72,9 @@ type Config struct {
 	EngineOptions syncengine.Options
 	// DisableAgent turns the remote-file agent off (tests).
 	DisableAgent bool
+	// RetryMin and RetryMax bound the backoff between start retries after
+	// ErrUnreachable (zero means the defaults; overridden in tests).
+	RetryMin, RetryMax time.Duration
 }
 
 // StartParams carry the onboarding decisions into the first run.
@@ -81,6 +95,12 @@ type Runner struct {
 	lastError string
 	accountID string
 	clientID  string
+
+	// A pending start retry. retryGen bumps whenever it is cancelled, so a
+	// timer that already fired can tell it is stale.
+	retryTimer   *time.Timer
+	retryGen     int
+	retryAttempt int
 
 	statusMu      sync.Mutex
 	lastEmit      time.Time
@@ -160,9 +180,18 @@ func (r *Runner) SetPaused(p bool) {
 
 // Start acquires the instance lock and starts syncing the configured account.
 // Returns ErrLocked, ErrNotConfigured, an error wrapping
-// auth.ErrSessionExpired, or a Storage API error; the app-level state is set
-// accordingly.
+// auth.ErrSessionExpired or ErrUnreachable, or another error; the app-level
+// state is set accordingly. After ErrUnreachable (no network yet after a wake,
+// say) the state is offline and Start tries again by itself, with backoff,
+// until it gets through or Stop or another Start takes over.
 func (r *Runner) Start(p StartParams) error {
+	r.mu.Lock()
+	r.cancelRetryLocked()
+	r.mu.Unlock()
+	return r.start(p)
+}
+
+func (r *Runner) start(p StartParams) error {
 	r.mu.Lock()
 	if r.eng != nil {
 		r.mu.Unlock()
@@ -173,6 +202,14 @@ func (r *Runner) Start(p StartParams) error {
 	fail := func(state string, err error) error {
 		r.setState(state, err.Error())
 		return err
+	}
+	unreachable := func(err error) error {
+		err = fmt.Errorf("%w: %w", ErrUnreachable, err)
+		r.mu.Lock()
+		d := r.scheduleRetryLocked(p)
+		r.mu.Unlock()
+		r.logf("%v; retrying in %s", err, d)
+		return fail(StateOffline, err)
 	}
 
 	lockPath, err := lock.PathIn(r.cfg.Store.Dir())
@@ -215,7 +252,7 @@ func (r *Runner) Start(p StartParams) error {
 		if errors.Is(err, auth.ErrSessionExpired) {
 			return fail(StateAuthRequired, err)
 		}
-		return fail(StateStopped, fmt.Errorf("could not reach the Brick API at %s: %w", r.cfg.Env.APIURL, err))
+		return unreachable(fmt.Errorf("the Brick API at %s: %w", r.cfg.Env.APIURL, err))
 	}
 	sc := &storage.Client{BaseURL: r.cfg.Env.StorageAPIURL, AccountID: cfg.ActiveAccountID, Auth: auth.NewClient(r.cfg.Tokens)}
 	root, err := sc.ResolveRoot(ctx0)
@@ -223,7 +260,7 @@ func (r *Runner) Start(p StartParams) error {
 		if errors.Is(err, auth.ErrSessionExpired) {
 			return fail(StateAuthRequired, err)
 		}
-		return fail(StateStopped, fmt.Errorf("could not reach the Brick storage API at %s: %w", r.cfg.Env.StorageAPIURL, err))
+		return unreachable(fmt.Errorf("the Brick storage API at %s: %w", r.cfg.Env.StorageAPIURL, err))
 	}
 
 	eng := syncengine.New(syncengine.Config{
@@ -245,6 +282,7 @@ func (r *Runner) Start(p StartParams) error {
 	r.eng, r.cancel, r.done = eng, cancel, done
 	r.state, r.lastError = "", ""
 	r.accountID, r.clientID = cfg.ActiveAccountID, cfg.ClientID
+	r.retryAttempt = 0
 	r.mu.Unlock()
 	ok = true
 
@@ -288,12 +326,16 @@ func (r *Runner) Stop() { r.stop(StateStopped, "") }
 
 func (r *Runner) stop(state, msg string) {
 	r.mu.Lock()
+	retrying := r.cancelRetryLocked()
 	cancel, done := r.cancel, r.done
-	if cancel != nil {
+	if cancel != nil || retrying {
 		r.state, r.lastError = state, msg
 	}
 	r.mu.Unlock()
 	if cancel == nil {
+		if retrying {
+			r.emitStatus()
+		}
 		return
 	}
 	cancel()
@@ -302,6 +344,51 @@ func (r *Runner) stop(state, msg string) {
 	case <-time.After(15 * time.Second):
 		r.logf("timed out waiting for sync to stop")
 	}
+}
+
+// scheduleRetryLocked arms a start retry with p and returns its delay: RetryMin
+// doubling per consecutive failure, capped at RetryMax.
+func (r *Runner) scheduleRetryLocked(p StartParams) time.Duration {
+	lo, hi := r.cfg.RetryMin, r.cfg.RetryMax
+	if lo <= 0 {
+		lo = defaultRetryMin
+	}
+	if hi <= 0 {
+		hi = defaultRetryMax
+	}
+	d := lo
+	for i := 0; i < r.retryAttempt && d < hi; i++ {
+		d *= 2
+	}
+	d = min(d, hi)
+	r.retryAttempt++
+
+	r.cancelRetryLocked()
+	gen := r.retryGen
+	r.retryTimer = time.AfterFunc(d, func() {
+		r.mu.Lock()
+		stale := r.retryGen != gen
+		if !stale {
+			r.retryTimer = nil
+		}
+		r.mu.Unlock()
+		if !stale {
+			_ = r.start(p)
+		}
+	})
+	return d
+}
+
+// cancelRetryLocked drops a pending start retry and reports whether there was
+// one.
+func (r *Runner) cancelRetryLocked() bool {
+	r.retryGen++
+	if r.retryTimer == nil {
+		return false
+	}
+	r.retryTimer.Stop()
+	r.retryTimer = nil
+	return true
 }
 
 // emitStatus pushes status, throttled to ~10/s with a trailing emit.

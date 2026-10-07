@@ -172,13 +172,13 @@ func (f *Flow) Route(ctx context.Context) Route {
 		if errors.Is(err, auth.ErrSessionExpired) {
 			return Route{Step: StepLogin, Message: "Your session has expired. Log in again to continue.", Detail: err.Error()}
 		}
-		return Route{Step: StepConnectError, Message: "Could not reach the Brick API at " + f.env.APIURL + ".", Detail: err.Error()}
+		return unreachable(cfg, Route{Step: StepConnectError, Message: "Could not reach the Brick API at " + f.env.APIURL + ".", Detail: err.Error()})
 	}
 	if _, err := f.client.UserInfo(ctx); err != nil {
 		if errors.Is(err, auth.ErrSessionExpired) {
 			return Route{Step: StepLogin, Message: "Your session has expired. Log in again to continue.", Detail: err.Error()}
 		}
-		return Route{Step: StepConnectError, Message: "Could not reach the Brick API at " + f.env.APIURL + ".", Detail: err.Error()}
+		return unreachable(cfg, Route{Step: StepConnectError, Message: "Could not reach the Brick API at " + f.env.APIURL + ".", Detail: err.Error()})
 	}
 
 	// 4. Account.
@@ -218,9 +218,21 @@ func (f *Flow) Route(ctx context.Context) Route {
 		if errors.Is(err, auth.ErrSessionExpired) {
 			return Route{Step: StepLogin, Message: "Your session has expired. Log in again to continue.", Detail: err.Error()}
 		}
-		return Route{Step: StepConnectError, Message: "Could not reach the Brick storage API at " + f.env.StorageAPIURL + ".", Detail: err.Error()}
+		return unreachable(cfg, Route{Step: StepConnectError, Message: "Could not reach the Brick storage API at " + f.env.StorageAPIURL + ".", Detail: err.Error()})
 	}
 	return Route{Step: StepReady}
+}
+
+// unreachable is the route for failing to reach Brick, r being the error
+// screen. A machine that is already set up needs no one for that — it has just
+// woken, or the app started before the network — so it goes on to "ready":
+// the runner then keeps retrying in the background (see runner.Start).
+// Earlier in setup, the user sees r.
+func unreachable(cfg *brickcfg.Config, r Route) Route {
+	if ac := cfg.ActiveAccount(); cfg.ActiveAccountID != "" && ac != nil && strings.TrimSpace(ac.StorageSyncFolder) != "" {
+		return Route{Step: StepReady}
+	}
+	return r
 }
 
 // --- login ---

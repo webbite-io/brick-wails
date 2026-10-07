@@ -179,6 +179,10 @@ func (s *OnboardingService) StartSync() StartResult {
 		return StartResult{Step: onboarding.StepLocked, Message: err.Error()}
 	case errors.Is(err, runner.ErrNotConfigured):
 		return StartResult{Step: onboarding.StepFolder, Message: err.Error()}
+	case errors.Is(err, runner.ErrUnreachable):
+		// Nothing for the user to do: the runner is offline and retrying by
+		// itself, and the status window says so.
+		return StartResult{Ok: true}
 	case errors.Is(err, auth.ErrSessionExpired):
 		return StartResult{Step: onboarding.StepLogin, Message: "Your session has expired. Log in again to continue."}
 	default:

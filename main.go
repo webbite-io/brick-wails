@@ -439,6 +439,10 @@ func main() {
 		case runner.StateStopped:
 			tray.SetTooltip("Brick — not syncing")
 			setupItem.SetLabel("Start Syncing")
+		case runner.StateOffline:
+			// Retrying by itself; nothing to offer.
+			tray.SetTooltip("Brick — waiting for the network")
+			needsSetup = false
 		case "error":
 			tray.SetTooltip("Brick — error: " + s.LastError)
 			needsSetup = false
