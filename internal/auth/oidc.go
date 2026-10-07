@@ -26,6 +26,12 @@ import (
 // longer valid, so the user must log in again.
 var ErrSessionExpired = errors.New("session expired")
 
+// errGrantRejected marks a token-endpoint answer that turns the grant down
+// (HTTP 400/401: invalid_grant, invalid_client and the like). Only that means
+// logging in again is the fix; an unreachable or failing endpoint does not,
+// and a later attempt with the same refresh token can still succeed.
+var errGrantRejected = errors.New("the auth server rejected the grant")
+
 // httpClient is used for every auth-API call; overridable in tests.
 var httpClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -94,6 +100,9 @@ func postTokenForm(ctx context.Context, endpoint string, params url.Values, what
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized {
+		return Tokens{}, fmt.Errorf("%w: %s returned status %d: %s", errGrantRejected, what, resp.StatusCode, string(body))
+	}
 	if resp.StatusCode != http.StatusOK {
 		return Tokens{}, fmt.Errorf("%s returned status %d: %s", what, resp.StatusCode, string(body))
 	}

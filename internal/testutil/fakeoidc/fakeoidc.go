@@ -45,6 +45,7 @@ type Server struct {
 	validRefresh  map[string]bool
 	n             int
 	failRefreshes bool
+	refreshOutage bool
 	denyConsent   bool
 	denyCode      string
 
@@ -121,6 +122,14 @@ func (s *Server) SetAccounts(a []Account) {
 func (s *Server) SetFailRefreshes(v bool) {
 	s.mu.Lock()
 	s.failRefreshes = v
+	s.mu.Unlock()
+}
+
+// SetRefreshOutage makes every refresh fail with a 503, without spending the
+// refresh token: the token endpoint is down, not turning the grant away.
+func (s *Server) SetRefreshOutage(v bool) {
+	s.mu.Lock()
+	s.refreshOutage = v
 	s.mu.Unlock()
 }
 
@@ -304,6 +313,10 @@ func (s *Server) handler() http.Handler {
 		case "refresh_token":
 			s.RefreshCalls.Add(1)
 			rt := r.Form.Get("refresh_token")
+			if s.refreshOutage {
+				writeJSON(w, 503, map[string]string{"error": "temporarily_unavailable"})
+				return
+			}
 			if s.failRefreshes || !s.validRefresh[rt] {
 				writeJSON(w, 400, map[string]string{"error": "invalid_grant", "error_description": "refresh token revoked"})
 				return

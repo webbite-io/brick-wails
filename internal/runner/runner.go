@@ -212,7 +212,10 @@ func (r *Runner) Start(p StartParams) error {
 	ctx0, cancel0 := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel0()
 	if err := r.cfg.Tokens.EnsureAccess(ctx0); err != nil {
-		return fail(StateAuthRequired, err)
+		if errors.Is(err, auth.ErrSessionExpired) {
+			return fail(StateAuthRequired, err)
+		}
+		return fail(StateStopped, fmt.Errorf("could not reach the Brick API at %s: %w", r.cfg.Env.APIURL, err))
 	}
 	sc := &storage.Client{BaseURL: r.cfg.Env.StorageAPIURL, AccountID: cfg.ActiveAccountID, Auth: auth.NewClient(r.cfg.Tokens)}
 	root, err := sc.ResolveRoot(ctx0)

@@ -169,7 +169,10 @@ func (f *Flow) Route(ctx context.Context) Route {
 
 	// 3. Still authenticated? (refreshes silently if needed, like `brick whoami`)
 	if err := f.tokens.EnsureAccess(ctx); err != nil {
-		return Route{Step: StepLogin, Message: "Your session has expired. Log in again to continue.", Detail: err.Error()}
+		if errors.Is(err, auth.ErrSessionExpired) {
+			return Route{Step: StepLogin, Message: "Your session has expired. Log in again to continue.", Detail: err.Error()}
+		}
+		return Route{Step: StepConnectError, Message: "Could not reach the Brick API at " + f.env.APIURL + ".", Detail: err.Error()}
 	}
 	if _, err := f.client.UserInfo(ctx); err != nil {
 		if errors.Is(err, auth.ErrSessionExpired) {

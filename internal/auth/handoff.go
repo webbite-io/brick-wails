@@ -105,7 +105,7 @@ func MintHandoffCode(ctx context.Context, ts *TokenSource, clientID, redirectURI
 	if errors.Is(err, errHandoffUnauthorized) && ts.HasRefresh() {
 		access, rerr := ts.Rotate(ctx, presented)
 		if rerr != nil {
-			return nil, fmt.Errorf("%w; token refresh failed: %v", ErrSessionExpired, rerr)
+			return nil, fmt.Errorf("token refresh failed: %w", rerr)
 		}
 		redirect, err = authorizeJSON(ctx, authURL, access)
 	}

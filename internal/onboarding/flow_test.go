@@ -271,6 +271,18 @@ func TestSessionExpiredRoutesToLogin(t *testing.T) {
 	}
 }
 
+// An auth server that cannot answer is a connection problem, not a reason to
+// throw the user back to login.
+func TestRefreshOutageRoutesToConnectError(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.idp.ExpireAccess()
+	e.idp.SetRefreshOutage(true)
+	if r := e.route(); r.Step != StepConnectError {
+		t.Errorf("route %+v", r)
+	}
+}
+
 // Re-login for a configured account keeps the account and its folder, and
 // lands straight on "ready".
 func TestReloginKeepsExistingSetup(t *testing.T) {
