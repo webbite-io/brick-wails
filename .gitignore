@@ -31,3 +31,6 @@ build/android/gen/
 /brick-wails
 
 .env.local
+
+# Sparkle release, fetched by `wails3 task darwin:sparkle` (see build/darwin/Taskfile.yml)
+build/darwin/sparkle/
