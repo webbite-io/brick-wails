@@ -134,15 +134,28 @@ function activityRow(icon: SVGSVGElement | string | null, text: string): HTMLLIE
 let inFlight: any = null;
 let activityEvents: any[] = [];
 
+const ACTIVITY_LIMIT = 20;
+
+// A transfer that has left in-flight but whose activity event hasn't landed
+// yet. It keeps its row until the event replaces it in place, so the list
+// never drops a "Downloading" row only to add the "Downloaded" one a moment
+// later. If no event comes (the transfer failed), it goes after a short wait.
+let finishing: any = null;
+let finishingTimer: number | undefined;
+const FINISHING_GRACE_MS = 3000;
+
+function inFlightRow(transfer: any): HTMLLIElement {
+    const down = transfer.direction !== 'upload';
+    const row = activityRow(createIcon(down ? ARROW_DOWN_PATHS : ARROW_UP_PATHS), `${down ? 'Downloading' : 'Uploading'} ${transfer.relPath}`);
+    row.className = 'in-flight';
+    return row;
+}
+
 function renderActivity() {
     activityList.innerHTML = '';
 
-    if (inFlight) {
-        const down = inFlight.direction !== 'upload';
-        const row = activityRow(createIcon(down ? ARROW_DOWN_PATHS : ARROW_UP_PATHS), `${down ? 'Downloading' : 'Uploading'} ${inFlight.relPath}`);
-        row.className = 'in-flight';
-        activityList.appendChild(row);
-    }
+    if (inFlight) activityList.appendChild(inFlightRow(inFlight));
+    if (finishing) activityList.appendChild(inFlightRow(finishing));
 
     for (const event of activityEvents) {
         let icon: SVGSVGElement | string | null = null;
@@ -157,7 +170,7 @@ function renderActivity() {
         activityList.appendChild(activityRow(icon, label ? `${label} ${event.relPath}` : event.relPath));
     }
 
-    if (!inFlight && activityEvents.length === 0) {
+    if (!inFlight && !finishing && activityEvents.length === 0) {
         const li = document.createElement('li');
         li.className = 'activity-empty';
         li.innerText = 'No activity yet';
@@ -165,22 +178,72 @@ function renderActivity() {
     }
 }
 
+function transferKey(transfer: any): string {
+    return transfer ? `${transfer.direction} ${transfer.relPath}` : '';
+}
+
+// completes reports whether an activity event is the result of a transfer.
+function completes(event: any, transfer: any): boolean {
+    if (!transfer || event.relPath !== transfer.relPath) return false;
+    return transfer.direction === 'upload'
+        ? event.kind === 'upload' || event.kind === 'update'
+        : event.kind === 'download';
+}
+
+function setFinishing(next: any) {
+    window.clearTimeout(finishingTimer);
+    finishing = next;
+    if (next) {
+        finishingTimer = window.setTimeout(() => {
+            finishing = null;
+            renderActivity();
+        }, FINISHING_GRACE_MS);
+    }
+}
+
 // setInFlight redraws only when the transfer actually changes: status events
 // arrive every two seconds, and rebuilding the list each time would throw away
 // the user's scroll position.
+//
+// The engine publishes a transfer's activity event before it clears in-flight,
+// so addActivity usually clears inFlight first and leaves inFlightKey alone:
+// the statuses that still report the finished transfer then match the key and
+// don't bring its "Downloading" row back.
 let inFlightKey = '';
 
 function setInFlight(next: any) {
-    const key = next ? `${next.direction} ${next.relPath}` : '';
+    const key = transferKey(next);
     if (key === inFlightKey) return;
     inFlightKey = key;
+    // A transfer that ended before its event arrived keeps its row for now.
+    if (inFlight) setFinishing(inFlight);
     inFlight = next;
     renderActivity();
 }
 
+// addActivity puts a pushed event at the head of the list straight away,
+// swapping it in for the transfer row it completes, instead of waiting on a
+// round trip for the whole list.
+function addActivity(event: any) {
+    activityEvents = [event, ...activityEvents].slice(0, ACTIVITY_LIMIT);
+    if (completes(event, inFlight)) inFlight = null;
+    if (completes(event, finishing)) setFinishing(null);
+    renderActivity();
+    // Then reconcile with the engine's own list (a restarted engine starts
+    // empty); it already holds this event, so nothing moves.
+    void refreshActivity();
+}
+
+// Only the latest refresh lands: an older reply, overtaken by a pushed event,
+// would otherwise drop that event from the list until the next one arrived.
+let refreshSeq = 0;
+
 async function refreshActivity() {
+    const seq = ++refreshSeq;
     try {
-        activityEvents = (await SyncService.Activity(20)) ?? [];
+        const events = (await SyncService.Activity(ACTIVITY_LIMIT)) ?? [];
+        if (seq !== refreshSeq) return;
+        activityEvents = events;
         renderActivity();
     } catch (err) {
         console.error(err);
@@ -192,8 +255,8 @@ async function refreshActivity() {
 Events.On('brick:status', (event) => {
     renderStatus(event.data);
 });
-Events.On('brick:activity', () => {
-    void refreshActivity();
+Events.On('brick:activity', (event) => {
+    addActivity(event.data);
 });
 
 setupBtn.addEventListener('click', async () => {
