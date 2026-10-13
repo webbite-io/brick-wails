@@ -6,6 +6,7 @@ export const STATE_LABELS: Record<string, string> = {
     'auth-required': 'Login required',
     locked: 'The Brick CLI is syncing',
     stopped: 'Not syncing',
+    offline: 'Waiting for the network…',
     starting: 'Starting…',
     syncing: 'Syncing…',
     idle: 'Up to date',
