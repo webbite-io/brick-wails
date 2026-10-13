@@ -268,8 +268,9 @@ breaks Sparkle's helpers), notarizes and staples the app, puts it in a DMG
 and signs the DMG for Sparkle (EdDSA). The same DMG is the first-install
 download and the update. `build/darwin/release.sh` has the details.
 
-The appcast holds a single item, the newest release, and its release notes are
-the GitHub release page. It goes up on webbite.io by hand and *last*, once the
+The appcast holds a single item, the newest release, with its release notes
+inline, from `build/darwin/release-notes/<version>.html` — write that file
+before tagging (see the README there). It goes up on webbite.io by hand and *last*, once the
 DMG it points at is downloadable. `release-to-github` refuses to publish a DMG
 unless it can show it's a production build Gatekeeper and Sparkle will accept
 (`build/darwin/verify-release.sh`): production URLs baked in, `CFBundleVersion`

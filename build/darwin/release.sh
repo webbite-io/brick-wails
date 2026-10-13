@@ -9,6 +9,9 @@
 #   appcast.xml                                   Sparkle's feed, one item
 #   SHA256SUMS-macos                              checksums for the above
 #
+# The appcast carries the release notes Sparkle's update window shows, from
+# build/darwin/release-notes/<version>.html (see the README.md there).
+#
 # The DMG serves both first installs (drag to Applications) and Sparkle
 # updates, which install from it directly. appcast.xml is published to
 # https://webbite.io/desktop/macos/appcast.xml (SUFeedURL in Info.plist) once
@@ -38,6 +41,7 @@ BUNDLE_NAME="Webbite Brick"
 BIN_DIR="bin"
 DIST_DIR="dist"
 SPARKLE_BIN="build/darwin/sparkle/bin"
+NOTES_DIR="build/darwin/release-notes"
 
 WAILS3="${WAILS3:-wails3}"
 MAC_NOTARY_PROFILE="${MAC_NOTARY_PROFILE:-brick-notary}"
@@ -70,6 +74,16 @@ if [ "$MAC_SIGN_IDENTITY" = "-" ] && ! $skip_notarize; then
 fi
 [ -n "${SPARKLE_PUBLIC_ED_KEY:-}" ] ||
   die "SPARKLE_PUBLIC_ED_KEY is not set (see README.md, \"Sparkle keys\")"
+# The notes Sparkle's update window shows, written into the appcast inline.
+# Checked here, before anything is signed or sent to Apple.
+notes_file="$NOTES_DIR/$VERSION.html"
+if [ -f "$notes_file" ]; then
+  grep -qF ']]>' "$notes_file" &&
+    die "$notes_file contains \"]]>\", which would end the appcast's CDATA section early"
+else
+  $skip_notarize || die "$notes_file not found — write this release's notes first (see $NOTES_DIR/README.md)"
+  echo "Warning: $notes_file not found; using placeholder notes (allowed with --skip-notarize)" >&2
+fi
 [ -f "$BIN_DIR/brick-ui" ] || die "$BIN_DIR/brick-ui not found — run the production build first"
 lipo "$BIN_DIR/brick-ui" -verify_arch x86_64 arm64 ||
   die "$BIN_DIR/brick-ui is not a universal (x86_64 + arm64) binary"
@@ -154,9 +168,18 @@ case "$enclosure_sig" in
 esac
 
 download_url="https://github.com/$GITHUB_REPO/releases/download/$VERSION/$dmg_name"
-notes_url="https://github.com/$GITHUB_REPO/releases/tag/$VERSION"
 pub_date=$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")
 min_macos=$(plutil -extract LSMinimumSystemVersion raw -o - "$plist" | sed -E 's/\.0$//')
+
+# The release notes go in inline, as the item's <description>, rather than as
+# a releaseNotesLink: Sparkle renders a linked page in a small webview with
+# JavaScript off, which a GitHub release page doesn't survive. The style
+# follows the system font and light/dark appearance.
+if [ -f "$notes_file" ]; then
+  notes=$(cat "$notes_file")
+else
+  notes="<p>Test build $VERSION.</p>"
+fi
 
 # One item, the release being made: Sparkle only needs the newest, and the
 # full history lives on the GitHub releases page (fullReleaseNotesLink).
@@ -172,7 +195,16 @@ cat >"$DIST_DIR/appcast.xml" <<EOF
       <sparkle:version>$VERSION</sparkle:version>
       <sparkle:shortVersionString>$VERSION</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>$min_macos</sparkle:minimumSystemVersion>
-      <sparkle:releaseNotesLink>$notes_url</sparkle:releaseNotesLink>
+      <description><![CDATA[
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 13px -apple-system, BlinkMacSystemFont, sans-serif; line-height: 1.45; margin: 8px 12px; }
+  h1, h2, h3 { font-size: 13px; margin: 12px 0 4px; }
+  ul { padding-left: 18px; margin: 4px 0; }
+  li { margin: 2px 0; }
+</style>
+$notes
+]]></description>
       <sparkle:fullReleaseNotesLink>https://github.com/$GITHUB_REPO/releases</sparkle:fullReleaseNotesLink>
       <enclosure url="$download_url" $enclosure_sig type="application/octet-stream"/>
     </item>

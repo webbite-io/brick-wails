@@ -13,7 +13,7 @@
 #     and Info.plist carries an SUPublicEDKey
 #   - the app's signature is valid, and Gatekeeper accepts it as notarized
 #   - the DMG itself is signed with a stapled notarization ticket
-#   - dist/appcast.xml offers this DMG as <version>
+#   - dist/appcast.xml offers this DMG as <version>, with real release notes
 
 set -euo pipefail
 
@@ -77,6 +77,11 @@ else
     fail "$appcast doesn't point at $(basename "$dmg")"
   grep -qF 'sparkle:edSignature=' "$appcast" ||
     fail "$appcast has no EdDSA signature for the update"
+  grep -qF '<description><![CDATA[' "$appcast" ||
+    fail "$appcast has no release notes"
+  if grep -qF "<p>Test build $version.</p>" "$appcast"; then
+    fail "$appcast has placeholder release notes (no build/darwin/release-notes/$version.html)"
+  fi
 fi
 
 exit $status
