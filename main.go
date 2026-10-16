@@ -291,8 +291,14 @@ func main() {
 	// ApplicationStarted call below replaced it. IsDarkMode() is false this
 	// early, so this lands on the light face and that call corrects it.
 	applyTrayIcon()
-	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) { applyTrayIcon() })
-	app.Event.OnApplicationEvent(events.Common.ThemeChanged, func(*application.ApplicationEvent) { applyTrayIcon() })
+	// The title bars follow the desktop's light or dark mode too (see
+	// applyWindowTheme), on the same two events.
+	onTheme := func(*application.ApplicationEvent) {
+		applyTrayIcon()
+		applyWindowTheme(app.Env.IsDarkMode())
+	}
+	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, onTheme)
+	app.Event.OnApplicationEvent(events.Common.ThemeChanged, onTheme)
 
 	menu := app.NewMenu()
 	menu.Add("Open Brick Status").OnClick(func(*application.Context) {
