@@ -18,10 +18,8 @@ MAC_BUNDLE := Webbite Brick.app
 DIST_DIR := dist
 
 # Release artifacts are named after the Go arch (amd64/arm64) to match
-# brick-cli's tarballs, while the AppImage that wails3 emits is named after the
-# ELF arch (x86_64/aarch64). Keep both so the rename step doesn't guess.
+# brick-cli's tarballs.
 GOARCH := $(shell go env GOARCH 2>/dev/null || echo amd64)
-APPIMAGE_ARCH := $(if $(filter arm64,$(GOARCH)),aarch64,x86_64)
 
 # Host OS. The app is a native GUI (CGO + per-OS webview/tray libraries), so
 # prerequisites, the install location and the packages produced all differ
@@ -319,14 +317,19 @@ else
 # is served from the web, downloads this tarball and installs what's inside, so
 # there is nothing to ship alongside it.
 #
-# This deliberately shells out to `wails3 generate appimage` rather than
+# This deliberately packages bin/$(APP_NAME) itself rather than going through
 # `wails3 task linux:create:appimage`: that task declares a `build` dependency
 # and would rebuild the binary in a fresh Task invocation without the .env.prod
 # values this Makefile exports, silently replacing the production build below
-# with one that falls back to the localhost dev URLs at runtime.
+# with one that falls back to the localhost dev URLs at runtime. Nor does it use
+# `wails3 generate appimage`, whose AppImage runs the system's WebKit helpers
+# rather than the ones it bundles — black windows wherever the system
+# WebKitGTK differs from the build host's — and bundles webkit2gtk-4.1 too when
+# the build host has it. build/linux/appimage/build-appimage.sh follows the same
+# steps without those two; see the script.
 #
-# Needs network on first run — the AppImage generator downloads linuxdeploy and
-# AppRun from GitHub, then caches them in build/linux/appimage/build.
+# Needs network on first run — the script downloads linuxdeploy and AppRun from
+# GitHub, then caches them in build/linux/appimage/build.
 release: build-prod
 	@echo ""
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Creating AppImage...$(COLOR_RESET)"
@@ -339,16 +342,17 @@ release: build-prod
 	@# linuxdeploy matches the icon by basename against the desktop file's
 	@# Icon= key, so it has to be named $(APP_NAME).png, not appicon.png.
 	@cp build/appicon.png $(DIST_DIR)/stage/$(APP_NAME).png
-	@$(WAILS3) generate appimage \
-		-binary $(BIN_DIR)/$(APP_NAME) \
-		-icon $(DIST_DIR)/stage/$(APP_NAME).png \
-		-desktopfile build/linux/$(APP_NAME).desktop \
-		-outputdir $(DIST_DIR)/stage \
-		-builddir build/linux/appimage/build
+	@# The GTK plugin comes from the wails module go.mod pins, the same one
+	@# `wails3 generate appimage` embeds.
+	@build/linux/appimage/build-appimage.sh \
+		$(BIN_DIR)/$(APP_NAME) \
+		$(DIST_DIR)/stage/$(APP_NAME).png \
+		build/linux/$(APP_NAME).desktop \
+		"$$(go list -m -f '{{.Dir}}' github.com/wailsapp/wails/v3)/internal/commands/linuxdeploy-plugin-gtk.sh" \
+		build/linux/appimage/build \
+		$(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
 	@echo ""
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Assembling $(APP_NAME)-$(VERSION)-linux-$(GOARCH).tar.gz...$(COLOR_RESET)"
-	@mv $(DIST_DIR)/stage/$(APP_NAME)-$(APPIMAGE_ARCH).AppImage $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
-	@chmod +x $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).AppImage
 	@cp build/appicon.png $(DIST_DIR)/stage/$(APP_NAME)/$(APP_NAME).png
 	@tar -czf $(DIST_DIR)/$(APP_NAME)-$(VERSION)-linux-$(GOARCH).tar.gz \
 		-C $(DIST_DIR)/stage $(APP_NAME)

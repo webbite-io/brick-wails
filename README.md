@@ -180,11 +180,23 @@ make release-to-github  # publish dist/ as a GitHub release (prompts before repl
 
 The tarball contains `brick-ui.AppImage` and `brick-ui.png`, and nothing else:
 the installer is served from the web and downloads this tarball, so there is
-nothing to ship beside the app. The AppImage is self-contained: `wails3 generate appimage` runs linuxdeploy with its GTK
-plugin and pulls in WebKitGTK's out-of-process helpers (`WebKitWebProcess`,
+nothing to ship beside the app. The AppImage is self-contained:
+`build/linux/appimage/build-appimage.sh` runs linuxdeploy with wails' GTK
+plugin and pulls in WebKitGTK 6.0's out-of-process helpers (`WebKitWebProcess`,
 `WebKitNetworkProcess`, the injected bundle), which a plain linuxdeploy run
-would miss. Expect ~150 MB — that's the GTK4 + WebKitGTK stack, not the ~13 MB
+would miss. Expect ~110 MB — that's the GTK4 + WebKitGTK stack, not the ~13 MB
 app binary.
+
+The script follows `wails3 generate appimage` but fixes two things about it.
+That command bundles every WebKit it finds on the build host, so webkit2gtk-4.1
+and GTK3 came along too; the script bundles WebKitGTK 6.0 only. And bundling
+the helpers isn't enough on its own: libwebkitgtk starts them from an absolute
+path compiled into it (`/usr/lib/x86_64-linux-gnu/webkitgtk-6.0` on Debian), so
+the AppImage would run the *system's* helpers. When the user's WebKitGTK
+version differs from the build host's, the web process crashes and every
+window stays black. The script rewrites that path in the bundled library to a
+same-length relative one (`././/lib/…`, resolved against `$APPDIR/usr`, where
+AppRun starts the app) before packing the AppImage.
 
 `release-to-github` refuses to publish unless it can prove the artifacts are
 production builds: it extracts the binary back out of the AppImage and greps
