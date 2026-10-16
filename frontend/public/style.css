@@ -158,9 +158,10 @@ body {
     text-overflow: ellipsis;
 }
 
-.activity-empty {
+.activity li.activity-empty {
     color: #71717a;
     font-style: italic;
+    border-bottom: none;
 }
 
 /* The file being transferred right now, at the head of the list: the same row

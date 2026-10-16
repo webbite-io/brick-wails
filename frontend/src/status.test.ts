@@ -11,7 +11,7 @@ describe("status", () => {
   it("offers a way back only when not syncing", () => {
     expect(actionForState("not-configured")).toBe("Set Up Brick");
     expect(actionForState("auth-required")).toBe("Log In Again");
-    expect(actionForState("locked")).toBe("Start Syncing");
+    expect(actionForState("locked")).toBeNull();
     expect(actionForState("stopped")).toBe("Start Syncing");
     for (const s of ["starting", "syncing", "idle", "paused", "error"]) {
       expect(actionForState(s)).toBeNull();

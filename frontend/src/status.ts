@@ -22,14 +22,14 @@ export function hidesPopoverForState(state: string): boolean {
 }
 
 // actionForState returns the popover button label offered when nothing is
-// syncing (it opens the setup window), or null while syncing.
+// syncing (it opens the setup window), or null while syncing — or while the
+// Brick CLI holds the sync lock, when setup couldn't start a sync here anyway.
 export function actionForState(state: string): string | null {
     switch (state) {
         case 'not-configured':
             return 'Set Up Brick';
         case 'auth-required':
             return 'Log In Again';
-        case 'locked':
         case 'stopped':
             return 'Start Syncing';
         default:
