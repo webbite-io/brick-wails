@@ -372,8 +372,10 @@ func main() {
 			tray.SetTooltip("Brick — login required")
 			setupItem.SetLabel("Log In Again…")
 		case runner.StateLocked:
+			// The CLI holds the sync lock, so setup couldn't start a sync
+			// here anyway; nothing to offer until it lets go.
 			tray.SetTooltip("Brick — the Brick CLI is syncing")
-			setupItem.SetLabel("Start Syncing")
+			needsSetup = false
 		case runner.StateStopped:
 			tray.SetTooltip("Brick — not syncing")
 			setupItem.SetLabel("Start Syncing")
