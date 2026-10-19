@@ -113,8 +113,15 @@ cp "$DESKTOP_FILE" "$APPDIR/"
 # AppDir's usr/ as under the system's /usr (they live in different places per
 # distro: /usr/lib/<triplet>/ on Debian, /usr/libexec/ or /usr/lib64/
 # elsewhere). linuxdeploy then bundles what they link against.
-helper="$(find /usr -path '*/webkitgtk-6.0/WebKitWebProcess' -type f -print -quit 2>/dev/null)"
-bundle="$(find /usr -path '*/webkitgtk-6.0/injected-bundle/libwebkitgtkinjectedbundle.so' -type f -print -quit 2>/dev/null)"
+# find exits non-zero on any directory it can't read, even when it found the
+# file, and set -e would then end the script without a word — hence `|| true`;
+# the emptiness check below catches a real miss.
+webkit_dirs=()
+for d in /usr/lib /usr/lib64 /usr/libexec; do
+	[ -d "$d" ] && webkit_dirs+=("$d")
+done
+helper="$(find "${webkit_dirs[@]}" -path '*/webkitgtk-6.0/WebKitWebProcess' -type f -print -quit 2>/dev/null || true)"
+bundle="$(find "${webkit_dirs[@]}" -path '*/webkitgtk-6.0/injected-bundle/libwebkitgtkinjectedbundle.so' -type f -print -quit 2>/dev/null || true)"
 if [ -z "$helper" ] || [ -z "$bundle" ]; then
 	echo "Error: WebKitGTK 6.0's WebKitWebProcess or injected bundle not found under /usr" >&2
 	exit 1
