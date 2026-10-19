@@ -354,10 +354,12 @@ EOF
   success "Registered desktop entry at $DESKTOP_FILE"
 }
 
+# The checksum is published next to the tarball as <tarball>.sha256; releases
+# up to 1.0.5 have a SHA256SUMS instead, listing every tarball in the release.
 download_and_verify() {
   local url="$1"
   local archive_name="$2"
-  local checksum_url="$3"
+  local legacy_sums_url="$3"
 
   if ! curl -fsSL --progress-bar "$url" -o "$archive_name"; then
     die "Failed to download $url
@@ -366,16 +368,17 @@ If this version exists, check https://github.com/$GITHUB_REPO/releases"
   fi
   success "Downloaded $archive_name"
 
-  if ! curl -fsSL "$checksum_url" -o SHA256SUMS 2>/dev/null; then
-    warning "No SHA256SUMS published for this release — skipping checksum verification"
+  if ! curl -fsSL "$url.sha256" -o checksums 2>/dev/null &&
+    ! curl -fsSL "$legacy_sums_url" -o checksums 2>/dev/null; then
+    warning "No checksum published for this release — skipping checksum verification"
     return 0
   fi
 
   local expected_checksum
-  expected_checksum=$(grep "$archive_name" SHA256SUMS | awk '{print $1}')
+  expected_checksum=$(grep -F "$archive_name" checksums | awk '{print $1}')
 
   if [ -z "$expected_checksum" ]; then
-    warning "$archive_name not listed in SHA256SUMS — skipping checksum verification"
+    warning "$archive_name not listed in the release's checksums — skipping checksum verification"
     return 0
   fi
 

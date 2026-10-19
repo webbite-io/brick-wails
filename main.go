@@ -40,6 +40,12 @@ var trayIconDark []byte
 // blue dot for a waiting update, a yellow one for paused sync.
 type trayIconSet struct{ plain, update, paused []byte }
 
+// The app's name and one-line description, as the About window shows them.
+const (
+	appName        = "Webbite Brick"
+	appDescription = "Webbite Brick — storage for all your devices"
+)
+
 // Build metadata and compile-time defaults, set via ldflags in production
 // builds (see the Taskfiles / Makefile). Empty in dev builds, which instead
 // load .env.local / .env.dev — the same rule brick-cli follows.
@@ -152,8 +158,8 @@ func main() {
 	updater := newAppUpdater(logger, updSvc)
 
 	app := application.New(application.Options{
-		Name:        "Webbite Brick",
-		Description: "Webbite Brick — storage for all your devices",
+		Name:        appName,
+		Description: appDescription,
 		Services: []application.Service{
 			application.NewService(syncSvc),
 			application.NewService(onbSvc),
@@ -227,6 +233,9 @@ func main() {
 	// tray-only otherwise. Sparkle's windows count too (setUpdaterUIOpen);
 	// the update window of the other platforms doesn't exist there.
 	trackAppSwitcher(app, popover, setupWindow)
+	// On macOS, the app menu's About item opens Brick's own About window,
+	// which links to the website.
+	setupAboutWindow(app)
 	// The frontend shows the window itself once it has routed and laid out the
 	// screen (OnboardingService.ShowWindow). Showing it here instead would
 	// present the previous screen's frame for an instant before the new one

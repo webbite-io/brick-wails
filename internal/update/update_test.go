@@ -36,7 +36,7 @@ func releases(entries ...string) string {
 
 func TestCheckNewerVersionAvailable(t *testing.T) {
 	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, releases(release("v1.2.0", tarballName("1.2.0"), "SHA256SUMS")))
+		fmt.Fprint(w, releases(release("v1.2.0", tarballName("1.2.0"), tarballName("1.2.0")+".sha256")))
 	})
 
 	info, err := Check(context.Background(), "1.1.0")
@@ -68,7 +68,7 @@ func TestCheckAlreadyUpToDate(t *testing.T) {
 func TestCheckSkipsReleasesWithoutThisPlatform(t *testing.T) {
 	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, releases(
-			release("1.3.0", "Webbite-Brick-1.3.0-macos-universal.dmg", "SHA256SUMS-macos"),
+			release("1.3.0", "brick-ui-1.3.0-macos-universal.dmg", "brick-ui-1.3.0-macos-universal.dmg.sha256"),
 			release("1.2.0", tarballName("1.2.0")),
 			release("1.1.0", tarballName("1.1.0")),
 		))
@@ -86,7 +86,7 @@ func TestCheckSkipsReleasesWithoutThisPlatform(t *testing.T) {
 func TestCheckIgnoresAMacOnlyLatestRelease(t *testing.T) {
 	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, releases(
-			release("1.2.0", "Webbite-Brick-1.2.0-macos-universal.dmg"),
+			release("1.2.0", "brick-ui-1.2.0-macos-universal.dmg"),
 			release("1.1.0", tarballName("1.1.0")),
 		))
 	})
