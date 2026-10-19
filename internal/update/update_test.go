@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,14 +14,29 @@ func withFakeGitHub(t *testing.T, handler http.HandlerFunc) {
 	t.Helper()
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
-	prev := releaseURL
-	releaseURL = srv.URL
-	t.Cleanup(func() { releaseURL = prev })
+	prev := releasesURL
+	releasesURL = srv.URL
+	t.Cleanup(func() { releasesURL = prev })
+}
+
+// release renders one entry of GitHub's release list, with the given assets.
+func release(tag string, assets ...string) string {
+	names := make([]string, len(assets))
+	for i, a := range assets {
+		names[i] = fmt.Sprintf(`{"name": %q}`, a)
+	}
+	return fmt.Sprintf(`{"tag_name": %q, "draft": false, "prerelease": false, "assets": [%s]}`,
+		tag, strings.Join(names, ", "))
+}
+
+// releases renders GitHub's release list, newest first.
+func releases(entries ...string) string {
+	return "[" + strings.Join(entries, ", ") + "]"
 }
 
 func TestCheckNewerVersionAvailable(t *testing.T) {
 	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"tag_name": "v1.2.0"}`)
+		fmt.Fprint(w, releases(release("v1.2.0", tarballName("1.2.0"), "SHA256SUMS")))
 	})
 
 	info, err := Check(context.Background(), "1.1.0")
@@ -37,7 +53,60 @@ func TestCheckNewerVersionAvailable(t *testing.T) {
 
 func TestCheckAlreadyUpToDate(t *testing.T) {
 	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, `{"tag_name": "v1.1.0"}`)
+		fmt.Fprint(w, releases(release("1.1.0", tarballName("1.1.0"))))
+	})
+
+	info, err := Check(context.Background(), "1.1.0")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if info != nil {
+		t.Fatalf("expected no update, got %+v", info)
+	}
+}
+
+func TestCheckSkipsReleasesWithoutThisPlatform(t *testing.T) {
+	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, releases(
+			release("1.3.0", "Webbite-Brick-1.3.0-macos-universal.dmg", "SHA256SUMS-macos"),
+			release("1.2.0", tarballName("1.2.0")),
+			release("1.1.0", tarballName("1.1.0")),
+		))
+	})
+
+	info, err := Check(context.Background(), "1.1.0")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if info == nil || info.Latest != "1.2.0" {
+		t.Fatalf("expected 1.2.0, the newest release with this platform's tarball, got %+v", info)
+	}
+}
+
+func TestCheckIgnoresAMacOnlyLatestRelease(t *testing.T) {
+	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, releases(
+			release("1.2.0", "Webbite-Brick-1.2.0-macos-universal.dmg"),
+			release("1.1.0", tarballName("1.1.0")),
+		))
+	})
+
+	info, err := Check(context.Background(), "1.1.0")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if info != nil {
+		t.Fatalf("expected no update, got %+v", info)
+	}
+}
+
+func TestCheckSkipsDraftsAndPrereleases(t *testing.T) {
+	withFakeGitHub(t, func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, releases(
+			fmt.Sprintf(`{"tag_name": "1.3.0", "draft": true, "assets": [{"name": %q}]}`, tarballName("1.3.0")),
+			fmt.Sprintf(`{"tag_name": "1.2.0-rc.1", "prerelease": true, "assets": [{"name": %q}]}`, tarballName("1.2.0-rc.1")),
+			release("1.1.0", tarballName("1.1.0")),
+		))
 	})
 
 	info, err := Check(context.Background(), "1.1.0")
