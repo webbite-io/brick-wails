@@ -95,7 +95,7 @@ LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev l
 # macOS needs no third-party libraries: the webview (WKWebView) and the tray
 # (NSStatusItem) are system frameworks. All it needs is the Xcode command
 # line tools for clang/the SDK, since the build is CGO. Builds target
-# macOS 12+ (see build/darwin/Taskfile.yml).
+# macOS 13+, the oldest Go 1.27 supports (see build/darwin/Taskfile.yml).
 
 # Webfonts for `make fonts`. Bunny serves woff2 only to browser-like agents.
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
