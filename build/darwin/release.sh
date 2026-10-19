@@ -5,15 +5,16 @@
 # Run by `make release` on macOS, after the universal production build has
 # put bin/brick-ui in place. Produces, in dist/:
 #
-#   Webbite-Brick-<version>-macos-universal.dmg   the download, and the update
-#   appcast.xml                                   Sparkle's feed, one item
-#   SHA256SUMS-macos                              checksums for the above
+#   brick-ui-<version>-macos-universal.dmg          the download, and the update
+#   brick-ui-<version>-macos-universal.dmg.sha256   its checksum
+#   appcast.xml                                     Sparkle's feed, one item
 #
 # The appcast carries the release notes Sparkle's update window shows, from
 # build/darwin/release-notes/<version>.html (see the README.md there).
 #
-# The DMG serves both first installs (drag to Applications) and Sparkle
-# updates, which install from it directly. appcast.xml is published to
+# The DMG serves both first installs (drag to Applications, on the
+# background build/darwin/dmg/make-dmg.sh lays out) and Sparkle updates,
+# which install from it directly. appcast.xml is published to
 # https://webbite.io/desktop/macos/appcast.xml (SUFeedURL in Info.plist) once
 # the DMG is up on the GitHub release it points at — see `make
 # release-to-github`.
@@ -89,7 +90,7 @@ lipo "$BIN_DIR/brick-ui" -verify_arch x86_64 arm64 ||
   die "$BIN_DIR/brick-ui is not a universal (x86_64 + arm64) binary"
 
 app="$BIN_DIR/$BUNDLE_NAME.app"
-dmg_name="Webbite-Brick-$VERSION-macos-universal.dmg"
+dmg_name="brick-ui-$VERSION-macos-universal.dmg"
 dmg="$DIST_DIR/$dmg_name"
 
 work=$(mktemp -d)
@@ -135,11 +136,8 @@ fi
 
 step "Building $dmg_name..."
 rm -rf "$DIST_DIR"
-mkdir -p "$DIST_DIR" "$work/dmg"
-ditto "$app" "$work/dmg/$BUNDLE_NAME.app"
-ln -s /Applications "$work/dmg/Applications"
-hdiutil create -quiet -volname "$BUNDLE_NAME" -srcfolder "$work/dmg" \
-  -fs HFS+ -format UDZO -ov "$dmg"
+mkdir -p "$DIST_DIR"
+build/darwin/dmg/make-dmg.sh "$app" "$dmg" "$BUNDLE_NAME"
 if [ "$MAC_SIGN_IDENTITY" = "-" ]; then
   codesign --force --sign - "$dmg"
 else
@@ -214,8 +212,8 @@ EOF
 plutil -lint "$plist" >/dev/null
 xmllint --noout "$DIST_DIR/appcast.xml"
 
-step "Generating checksums..."
-(cd "$DIST_DIR" && shasum -a 256 "$dmg_name" appcast.xml >SHA256SUMS-macos)
+step "Generating the checksum..."
+(cd "$DIST_DIR" && shasum -a 256 "$dmg_name" >"$dmg_name.sha256")
 
 printf '\n\033[32m✓ macOS release %s packaged\033[0m\n' "$VERSION"
 ls -lh "$DIST_DIR"

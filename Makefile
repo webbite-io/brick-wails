@@ -296,7 +296,7 @@ ifeq ($(HOST_OS),darwin)
 # Build the macOS release: a universal production build, bundled with
 # Sparkle, Developer ID signed and notarized, in a DMG that is both the
 # download and the update — plus the Sparkle appcast that offers it, and
-# SHA256SUMS-macos. See build/darwin/release.sh for the steps and what each
+# the DMG's .sha256. See build/darwin/release.sh for the steps and what each
 # of these variables is; set them in .env.prod or the environment.
 # RELEASE_FLAGS=--skip-notarize packages a local test build without
 # submitting it to Apple (release-to-github refuses the result).
@@ -333,9 +333,9 @@ else
 release: build-prod
 	@echo ""
 	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Creating AppImage...$(COLOR_RESET)"
-	@# Wipe the whole of dist/, not just the staging dir: the checksum step
-	@# below globs *.tar.gz, so an artifact left over from an earlier version
-	@# would be re-listed in SHA256SUMS and published alongside this one.
+	@# Wipe the whole of dist/, not just the staging dir: release-to-github
+	@# publishes every artifact and .sha256 in it, so one left over from an
+	@# earlier version would be published alongside this one.
 	@rm -rf $(DIST_DIR)
 	@mkdir -p $(DIST_DIR)/stage/$(APP_NAME)
 	@$(WAILS3) task linux:generate:dotdesktop
@@ -358,28 +358,29 @@ release: build-prod
 		-C $(DIST_DIR)/stage $(APP_NAME)
 	@rm -rf $(DIST_DIR)/stage
 	@echo ""
-	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Generating checksums...$(COLOR_RESET)"
+	@echo "$(COLOR_BOLD)$(COLOR_BLUE)Generating the checksum...$(COLOR_RESET)"
 	@cd $(DIST_DIR) && \
-	if command -v sha256sum >/dev/null 2>&1; then \
-		sha256sum *.tar.gz > SHA256SUMS; \
-	else \
-		shasum -a 256 *.tar.gz > SHA256SUMS; \
-	fi
+	for f in *.tar.gz; do \
+		if command -v sha256sum >/dev/null 2>&1; then \
+			sha256sum "$$f" > "$$f.sha256"; \
+		else \
+			shasum -a 256 "$$f" > "$$f.sha256"; \
+		fi; \
+	done
 	@echo "$(COLOR_GREEN)✓ Release artifact created$(COLOR_RESET)"
 	@echo ""
 	@ls -lh $(DIST_DIR)/*.tar.gz
 	@echo ""
-	@echo "Checksums (SHA256SUMS):"
-	@cat $(DIST_DIR)/SHA256SUMS
+	@echo "Checksum:"
+	@cat $(DIST_DIR)/*.sha256
 	@echo ""
 	@echo "Publish it with: make release-to-github"
 endif
 
 # Publish the artifacts already sitting in dist/ (built by `make release`) to
 # a GitHub release. Does not rebuild anything — the version published is
-# whatever dist/'s checksum file says was actually built: SHA256SUMS for the
-# Linux tarballs, SHA256SUMS-macos for the DMG and its appcast. Mirrors
-# brick-cli's target of the same name.
+# whatever dist/'s checksum files (one <artifact>.sha256 per tarball or DMG)
+# say was actually built. Mirrors brick-cli's target of the same name.
 #
 # Linux and macOS are released from different machines, so a release that
 # already exists is added to rather than replaced: this platform's files are
@@ -389,7 +390,7 @@ endif
 # On macOS the appcast goes up last, by hand, once the DMG it points at is
 # downloadable: Sparkle clients fetch it from webbite.io (SUFeedURL).
 release-to-github:
-	@if [ ! -f "$(DIST_DIR)/SHA256SUMS" ] && [ ! -f "$(DIST_DIR)/SHA256SUMS-macos" ]; then \
+	@if ! ls $(DIST_DIR)/*.sha256 >/dev/null 2>&1; then \
 		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) no checksum file in $(DIST_DIR)/. Run 'make release' first."; \
 		exit 1; \
 	fi; \
@@ -397,9 +398,9 @@ release-to-github:
 		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) gh CLI is required (https://cli.github.com/) — install it and run 'gh auth login' first."; \
 		exit 1; \
 	fi; \
-	rel_version=$$(cat $(DIST_DIR)/SHA256SUMS* | awk '{print $$2}' | grep -v '^appcast\.xml$$' | sed -E \
+	rel_version=$$(cat $(DIST_DIR)/*.sha256 | awk '{print $$2}' | sed -E \
 		-e 's/^$(APP_NAME)-(.+)-(linux)-(amd64|arm64)\.tar\.gz$$/\1/' \
-		-e 's/^Webbite-Brick-(.+)-macos-universal\.dmg$$/\1/' | sort -u); \
+		-e 's/^$(APP_NAME)-(.+)-macos-universal\.dmg$$/\1/' | sort -u); \
 	if [ -z "$$rel_version" ] || [ $$(echo "$$rel_version" | wc -l) -ne 1 ]; then \
 		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) could not determine a single version from $(DIST_DIR)/'s checksums; re-run 'make release' to rebuild a clean dist/."; \
 		exit 1; \
@@ -441,7 +442,7 @@ release-to-github:
 	echo "$(COLOR_GREEN)✓ Artifacts look production-ready$(COLOR_RESET)"; \
 	repo=$$(gh repo view --json nameWithOwner -q .nameWithOwner) || exit 1; \
 	assets=""; \
-	for f in $(DIST_DIR)/SHA256SUMS* $(DIST_DIR)/*.tar.gz $(DIST_DIR)/*.dmg $(DIST_DIR)/appcast.xml; do \
+	for f in $(DIST_DIR)/*.sha256 $(DIST_DIR)/*.tar.gz $(DIST_DIR)/*.dmg $(DIST_DIR)/appcast.xml; do \
 		[ -f "$$f" ] && assets="$$assets $$f"; \
 	done; \
 	if gh release view "$$rel_version" --repo "$$repo" >/dev/null 2>&1; then \
@@ -463,7 +464,7 @@ release-to-github:
 	fi; \
 	echo "$(COLOR_GREEN)✓ Released $$rel_version to $$repo$(COLOR_RESET)"; \
 	echo ""; \
-	if [ -f "$(DIST_DIR)/SHA256SUMS" ]; then \
+	if ls $(DIST_DIR)/*.tar.gz >/dev/null 2>&1; then \
 		echo "Linux users can now install with:"; \
 		echo "  curl -fsSL https://webbite.io/desktop/appimage/install.sh | bash"; \
 	fi; \
