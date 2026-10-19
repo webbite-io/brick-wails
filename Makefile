@@ -101,7 +101,7 @@ LINUX_APT_DEPS := build-essential pkg-config libgtk-4-dev libwebkitgtk-6.0-dev l
 FONTS_URL := https://fonts.bunny.net/css?family=inter:400,500,600|roboto-condensed:700&display=swap
 FONTS_UA := Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36
 
-.PHONY: all setup doctor dev build build-dev build-prod check-release-env run release release-to-github clean install sparkle-keys version help test test-go test-frontend test-integration test-all fonts
+.PHONY: all setup doctor dev build build-dev build-prod check-release-env run release release-to-github publish-sparkle-rn clean install sparkle-keys version help test test-go test-frontend test-integration test-all fonts
 
 # Default target
 all: build-prod
@@ -469,10 +469,74 @@ release-to-github:
 		echo "  curl -fsSL https://webbite.io/desktop/appimage/install.sh | bash"; \
 	fi; \
 	if [ -f "$(DIST_DIR)/appcast.xml" ]; then \
-		echo "$(COLOR_BOLD)Last step for macOS:$(COLOR_RESET) publish $(DIST_DIR)/appcast.xml as"; \
-		echo "  https://webbite.io/desktop/macos/appcast.xml"; \
-		echo "which is what tells installed copies (Sparkle) about the update. The DMG is"; \
+		echo "$(COLOR_BOLD)Last step for macOS:$(COLOR_RESET) make publish-sparkle-rn, which publishes"; \
+		echo "$(DIST_DIR)/appcast.xml as https://webbite.io/desktop/macos/appcast.xml —"; \
+		echo "what tells installed copies (Sparkle) about the update. The DMG is"; \
 		echo "downloadable from the release page for new installs."; \
+	fi
+
+# Publish dist/appcast.xml (built by `make release` on macOS) as
+# https://webbite.io/desktop/macos/appcast.xml — the feed installed copies
+# check for updates (SUFeedURL) — once release-to-github has made its DMG
+# downloadable. It goes to the website's Bunny storage zone with the deploy
+# details `make deploy prod` uses in ../web (WEB_ENV_FILE), but uploads only
+# this one file and purges only its URL from the CDN cache, leaving the rest of
+# the site alone.
+WEB_ENV_FILE ?= ../web/.env.prod
+APPCAST_PATH := desktop/macos/appcast.xml
+APPCAST_URL := https://webbite.io/$(APPCAST_PATH)
+publish-sparkle-rn:
+	@appcast="$(DIST_DIR)/appcast.xml"; \
+	if [ ! -f "$$appcast" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) no $$appcast. Run 'make release' on macOS first."; \
+		exit 1; \
+	fi; \
+	if command -v xmllint >/dev/null 2>&1 && ! xmllint --noout "$$appcast"; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) $$appcast is not well-formed XML."; \
+		exit 1; \
+	fi; \
+	if [ ! -f "$(WEB_ENV_FILE)" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) $(WEB_ENV_FILE) not found — it holds the website's Bunny deploy details."; \
+		echo "Point WEB_ENV_FILE at it: make publish-sparkle-rn WEB_ENV_FILE=path/to/web/.env.prod"; \
+		exit 1; \
+	fi; \
+	set -a; . "$(WEB_ENV_FILE)"; set +a; \
+	missing=""; \
+	for v in BUNNY_ZONE_NAME BUNNY_ACCESS_KEY BUNNY_PULL_ACCESS_KEY; do \
+		eval "[ -n \"\$${$$v}\" ]" || missing="$$missing $$v"; \
+	done; \
+	if [ -n "$$missing" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) missing in $(WEB_ENV_FILE):$$missing"; \
+		exit 1; \
+	fi; \
+	echo "$(COLOR_BOLD)$(COLOR_BLUE)Checking the update the appcast offers is downloadable...$(COLOR_RESET)"; \
+	dmg_url=$$(sed -nE 's/.*<enclosure url="([^"]+)".*/\1/p' "$$appcast" | head -1); \
+	if [ -z "$$dmg_url" ]; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) no <enclosure url> in $$appcast."; \
+		exit 1; \
+	fi; \
+	if ! curl -fsSIL -o /dev/null "$$dmg_url"; then \
+		echo "$(COLOR_YELLOW)Error:$(COLOR_RESET) $$dmg_url is not downloadable — run 'make release-to-github' first,"; \
+		echo "or installed copies would be offered an update they can't fetch."; \
+		exit 1; \
+	fi; \
+	echo "  $$dmg_url ✓"; \
+	echo "$(COLOR_BOLD)$(COLOR_BLUE)Uploading $$appcast to $$BUNNY_ZONE_NAME/$(APPCAST_PATH)...$(COLOR_RESET)"; \
+	curl -X PUT "https://storage.bunnycdn.com/$$BUNNY_ZONE_NAME/$(APPCAST_PATH)" \
+		-H "AccessKey: $$BUNNY_ACCESS_KEY" \
+		-H "Content-Type: application/xml" \
+		--upload-file "$$appcast" \
+		-f -s -S -o /dev/null || exit 1; \
+	echo "$(COLOR_BOLD)$(COLOR_BLUE)Purging $(APPCAST_URL) from the CDN cache...$(COLOR_RESET)"; \
+	if curl -X POST -G "https://api.bunny.net/purge" \
+		--data-urlencode "url=$(APPCAST_URL)" \
+		--data-urlencode "async=false" \
+		-H "AccessKey: $$BUNNY_PULL_ACCESS_KEY" \
+		-f -s -S -o /dev/null; then \
+		echo "$(COLOR_GREEN)✓ Published $(APPCAST_URL)$(COLOR_RESET)"; \
+	else \
+		echo "$(COLOR_YELLOW)⚠ Uploaded, but the cache purge failed: $(APPCAST_URL) may serve the old feed until its cache expires.$(COLOR_RESET)"; \
+		exit 1; \
 	fi
 
 # Clean build artifacts (mirrors brick-cli's clean; keeps node_modules).
@@ -554,6 +618,7 @@ help:
 	@echo "  release           - Build this OS's release into dist/: the AppImage tarball on Linux,"
 	@echo "                      a notarized DMG + Sparkle appcast on macOS"
 	@echo "  release-to-github - Publish dist/ artifacts to a GitHub release (prompts before replacing files)"
+	@echo "  publish-sparkle-rn - Publish dist/appcast.xml (Sparkle feed + release notes) to webbite.io"
 	@echo "  sparkle-keys      - macOS: print (creating if needed) the Sparkle update-signing public key"
 	@echo "  clean             - Remove build artifacts (bin/, dist/, frontend/dist, .task)"
 	@echo "  install           - Build using build-prod and install for testing"
@@ -569,6 +634,7 @@ help:
 	@echo "  make install                        # Build + install locally"
 	@echo "  make release                        # This OS's release in dist/"
 	@echo "  make release-to-github              # Publish dist/ to GitHub"
+	@echo "  make publish-sparkle-rn             # Then publish the macOS appcast"
 	@echo ""
 	@echo "$(COLOR_BOLD)Host OS:$(COLOR_RESET) $(HOST_OS)"
 	@echo ""
