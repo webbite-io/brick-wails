@@ -19,7 +19,7 @@ let appsX: CGFloat = 480
 let iconY: CGFloat = 205
 let iconSize: CGFloat = 128
 
-let background = NSColor(srgbRed: 0.961, green: 0.949, blue: 0.918, alpha: 1)  // #F5F2EA
+let background = NSColor.white
 let titleColor = NSColor(srgbRed: 0.149, green: 0.141, blue: 0.122, alpha: 1)  // #26241F
 let subtitleColor = NSColor(srgbRed: 0.490, green: 0.471, blue: 0.424, alpha: 1)  // #7D786C
 let arrowColor = NSColor(srgbRed: 0.306, green: 0.604, blue: 0.165, alpha: 1)  // #4E9A2A, the icon's green
