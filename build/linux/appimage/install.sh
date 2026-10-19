@@ -222,16 +222,29 @@ detect_arch() {
   esac
 }
 
+# The newest release with a tarball for this platform, rather than GitHub's
+# latest release: macOS and Linux are released from different machines, so
+# the latest release can hold only a DMG for a while, or for good. The list
+# leaves out drafts; pre-releases are skipped by their version's "-"
+# (1.2.0-rc.1), as the API's release list doesn't say which they are in a
+# form grep can match up with the assets.
 get_latest_version() {
+  local os="$1" arch="$2"
   info "Fetching latest version from GitHub..." >&2
 
-  local version
-  version=$(curl -fsSL -H "User-Agent: brick-ui-installer" "https://api.github.com/repos/$GITHUB_REPO/releases/latest" |
-    grep '"tag_name"' |
-    sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/' || echo "")
+  local releases version
+  releases=$(curl -fsSL -H "User-Agent: brick-ui-installer" "https://api.github.com/repos/$GITHUB_REPO/releases?per_page=20") ||
+    die "Failed to fetch the release list from GitHub API"
+  # Each asset's download URL carries its release's tag; keep the URLs of
+  # this platform's tarballs whose file name matches the tag, newest first.
+  version=$(printf '%s\n' "$releases" |
+    grep -oE "/releases/download/[^/\"]+/${APP_NAME}-[^/\"]+-${os}-${arch}\.tar\.gz\"" |
+    sed -nE "s#^/releases/download/([^/]+)/${APP_NAME}-(.+)-${os}-${arch}\.tar\.gz\"\$#\1 \2#p" |
+    awk '$1 == $2 && $1 !~ /-/ { print $1 }' |
+    head -n1 || true)
 
   if [ -z "$version" ]; then
-    die "Failed to fetch latest version from GitHub API"
+    die "No $DISPLAY_NAME release for $os/$arch found on GitHub"
   fi
 
   echo "$version"
@@ -653,7 +666,7 @@ main() {
   echo "Detected platform: $os/$arch"
 
   if [ -z "$VERSION" ]; then
-    VERSION=$(get_latest_version)
+    VERSION=$(get_latest_version "$os" "$arch")
   fi
 
   local current
