@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io/fs"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +41,9 @@ func (e *Engine) AddWatchesRecursive(w *fsnotify.Watcher) {
 			return nil
 		}
 		if d.IsDir() {
+			if path != e.folder && isIgnoredName(d.Name()) {
+				return filepath.SkipDir
+			}
 			_ = w.Add(path)
 		}
 		return nil
@@ -213,10 +215,11 @@ func (e *Engine) Run(parent context.Context) error {
 					if !ok {
 						return
 					}
-					if strings.HasSuffix(ev.Name, TmpSuffix) || e.isRecentlyWritten(ev.Name) {
+					rel := filepath.ToSlash(mustRel(e.folder, ev.Name))
+					if isIgnoredPath(rel) || e.isRecentlyWritten(ev.Name) {
 						continue
 					}
-					e.notifyPath(filepath.ToSlash(mustRel(e.folder, ev.Name)))
+					e.notifyPath(rel)
 				case werr, ok := <-watcher.Errors:
 					if !ok {
 						return

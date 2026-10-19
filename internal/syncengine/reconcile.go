@@ -18,7 +18,8 @@ import (
 	"github.com/webbite-io/brick-wails/internal/storage"
 )
 
-// TmpSuffix marks in-progress downloads; the tree walk and watcher skip them.
+// TmpSuffix marks in-progress downloads; the tree walk and watcher skip them
+// (see isIgnoredName).
 const TmpSuffix = ".brick-tmp"
 
 // Ported 1:1 from brick-cli sync.go @ f3ef7bd: buildRemoteTree … recordUpload.
@@ -41,7 +42,7 @@ func (e *Engine) buildRemoteTree(ctx context.Context) (files, folders map[string
 			return nil, nil, nil, listErr
 		}
 		for _, ch := range children {
-			if ch.IsDeleted {
+			if ch.IsDeleted || isIgnoredName(ch.Name) {
 				continue
 			}
 			rel := ch.Name
@@ -106,6 +107,30 @@ func (e *Engine) applyRemoteDelta(nodes []storage.Node) (affectedFiles []string)
 	for _, n := range nodes {
 		rel := strings.Trim(n.Path, "/")
 		oldRel, hadOld := e.remoteTreeIDToRel[n.ID]
+
+		if !n.IsDeleted && isIgnoredPath(rel) {
+			// Created in, or moved/renamed into, an ignored path: from here on
+			// it doesn't exist as far as sync is concerned. A move reports only
+			// the moved row, so drop a moved folder's cached descendants too.
+			if hadOld {
+				prefix := oldRel + "/"
+				for k, f := range e.remoteTreeFiles {
+					if k == oldRel || strings.HasPrefix(k, prefix) {
+						delete(e.remoteTreeFiles, k)
+						delete(e.remoteTreeIDToRel, f.ID)
+						affectedFiles = append(affectedFiles, k)
+					}
+				}
+				for k, f := range e.remoteTreeFolders {
+					if k == oldRel || strings.HasPrefix(k, prefix) {
+						delete(e.remoteTreeFolders, k)
+						delete(e.remoteTreeFolderID, k)
+						delete(e.remoteTreeIDToRel, f.ID)
+					}
+				}
+			}
+			continue
+		}
 
 		if n.IsDeleted {
 			removedRel := rel
@@ -280,7 +305,10 @@ func (e *Engine) buildLocalTree() (files map[string]int64, dirs map[string]bool,
 		if path == e.folder {
 			return nil
 		}
-		if strings.HasSuffix(path, TmpSuffix) {
+		if isIgnoredName(d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		rel := filepath.ToSlash(mustRel(e.folder, path))
@@ -365,7 +393,7 @@ func (e *Engine) applyLocalChanges(changedPaths []string) []string {
 	}
 
 	for _, rel := range changedPaths {
-		if rel == "" || rel == "." || strings.HasSuffix(rel, TmpSuffix) {
+		if rel == "" || rel == "." || isIgnoredPath(rel) {
 			continue
 		}
 		abs := filepath.Join(e.folder, filepath.FromSlash(rel))
@@ -408,7 +436,13 @@ func (e *Engine) applyLocalChanges(changedPaths []string) []string {
 				if walkErr != nil {
 					return walkErr
 				}
-				if p == abs || strings.HasSuffix(p, TmpSuffix) {
+				if p == abs {
+					return nil
+				}
+				if isIgnoredName(d.Name()) {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
 					return nil
 				}
 				childRel := filepath.ToSlash(mustRel(e.folder, p))
@@ -847,6 +881,9 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 	for _, rel := range goneDirs {
 		delete(e.state.Folders, rel)
 		delete(e.state.FolderIDs, rel)
+		if isIgnoredPath(rel) {
+			continue // synced before its name was ignored; leave the local copy be
+		}
 		abs := filepath.Join(e.folder, filepath.FromSlash(rel))
 		info, err := os.Stat(abs)
 		if err != nil || !info.IsDir() {
