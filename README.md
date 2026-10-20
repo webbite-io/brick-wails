@@ -26,10 +26,13 @@ time.
 
 ## Installation
 
-Brick for Desktop is currently available for Linux, as an AppImage. Versions
-for Windows and macOS are in development.
+Brick for Desktop is currently available for Linux, as an AppImage, and for
+macOS as a .DMG app. A version for Microsoft Windows is currently in
+development.
 
-### Quick Install
+### Linux
+
+#### Quick Install
 
 Install the latest release on Linux like so:
 
@@ -42,7 +45,7 @@ desktop entry and icons, so the app shows up in your application menu.
 
 Running the same command again upgrades an existing installation in place.
 
-### Custom Installation Directory
+#### Custom Installation Directory
 
 To install the latest release to a custom directory, do like so:
 
@@ -50,13 +53,25 @@ To install the latest release to a custom directory, do like so:
 curl -fsSL https://webbite.io/desktop/appimage/install.sh | bash -s -- --prefix $HOME/bin
 ```
 
-### Uninstall
+#### Uninstall
 
 To remove the app, its desktop entry and icons, do like so:
 
 ```bash
 curl -fsSL https://webbite.io/desktop/appimage/install.sh | bash -s -- --uninstall
 ```
+
+### macOS
+
+To download the latest version, go to [Releases][macos] and download the latest
+`.dmg` file that has the name `brick-ui-{version}-macos-universal.dmg`. Once
+downloaded, double-click the file to open the "drag-to-install" window and
+follow the instructions.
+
+When the app is added to the _Applications_ folder on your Mac, you can easily
+start it by pressing Cmd-Space in Finder and search for _Webbite Brick_.
+
+[macos]: https://github.com/webbite-io/brick-wails/releases
 
 ## Documentation
 
