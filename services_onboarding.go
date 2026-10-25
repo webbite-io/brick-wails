@@ -20,6 +20,9 @@ type OnboardingService struct {
 	app    *application.App
 	flow   *onboarding.Flow
 	runner *runner.Runner
+	// loginStart backs the remote-access step's "Start at login" checkbox;
+	// nil where Brick can't start itself at login, which leaves it out.
+	loginStart *startAtLogin
 	// window returns the setup window (nil before it's created).
 	window func() *application.WebviewWindow
 	// onSettled fires the first time routing reaches a verdict about this
@@ -146,6 +149,18 @@ func (s *OnboardingService) SetSyncScope(all bool, exclude []string) error {
 func (s *OnboardingService) SetRemoteAccess(enabled bool, root string) error {
 	return s.flow.SetRemoteAccess(enabled, root)
 }
+
+// StartAtLoginSupported reports whether the wizard should offer to start
+// Brick at login (Linux only, for now).
+func (s *OnboardingService) StartAtLoginSupported() bool { return s.loginStart.Supported() }
+
+// StartAtLogin is what the wizard's "Start at login" checkbox starts as: the
+// current setting, or on for a fresh install.
+func (s *OnboardingService) StartAtLogin() bool { return s.loginStart.Preference() }
+
+// SetStartAtLogin turns starting at login on or off. The tray menu's
+// "Start at Login" check follows.
+func (s *OnboardingService) SetStartAtLogin(on bool) error { return s.loginStart.Set(on) }
 
 // Checklist returns the completed onboarding steps.
 func (s *OnboardingService) Checklist() []string { return s.flow.Checklist() }

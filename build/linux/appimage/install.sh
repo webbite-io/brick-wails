@@ -37,7 +37,7 @@ DESKTOP_DIR="$DATA_HOME/applications"
 DESKTOP_FILE="$DESKTOP_DIR/${APP_NAME}.desktop"
 STATE_DIR="$DATA_HOME/$APP_NAME"
 VERSION_FILE="$STATE_DIR/version"
-# Written by the app's "Start at Login" tray toggle, not by this script, but
+# Written by the app's "Start at Login" setting, not by this script, but
 # removed on --uninstall so login doesn't go looking for a deleted binary.
 AUTOSTART_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/${APP_NAME}.desktop"
 

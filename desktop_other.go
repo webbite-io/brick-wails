@@ -12,6 +12,13 @@ import (
 // from its bundle or executable, not a .desktop entry.
 func ensureDesktopEntry(*log.Logger) string { return "" }
 
-// addStartAtLoginItem is Linux-only for now: macOS would register a login
-// item instead.
-func addStartAtLoginItem(*application.App, *application.Menu, string, *log.Logger) {}
+// startAtLogin is Linux-only for now: macOS would register a login item
+// instead. A nil one leaves the tray item and the wizard's checkbox out.
+type startAtLogin struct{}
+
+func newStartAtLogin(string, *log.Logger) *startAtLogin { return nil }
+
+func (*startAtLogin) Supported() bool                                 { return false }
+func (*startAtLogin) Preference() bool                                { return false }
+func (*startAtLogin) Set(bool) error                                  { return nil }
+func (*startAtLogin) addMenuItem(*application.App, *application.Menu) {}

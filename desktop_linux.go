@@ -91,72 +91,128 @@ func ensureDesktopEntry(logger *log.Logger) string {
 	return path
 }
 
-// addStartAtLoginItem adds the "Start at Login" toggle to the tray menu. On,
-// it copies the desktop entry at entryPath into ~/.config/autostart, where
-// every XDG desktop looks at login; off, it removes the copy. The state is
-// read from that file rather than kept here, so turning it off in the
-// desktop's own settings shows in the menu too.
-func addStartAtLoginItem(app *application.App, menu *application.Menu, entryPath string, logger *log.Logger) {
+// startAtLogin starts Brick at login: on, it copies the desktop entry at
+// entryPath into ~/.config/autostart, where every XDG desktop looks at login;
+// off, it leaves the copy switched off, which records the choice. The state
+// is read from that file rather than kept here, so turning it off in the
+// desktop's own settings shows too. The tray menu and the setup wizard both
+// switch it, and both go through Set so the tray's check follows either.
+type startAtLogin struct {
+	app       *application.App
+	logger    *log.Logger
+	entryPath string
+	path      string
+	// uncheckedIcon replaces the check when it's off, rather than clearing
+	// the icon; see trayicon.Blank.
+	uncheckedIcon []byte
+
+	// mu makes a switch and the check that follows it one step, so a theme
+	// change landing in between can't put back the previous state's icon.
+	mu   sync.Mutex
+	item *application.MenuItem
+}
+
+// newStartAtLogin returns nil when there's no entry to copy, which leaves
+// both the tray item and the wizard's checkbox out.
+func newStartAtLogin(entryPath string, logger *log.Logger) *startAtLogin {
 	if entryPath == "" {
-		return
+		return nil
 	}
 	configHome := os.Getenv("XDG_CONFIG_HOME")
 	if configHome == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
 			logger.Printf("start at login: %v", err)
-			return
+			return nil
 		}
 		configHome = filepath.Join(home, ".config")
 	}
-	path := desktopentry.AutostartPath(configHome, "brick-ui")
-
-	// Unticking swaps the check for a transparent image of the same size
-	// rather than clearing the icon; see trayicon.Blank.
-	uncheckedIcon, err := trayicon.Blank(checkIconSize)
+	unchecked, err := trayicon.Blank(checkIconSize)
 	if err != nil {
 		logger.Printf("start at login: %v", err)
+		return nil
+	}
+	return &startAtLogin{
+		logger:        logger,
+		entryPath:     entryPath,
+		path:          desktopentry.AutostartPath(configHome, "brick-ui"),
+		uncheckedIcon: unchecked,
+	}
+}
+
+// Supported reports whether Brick can start itself at login here.
+func (s *startAtLogin) Supported() bool { return s != nil }
+
+// Preference is what the setup wizard's checkbox starts as: the current
+// setting, or on when it has never been set.
+func (s *startAtLogin) Preference() bool {
+	return s != nil && desktopentry.AutostartPreference(s.path)
+}
+
+// Set turns starting at login on or off and updates the tray's check.
+func (s *startAtLogin) Set(on bool) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setLocked(on)
+}
+
+func (s *startAtLogin) setLocked(on bool) error {
+	var err error
+	if on {
+		err = desktopentry.EnableAutostart(s.entryPath, s.path)
+	} else {
+		err = desktopentry.DisableAutostart(s.entryPath, s.path)
+	}
+	if err != nil {
+		s.logger.Printf("start at login: %v", err)
+	}
+	s.applyCheckLocked()
+	return err
+}
+
+// addMenuItem adds the "Start at Login" toggle to the tray menu.
+func (s *startAtLogin) addMenuItem(app *application.App, menu *application.Menu) {
+	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	s.app = app
+	s.item = menu.Add("Start at Login")
+	s.applyCheckLocked()
+	s.mu.Unlock()
 
-	item := menu.Add("Start at Login")
-	// mu makes a toggle and the check that follows it one step, so a theme
-	// change landing in between can't put back the previous state's icon.
-	var mu sync.Mutex
-	// The check is the item's icon rather than the desktop's own toggle, so
-	// it's Lucide's; which side of the label it lands on is up to the
-	// desktop (GNOME's AppIndicator extension puts it on the right).
-	applyCheck := func() {
-		switch {
-		case !desktopentry.AutostartEnabled(path):
-			item.SetBitmap(uncheckedIcon)
-		case app.Env.IsDarkMode():
-			item.SetBitmap(checkIconDark)
-		default:
-			item.SetBitmap(checkIconLight)
-		}
-	}
-	refresh := func(*application.ApplicationEvent) {
-		mu.Lock()
-		defer mu.Unlock()
-		applyCheck()
-	}
-	item.OnClick(func(*application.Context) {
-		mu.Lock()
-		defer mu.Unlock()
-		var err error
-		if desktopentry.AutostartEnabled(path) {
-			err = desktopentry.DisableAutostart(path)
-		} else {
-			err = desktopentry.EnableAutostart(entryPath, path)
-		}
-		if err != nil {
-			logger.Printf("start at login: %v", err)
-		}
-		applyCheck()
+	s.item.OnClick(func(*application.Context) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		_ = s.setLocked(!desktopentry.AutostartEnabled(s.path))
 	})
-	refresh(nil)
+	refresh := func(*application.ApplicationEvent) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		s.applyCheckLocked()
+	}
 	// The check follows the theme the way the tray icon does; see main.
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, refresh)
 	app.Event.OnApplicationEvent(events.Common.ThemeChanged, refresh)
+}
+
+// applyCheckLocked shows the check while starting at login is on. The check
+// is the item's icon rather than the desktop's own toggle, so it's Lucide's;
+// which side of the label it lands on is up to the desktop (GNOME's
+// AppIndicator extension puts it on the right).
+func (s *startAtLogin) applyCheckLocked() {
+	if s.item == nil {
+		return
+	}
+	switch {
+	case !desktopentry.AutostartEnabled(s.path):
+		s.item.SetBitmap(s.uncheckedIcon)
+	case s.app.Env.IsDarkMode():
+		s.item.SetBitmap(checkIconDark)
+	default:
+		s.item.SetBitmap(checkIconLight)
+	}
 }

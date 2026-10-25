@@ -18,6 +18,9 @@ func TestEnableAutostartCopiesEntry(t *testing.T) {
 	if AutostartEnabled(path) {
 		t.Fatal("enabled before the entry was written")
 	}
+	if !AutostartPreference(path) {
+		t.Fatal("a fresh install should offer it as on")
+	}
 	if err := EnableAutostart(entry, path); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +38,8 @@ func TestEnableAutostartCopiesEntry(t *testing.T) {
 }
 
 // Settings panels that switch an entry off rather than deleting it leave it
-// disabled, and re-enabling rewrites it.
+// disabled, and re-enabling rewrites it. Disabling leaves an entry behind,
+// so a no is remembered.
 func TestAutostartSwitchedOff(t *testing.T) {
 	root := t.TempDir()
 	path := AutostartPath(root, "brick-ui")
@@ -55,13 +59,17 @@ func TestAutostartSwitchedOff(t *testing.T) {
 		t.Fatalf("not re-enabled:\n%s", got)
 	}
 
-	if err := DisableAutostart(path); err != nil {
+	if err := DisableAutostart(entry, path); err != nil {
 		t.Fatal(err)
 	}
-	if AutostartEnabled(path) {
-		t.Fatal("enabled after DisableAutostart")
+	if AutostartEnabled(path) || AutostartPreference(path) {
+		t.Fatalf("enabled after DisableAutostart:\n%s", read(t, path))
 	}
-	if err := DisableAutostart(path); err != nil {
+	got := read(t, path)
+	if !strings.Contains(got, "Hidden=true\n") || !strings.Contains(got, "X-GNOME-Autostart-enabled=false\n") {
+		t.Fatalf("disabled entry:\n%s", got)
+	}
+	if err := DisableAutostart(entry, path); err != nil {
 		t.Fatalf("disabling twice: %v", err)
 	}
 }

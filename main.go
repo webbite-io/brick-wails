@@ -137,7 +137,8 @@ func main() {
 	}
 	// Before any window exists, so the desktop has the entry to match the
 	// first one against.
-	desktopEntry := ensureDesktopEntry(logger)
+	// Switched from the tray menu and the setup wizard alike.
+	loginStart := newStartAtLogin(ensureDesktopEntry(logger), logger)
 
 	tokens, err := auth.NewTokenSource(store, env.APIURL, env.OAuthClientID)
 	if err != nil {
@@ -150,7 +151,7 @@ func main() {
 
 	var setupWindow *application.WebviewWindow
 	syncSvc := &SyncService{runner: run}
-	onbSvc := &OnboardingService{flow: flow, runner: run, window: func() *application.WebviewWindow { return setupWindow }}
+	onbSvc := &OnboardingService{flow: flow, runner: run, loginStart: loginStart, window: func() *application.WebviewWindow { return setupWindow }}
 	// Bound on every platform, macOS included where Sparkle takes its place,
 	// so the generated frontend bindings don't depend on the OS that
 	// generates them.
@@ -340,7 +341,7 @@ func main() {
 			syncSvc.Pause()
 		}
 	})
-	addStartAtLoginItem(app, menu, desktopEntry, logger)
+	loginStart.addMenuItem(app, menu)
 	menu.AddSeparator()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.
