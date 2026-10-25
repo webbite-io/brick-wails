@@ -111,6 +111,25 @@ func TestDotRejectsNonPositiveSize(t *testing.T) {
 	}
 }
 
+func TestBlank(t *testing.T) {
+	const size = 32
+	data, err := Blank(size)
+	if err != nil {
+		t.Fatalf("Blank: %v", err)
+	}
+	img := decode(t, data)
+	if got := img.Bounds(); got.Dx() != size || got.Dy() != size {
+		t.Fatalf("blank is %v, want %dx%d", got, size, size)
+	}
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			if _, _, _, a := img.At(x, y).RGBA(); a != 0 {
+				t.Fatalf("pixel (%d,%d) has alpha %d, want it transparent", x, y, a)
+			}
+		}
+	}
+}
+
 func mustBadge(t *testing.T, icon []byte, c color.NRGBA) []byte {
 	t.Helper()
 	badged, err := Badge(icon, c)

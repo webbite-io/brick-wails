@@ -137,7 +137,7 @@ func main() {
 	}
 	// Before any window exists, so the desktop has the entry to match the
 	// first one against.
-	ensureDesktopEntry(logger)
+	desktopEntry := ensureDesktopEntry(logger)
 
 	tokens, err := auth.NewTokenSource(store, env.APIURL, env.OAuthClientID)
 	if err != nil {
@@ -340,6 +340,7 @@ func main() {
 			syncSvc.Pause()
 		}
 	})
+	addStartAtLoginItem(app, menu, desktopEntry, logger)
 	menu.AddSeparator()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.

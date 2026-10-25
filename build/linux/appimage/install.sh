@@ -37,6 +37,9 @@ DESKTOP_DIR="$DATA_HOME/applications"
 DESKTOP_FILE="$DESKTOP_DIR/${APP_NAME}.desktop"
 STATE_DIR="$DATA_HOME/$APP_NAME"
 VERSION_FILE="$STATE_DIR/version"
+# Written by the app's "Start at Login" tray toggle, not by this script, but
+# removed on --uninstall so login doesn't go looking for a deleted binary.
+AUTOSTART_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/${APP_NAME}.desktop"
 
 # Icon sizes written into the hicolor theme. The shipped PNG is 1024x1024; we
 # only resize when a resizer is present, otherwise the full-size file is
@@ -91,7 +94,7 @@ Options:
   --force              Reinstall even if already at the target version
   --restart            (Re)start the app afterwards without asking
   --no-restart         Leave any running instance alone
-  --uninstall          Remove the app, icons and desktop entry
+  --uninstall          Remove the app, icons, desktop entry and login entry
   --help               Show this help message
 
 Examples:
@@ -485,6 +488,12 @@ uninstall() {
   fi
 
   prune_duplicate_desktop_entries "" "$target"
+
+  if [ -e "$AUTOSTART_FILE" ]; then
+    rm -f "$AUTOSTART_FILE"
+    success "Removed $AUTOSTART_FILE"
+    removed=1
+  fi
 
   local size icon
   for size in "${ICON_SIZES[@]}"; do
