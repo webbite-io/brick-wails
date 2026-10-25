@@ -214,12 +214,12 @@ func main() {
 		Name:   "Setup",
 		Title:  "Webbite Brick",
 		Width:  420,
-		Height: 650,
+		Height: 680,
 		// Resizable upwards only: the default size is also the floor, so a step
 		// with a long list can be given more room but the layout never gets
 		// squeezed below what it was designed for.
 		MinWidth:         420,
-		MinHeight:        650,
+		MinHeight:        680,
 		Hidden:           true,
 		BackgroundColour: application.NewRGB(24, 24, 27),
 		URL:              "/startup.html",
