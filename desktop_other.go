@@ -21,4 +21,4 @@ func newStartAtLogin(string, *log.Logger) *startAtLogin { return nil }
 func (*startAtLogin) Supported() bool                                 { return false }
 func (*startAtLogin) Preference() bool                                { return false }
 func (*startAtLogin) Set(bool) error                                  { return nil }
-func (*startAtLogin) addMenuItem(*application.App, *application.Menu) {}
+func (*startAtLogin) addMenuItem(*application.Menu) {}

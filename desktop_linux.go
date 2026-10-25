@@ -11,10 +11,8 @@ import (
 	"sync"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
-	"github.com/wailsapp/wails/v3/pkg/events"
 
 	"github.com/webbite-io/brick-wails/internal/desktopentry"
-	"github.com/webbite-io/brick-wails/internal/trayicon"
 )
 
 // linuxAppID is the app id Wails gives the GTK application and so every
@@ -26,17 +24,16 @@ const linuxAppID = "org.wails.webbite_brick"
 //go:embed build/appicon.png
 var desktopIcon []byte
 
-// Lucide's "check", drawn beside "Start at Login" while it's on: zinc-800 for
-// a light menu, zinc-200 for a dark one.
-//
-//go:embed build/tray/check-light.png
-var checkIconLight []byte
-
-//go:embed build/tray/check-dark.png
-var checkIconDark []byte
-
-// checkIconSize is the pixel size of both check PNGs.
-const checkIconSize = 32
+// The tray item's label while starting at login is off and on. The check is
+// part of the label rather than the item's icon or a checkbox item, because
+// tray hosts don't agree on where those go: GNOME's AppIndicator extension
+// puts both after the label, while the Status Tray extension puts them before
+// it and, for a checkbox, keeps that space even while it's off, which
+// indents the item past the rest of the menu. Text lands the same everywhere.
+const (
+	startAtLoginLabel   = "Start at Login"
+	startAtLoginOnLabel = "Start at Login ✓"
+)
 
 // ensureDesktopEntry makes sure the desktop can match Brick's windows to a
 // .desktop entry, so the window switcher shows "Webbite Brick" and its icon
@@ -98,16 +95,12 @@ func ensureDesktopEntry(logger *log.Logger) string {
 // desktop's own settings shows too. The tray menu and the setup wizard both
 // switch it, and both go through Set so the tray's check follows either.
 type startAtLogin struct {
-	app       *application.App
 	logger    *log.Logger
 	entryPath string
 	path      string
-	// uncheckedIcon replaces the check when it's off, rather than clearing
-	// the icon; see trayicon.Blank.
-	uncheckedIcon []byte
 
-	// mu makes a switch and the check that follows it one step, so a theme
-	// change landing in between can't put back the previous state's icon.
+	// mu makes a switch and the check that follows it one step, so two
+	// switches can't leave the check showing the earlier one.
 	mu   sync.Mutex
 	item *application.MenuItem
 }
@@ -127,16 +120,10 @@ func newStartAtLogin(entryPath string, logger *log.Logger) *startAtLogin {
 		}
 		configHome = filepath.Join(home, ".config")
 	}
-	unchecked, err := trayicon.Blank(checkIconSize)
-	if err != nil {
-		logger.Printf("start at login: %v", err)
-		return nil
-	}
 	return &startAtLogin{
-		logger:        logger,
-		entryPath:     entryPath,
-		path:          desktopentry.AutostartPath(configHome, "brick-ui"),
-		uncheckedIcon: unchecked,
+		logger:    logger,
+		entryPath: entryPath,
+		path:      desktopentry.AutostartPath(configHome, "brick-ui"),
 	}
 }
 
@@ -174,13 +161,12 @@ func (s *startAtLogin) setLocked(on bool) error {
 }
 
 // addMenuItem adds the "Start at Login" toggle to the tray menu.
-func (s *startAtLogin) addMenuItem(app *application.App, menu *application.Menu) {
+func (s *startAtLogin) addMenuItem(menu *application.Menu) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
-	s.app = app
-	s.item = menu.Add("Start at Login")
+	s.item = menu.Add(startAtLoginLabel)
 	s.applyCheckLocked()
 	s.mu.Unlock()
 
@@ -189,30 +175,16 @@ func (s *startAtLogin) addMenuItem(app *application.App, menu *application.Menu)
 		defer s.mu.Unlock()
 		_ = s.setLocked(!desktopentry.AutostartEnabled(s.path))
 	})
-	refresh := func(*application.ApplicationEvent) {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		s.applyCheckLocked()
-	}
-	// The check follows the theme the way the tray icon does; see main.
-	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, refresh)
-	app.Event.OnApplicationEvent(events.Common.ThemeChanged, refresh)
 }
 
-// applyCheckLocked shows the check while starting at login is on. The check
-// is the item's icon rather than the desktop's own toggle, so it's Lucide's;
-// which side of the label it lands on is up to the desktop (GNOME's
-// AppIndicator extension puts it on the right).
+// applyCheckLocked shows the check while starting at login is on.
 func (s *startAtLogin) applyCheckLocked() {
 	if s.item == nil {
 		return
 	}
-	switch {
-	case !desktopentry.AutostartEnabled(s.path):
-		s.item.SetBitmap(s.uncheckedIcon)
-	case s.app.Env.IsDarkMode():
-		s.item.SetBitmap(checkIconDark)
-	default:
-		s.item.SetBitmap(checkIconLight)
+	if desktopentry.AutostartEnabled(s.path) {
+		s.item.SetLabel(startAtLoginOnLabel)
+	} else {
+		s.item.SetLabel(startAtLoginLabel)
 	}
 }

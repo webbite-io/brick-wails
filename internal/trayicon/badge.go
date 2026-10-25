@@ -65,17 +65,6 @@ func Dot(size int, c color.NRGBA) ([]byte, error) {
 	return encodePNG(img)
 }
 
-// Blank returns a fully transparent PNG, size×size: what a menu item shows
-// in place of an icon it has dropped. Clearing the icon with no data at all
-// doesn't work everywhere — GNOME's AppIndicator extension tries to decode the
-// empty image, fails, and keeps showing the old one.
-func Blank(size int) ([]byte, error) {
-	if size <= 0 {
-		return nil, fmt.Errorf("blank size must be positive, got %d", size)
-	}
-	return encodePNG(image.NewNRGBA(image.Rect(0, 0, size, size)))
-}
-
 // badgeGeometry returns the dot's radius and the width of the ring punched out
 // around it, for an icon of the given size.
 func badgeGeometry(size int) (r, ring float64) {

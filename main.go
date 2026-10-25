@@ -341,7 +341,7 @@ func main() {
 			syncSvc.Pause()
 		}
 	})
-	loginStart.addMenuItem(app, menu)
+	loginStart.addMenuItem(menu)
 	menu.AddSeparator()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.
