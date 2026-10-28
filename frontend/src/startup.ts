@@ -38,6 +38,9 @@ const primaryBtn = document.getElementById("primary-btn")! as HTMLButtonElement;
 const secondaryBtn = document.getElementById("secondary-btn")! as HTMLButtonElement;
 
 let home = "";
+// Whether the remote-access step offers to start Brick at login (Linux
+// and macOS).
+let canStartAtLogin = false;
 
 // --- rendering helpers ---
 
@@ -240,6 +243,21 @@ function checkboxGroup(options: string[], checked: string[]): () => string[] {
   return () => Array.from(group.querySelectorAll<HTMLInputElement>("input:checked")).map((i) => i.value);
 }
 
+// checkboxOption renders one checkbox in the boxed row radioGroup uses, for a
+// yes/no setting that sits alongside radio questions.
+function checkboxOption(label: string, checked: boolean): HTMLInputElement {
+  const row = document.createElement("label");
+  row.className = "option";
+  const input = document.createElement("input");
+  input.type = "checkbox";
+  input.checked = checked;
+  const text = document.createElement("span");
+  text.textContent = label;
+  row.append(input, text);
+  bodyEl.appendChild(row);
+  return input;
+}
+
 function stepLabel(text: string): HTMLParagraphElement {
   const p = document.createElement("p");
   p.className = "step-label";
@@ -286,6 +304,7 @@ async function boot() {
   setProgress(null);
   history.length = 0;
   home = await OnboardingService.HomeDir().catch(() => "");
+  canStartAtLogin = await OnboardingService.StartAtLoginSupported().catch(() => false);
   const route = await OnboardingService.Route();
   if (gen !== generation) return;
   await handleRoute(route);
@@ -501,7 +520,7 @@ async function connectStep() {
   if (info?.showScope) {
     scopeStep(info);
   } else if (info?.showRemote) {
-    remoteStep();
+    await firstRemoteStep();
   } else {
     doneStep();
   }
@@ -545,7 +564,7 @@ function scopeStep(info: ScopeInfo) {
           const drop = all ? [] : folders.filter((f) => !keep.includes(f));
           await OnboardingService.SetSyncScope(all, drop);
           remember(() => scopeStep({ ...info, alreadyExcluded: drop }));
-          remoteStep();
+          await firstRemoteStep();
         } catch (err) {
           fieldError(describeError(err));
         }
@@ -557,9 +576,16 @@ function scopeStep(info: ScopeInfo) {
 
 // --- remote access (promptForRemoteControl) ---
 
-// answer is what the user said last time through, so Back returns to their
-// choice rather than to the default.
-function remoteStep(custom?: string, answer: string = "yes") {
+// firstRemoteStep enters the remote-access step from the one before it, with
+// "Start at login" showing the current setting — on for a fresh install.
+async function firstRemoteStep() {
+  const startAtLogin = canStartAtLogin ? await OnboardingService.StartAtLogin().catch(() => true) : true;
+  remoteStep(undefined, "yes", startAtLogin);
+}
+
+// answer and startAtLogin are what the user said last time through, so Back
+// returns to their choices rather than to the defaults.
+function remoteStep(custom?: string, answer: string = "yes", startAtLogin = true) {
   render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
   setProgress("remote");
   bodyEl.innerHTML = "";
@@ -574,6 +600,15 @@ function remoteStep(custom?: string, answer: string = "yes") {
     roots.setEnabled(on);
   };
   enableRoots(answer === "yes"); // Back into a declined step lands on "no"
+  // Not a remote-access question, but this is the last step that asks
+  // anything. Ticked or not, Next applies it, and the tray's own
+  // "Start at Login" item follows.
+  let loginBox: HTMLInputElement | null = null;
+  if (canStartAtLogin) {
+    stepLabel("Autostart");
+    loginBox = checkboxOption("Start at login", startAtLogin);
+  }
+  const wantsLoginStart = () => loginBox?.checked ?? startAtLogin;
   setActions(
     {
       label: "Next",
@@ -587,14 +622,15 @@ function remoteStep(custom?: string, answer: string = "yes") {
             const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
             if (!picked) return; // cancelled: stay
             if (!custom) {
-              remoteStep(picked); // show the choice before saving
+              remoteStep(picked, "yes", wantsLoginStart()); // show the choice before saving
               return;
             }
             await OnboardingService.SetRemoteAccess(true, picked);
           } else {
             await OnboardingService.SetRemoteAccess(true, home);
           }
-          remember(() => remoteStep(custom, yesNo.value()));
+          if (loginBox) await OnboardingService.SetStartAtLogin(loginBox.checked);
+          remember(() => remoteStep(custom, yesNo.value(), wantsLoginStart()));
           doneStep();
         } catch (err) {
           fieldError(describeError(err));

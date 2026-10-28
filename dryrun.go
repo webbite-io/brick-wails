@@ -41,7 +41,10 @@ func runDryRun(env brickcfg.Env, store *brickcfg.Store) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	if err := tokens.EnsureAccess(ctx); err != nil {
-		return fmt.Errorf("not logged in: %w", err)
+		if errors.Is(err, auth.ErrSessionExpired) {
+			return fmt.Errorf("not logged in: %w", err)
+		}
+		return fmt.Errorf("could not reach the Brick API at %s: %w", env.APIURL, err)
 	}
 
 	sc := &storage.Client{BaseURL: env.StorageAPIURL, AccountID: cfg.ActiveAccountID, Auth: auth.NewClient(tokens)}

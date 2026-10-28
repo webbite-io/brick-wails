@@ -99,7 +99,11 @@ func (ts *TokenSource) setLocked(t Tokens) error {
 }
 
 // Rotate refreshes the tokens and returns the access token to retry with.
-// presented is the token whose request was just rejected.
+// presented is the token whose request was just rejected. The error wraps
+// ErrSessionExpired only when the auth server turned the refresh token down;
+// a refresh that could not get an answer (no network yet after a wake, a
+// timeout, a 5xx) is returned as is, and the refresh token is kept for the
+// next attempt.
 func (ts *TokenSource) Rotate(ctx context.Context, presented string) (string, error) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()
@@ -114,9 +118,12 @@ func (ts *TokenSource) Rotate(ctx context.Context, presented string) (string, er
 		return ts.access, nil
 	}
 	if ts.refresh == "" {
-		return "", errors.New("no refresh token available")
+		return "", fmt.Errorf("%w; no refresh token available", ErrSessionExpired)
 	}
 	t, err := RefreshTokens(ctx, ts.apiURL, ts.refresh, ts.clientID)
+	if errors.Is(err, errGrantRejected) {
+		return "", fmt.Errorf("%w; %v", ErrSessionExpired, err)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +135,9 @@ func (ts *TokenSource) Rotate(ctx context.Context, presented string) (string, er
 
 // EnsureAccess makes sure an access token is held, silently refreshing when
 // only a refresh token is stored (brick-cli's ensureAuthenticated). Returns
-// ErrSessionExpired (wrapped) if the refresh fails.
+// an error wrapping ErrSessionExpired if there is nothing to refresh with or
+// the auth server rejects the refresh, and a plain error if it cannot be
+// reached.
 func (ts *TokenSource) EnsureAccess(ctx context.Context) error {
 	ts.mu.Lock()
 	access, refresh := ts.access, ts.refresh
@@ -140,7 +149,7 @@ func (ts *TokenSource) EnsureAccess(ctx context.Context) error {
 		return fmt.Errorf("%w; not logged in", ErrSessionExpired)
 	}
 	if _, err := ts.Rotate(ctx, ""); err != nil {
-		return fmt.Errorf("%w; could not refresh credentials: %v", ErrSessionExpired, err)
+		return fmt.Errorf("could not refresh credentials: %w", err)
 	}
 	return nil
 }
@@ -160,8 +169,9 @@ func NewClient(ts *TokenSource) *Client {
 // Do performs method against fullURL with the bearer token. A transport
 // error is retried once (a pooled keep-alive connection the server closed);
 // a 401 — or a 403 when refreshOn403, since the Storage API historically
-// reports expired tokens as 403 — triggers one refresh-and-retry. A failed
-// refresh returns an error wrapping ErrSessionExpired.
+// reports expired tokens as 403 — triggers one refresh-and-retry. A refresh
+// the auth server rejects returns an error wrapping ErrSessionExpired; one
+// that fails for any other reason returns a plain error, worth retrying.
 func (c *Client) Do(ctx context.Context, method, fullURL string, body []byte, headers map[string]string, refreshOn403 bool) (*http.Response, error) {
 	do := func(token string) (*http.Response, error) {
 		var r io.Reader
@@ -193,7 +203,7 @@ func (c *Client) Do(ctx context.Context, method, fullURL string, body []byte, he
 		resp.Body.Close()
 		newAccess, rerr := c.TS.Rotate(ctx, presented)
 		if rerr != nil {
-			return nil, fmt.Errorf("%w; token refresh failed: %v", ErrSessionExpired, rerr)
+			return nil, fmt.Errorf("token refresh failed: %w", rerr)
 		}
 		if newAccess == "" {
 			return nil, fmt.Errorf("%w; no access token available", ErrSessionExpired)

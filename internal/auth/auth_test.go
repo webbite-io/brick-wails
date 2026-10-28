@@ -355,6 +355,57 @@ func TestClientDoFailedRefreshIsSessionExpired(t *testing.T) {
 	}
 }
 
+// A token endpoint that cannot answer (no network yet after a wake, a 5xx)
+// says nothing about the session: the error must not read as expired, and the
+// refresh token must survive for the next attempt.
+func TestClientDoRefreshOutageIsNotSessionExpired(t *testing.T) {
+	idp, c, store := authedFixture(t)
+	srv := protected(idp, 401, nil)
+	defer srv.Close()
+	before, _ := store.Load()
+	idp.ExpireAccess()
+	idp.SetRefreshOutage(true)
+	_, err := c.Do(context.Background(), "GET", srv.URL, nil, nil, true)
+	if err == nil || errors.Is(err, ErrSessionExpired) {
+		t.Fatalf("err = %v, want a plain error", err)
+	}
+	if after, _ := store.Load(); after.RefreshToken != before.RefreshToken {
+		t.Errorf("refresh token changed during the outage")
+	}
+
+	idp.SetRefreshOutage(false)
+	resp, err := c.Do(context.Background(), "GET", srv.URL, nil, nil, true)
+	if err != nil {
+		t.Fatalf("after the outage: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != 200 {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
+func TestEnsureAccessRefreshOutageIsNotSessionExpired(t *testing.T) {
+	idp := fakeoidc.New()
+	defer idp.Close()
+	store := newStore(t)
+	_, r := idp.IssueTokens()
+	if _, err := store.Update(func(c *brickcfg.Config) error { c.RefreshToken = r; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	ts, err := NewTokenSource(store, idp.URL, idp.ClientID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idp.SetRefreshOutage(true)
+	if err := ts.EnsureAccess(context.Background()); err == nil || errors.Is(err, ErrSessionExpired) {
+		t.Errorf("outage: err = %v, want a plain error", err)
+	}
+	idp.Close() // unreachable altogether
+	if err := ts.EnsureAccess(context.Background()); err == nil || errors.Is(err, ErrSessionExpired) {
+		t.Errorf("unreachable: err = %v, want a plain error", err)
+	}
+}
+
 func TestClientDoRetriesTransportErrorOnce(t *testing.T) {
 	_, c, _ := authedFixture(t)
 	var n atomic.Int32

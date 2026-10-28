@@ -271,6 +271,33 @@ func TestSessionExpiredRoutesToLogin(t *testing.T) {
 	}
 }
 
+// An auth server that cannot answer is a connection problem, not a reason to
+// throw the user back to login.
+func TestRefreshOutageRoutesToConnectError(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.idp.ExpireAccess()
+	e.idp.SetRefreshOutage(true)
+	if r := e.route(); r.Step != StepConnectError {
+		t.Errorf("route %+v", r)
+	}
+}
+
+// A machine that is already set up goes on to "ready" while Brick is out of
+// reach: the runner retries from there, with no window for the user.
+func TestUnreachableWhenSetUpRoutesToReady(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.route()
+	e.flow.ChooseSyncFolder(filepath.Join(e.home, "Brick"))
+	e.flow.ConfirmSyncFolder("")
+	e.idp.ExpireAccess()
+	e.idp.SetRefreshOutage(true)
+	if r := e.route(); r.Step != StepReady {
+		t.Errorf("route %+v", r)
+	}
+}
+
 // Re-login for a configured account keeps the account and its folder, and
 // lands straight on "ready".
 func TestReloginKeepsExistingSetup(t *testing.T) {
@@ -320,8 +347,9 @@ func TestRouteStorageUnreachableAndMissingFolder(t *testing.T) {
 		t.Error("missing sync folder not recreated")
 	}
 
+	// Set up, so out of reach is the runner's to retry, not a screen.
 	e.fs.FailNext("GET /resolve", 1)
-	if r := e.route(); r.Step != StepConnectError || r.Detail == "" {
+	if r := e.route(); r.Step != StepReady {
 		t.Errorf("route %+v", r)
 	}
 }

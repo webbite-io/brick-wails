@@ -112,7 +112,7 @@ func (c *Config) HasCredentials() bool {
 // ~/.config/brick elsewhere (matching brick-cli's configDir), unless
 // BRICK_CONFIG_DIR is set.
 func Dir() (string, error) {
-	if v := strings.TrimSpace(os.Getenv(ConfigDirEnv)); v != "" {
+	if v := envDir(); v != "" {
 		return v, nil
 	}
 	return defaultDir(runtime.GOOS)
@@ -122,7 +122,7 @@ func Dir() (string, error) {
 // directory brick-cli uses — i.e. this app is deliberately not sharing state
 // with the CLI (dev/testing).
 func Isolated() bool {
-	v := strings.TrimSpace(os.Getenv(ConfigDirEnv))
+	v := envDir()
 	if v == "" {
 		return false
 	}
@@ -131,6 +131,17 @@ func Isolated() bool {
 		return true
 	}
 	return filepath.Clean(v) != filepath.Clean(def)
+}
+
+// envDir returns BRICK_CONFIG_DIR with a leading ~ expanded, or "" when it's
+// unset. .env.local isn't run through a shell, so a ~ there arrives literally
+// and would otherwise name a directory called "~" under the working directory.
+func envDir() string {
+	v := strings.TrimSpace(os.Getenv(ConfigDirEnv))
+	if v == "" {
+		return ""
+	}
+	return ExpandHome(v)
 }
 
 func defaultDir(goos string) (string, error) {

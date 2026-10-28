@@ -25,8 +25,6 @@ body {
     height: 100vh;
     padding: 14px 16px;
     background: #18181b;
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 10px;
     overflow: hidden;
 }
 
@@ -50,7 +48,8 @@ body {
 .dot.state-paused { background: #eab308; }
 .dot.state-error { background: #ef4444; }
 .dot.state-not-configured,
-.dot.state-stopped { background: #52525b; }
+.dot.state-stopped,
+.dot.state-offline { background: #52525b; }
 .dot.state-auth-required,
 .dot.state-locked { background: #f97316; }
 .dot.state-starting { background: #a1a1aa; }
@@ -157,9 +156,10 @@ body {
     text-overflow: ellipsis;
 }
 
-.activity-empty {
+.activity li.activity-empty {
     color: #71717a;
     font-style: italic;
+    border-bottom: none;
 }
 
 /* The file being transferred right now, at the head of the list: the same row

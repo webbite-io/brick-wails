@@ -45,7 +45,9 @@ type Server struct {
 	validRefresh  map[string]bool
 	n             int
 	failRefreshes bool
+	refreshOutage bool
 	denyConsent   bool
+	denyCode      string
 
 	RefreshCalls atomic.Int32
 }
@@ -81,11 +83,23 @@ func newServer() *Server {
 	}
 }
 
-// SetDenyConsent makes every hand-off mint fail with access_denied, as the
-// real server does until the user has signed into that client once.
+// SetDenyConsent makes every hand-off mint fail with consent_required, as the
+// real server does until the user has decided about that client — or has
+// withdrawn an earlier decision, which the server will not re-grant on their
+// behalf. Pass a code to SetDenyConsentCode to answer with something else.
 func (s *Server) SetDenyConsent(v bool) {
 	s.mu.Lock()
 	s.denyConsent = v
+	s.mu.Unlock()
+}
+
+// SetDenyConsentCode picks the error code SetDenyConsent answers with.
+// Defaults to consent_required; access_denied is what a real server sends for
+// a hand-off between clients of different owners, and all an older one sent
+// for either case.
+func (s *Server) SetDenyConsentCode(code string) {
+	s.mu.Lock()
+	s.denyCode = code
 	s.mu.Unlock()
 }
 
@@ -108,6 +122,14 @@ func (s *Server) SetAccounts(a []Account) {
 func (s *Server) SetFailRefreshes(v bool) {
 	s.mu.Lock()
 	s.failRefreshes = v
+	s.mu.Unlock()
+}
+
+// SetRefreshOutage makes every refresh fail with a 503, without spending the
+// refresh token: the token endpoint is down, not turning the grant away.
+func (s *Server) SetRefreshOutage(v bool) {
+	s.mu.Lock()
+	s.refreshOutage = v
 	s.mu.Unlock()
 }
 
@@ -202,6 +224,10 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Lock()
 	denied := s.denyConsent
+	denyCode := s.denyCode
+	if denyCode == "" {
+		denyCode = "consent_required"
+	}
 	if !denied {
 		s.n++
 	}
@@ -211,7 +237,7 @@ func (s *Server) handoff(w http.ResponseWriter, r *http.Request) {
 	}
 	s.mu.Unlock()
 	if denied {
-		writeJSON(w, 400, map[string]string{"error": "access_denied", "error_description": "user has not consented"})
+		writeJSON(w, 400, map[string]string{"error": denyCode, "error_description": "user has not consented"})
 		return
 	}
 	cb, err := url.Parse(q.Get("redirect_uri"))
@@ -287,6 +313,10 @@ func (s *Server) handler() http.Handler {
 		case "refresh_token":
 			s.RefreshCalls.Add(1)
 			rt := r.Form.Get("refresh_token")
+			if s.refreshOutage {
+				writeJSON(w, 503, map[string]string{"error": "temporarily_unavailable"})
+				return
+			}
 			if s.failRefreshes || !s.validRefresh[rt] {
 				writeJSON(w, 400, map[string]string{"error": "invalid_grant", "error_description": "refresh token revoked"})
 				return

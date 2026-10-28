@@ -37,6 +37,9 @@ DESKTOP_DIR="$DATA_HOME/applications"
 DESKTOP_FILE="$DESKTOP_DIR/${APP_NAME}.desktop"
 STATE_DIR="$DATA_HOME/$APP_NAME"
 VERSION_FILE="$STATE_DIR/version"
+# Written by the app's "Start at Login" setting, not by this script, but
+# removed on --uninstall so login doesn't go looking for a deleted binary.
+AUTOSTART_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/${APP_NAME}.desktop"
 
 # Icon sizes written into the hicolor theme. The shipped PNG is 1024x1024; we
 # only resize when a resizer is present, otherwise the full-size file is
@@ -91,7 +94,7 @@ Options:
   --force              Reinstall even if already at the target version
   --restart            (Re)start the app afterwards without asking
   --no-restart         Leave any running instance alone
-  --uninstall          Remove the app, icons and desktop entry
+  --uninstall          Remove the app, icons, desktop entry and login entry
   --help               Show this help message
 
 Examples:
@@ -222,16 +225,29 @@ detect_arch() {
   esac
 }
 
+# The newest release with a tarball for this platform, rather than GitHub's
+# latest release: macOS and Linux are released from different machines, so
+# the latest release can hold only a DMG for a while, or for good. The list
+# leaves out drafts; pre-releases are skipped by their version's "-"
+# (1.2.0-rc.1), as the API's release list doesn't say which they are in a
+# form grep can match up with the assets.
 get_latest_version() {
+  local os="$1" arch="$2"
   info "Fetching latest version from GitHub..." >&2
 
-  local version
-  version=$(curl -fsSL -H "User-Agent: brick-ui-installer" "https://api.github.com/repos/$GITHUB_REPO/releases/latest" |
-    grep '"tag_name"' |
-    sed -E 's/.*"tag_name": *"v?([^"]+)".*/\1/' || echo "")
+  local releases version
+  releases=$(curl -fsSL -H "User-Agent: brick-ui-installer" "https://api.github.com/repos/$GITHUB_REPO/releases?per_page=20") ||
+    die "Failed to fetch the release list from GitHub API"
+  # Each asset's download URL carries its release's tag; keep the URLs of
+  # this platform's tarballs whose file name matches the tag, newest first.
+  version=$(printf '%s\n' "$releases" |
+    grep -oE "/releases/download/[^/\"]+/${APP_NAME}-[^/\"]+-${os}-${arch}\.tar\.gz\"" |
+    sed -nE "s#^/releases/download/([^/]+)/${APP_NAME}-(.+)-${os}-${arch}\.tar\.gz\"\$#\1 \2#p" |
+    awk '$1 == $2 && $1 !~ /-/ { print $1 }' |
+    head -n1 || true)
 
   if [ -z "$version" ]; then
-    die "Failed to fetch latest version from GitHub API"
+    die "No $DISPLAY_NAME release for $os/$arch found on GitHub"
   fi
 
   echo "$version"
@@ -341,10 +357,12 @@ EOF
   success "Registered desktop entry at $DESKTOP_FILE"
 }
 
+# The checksum is published next to the tarball as <tarball>.sha256; releases
+# up to 1.0.5 have a SHA256SUMS instead, listing every tarball in the release.
 download_and_verify() {
   local url="$1"
   local archive_name="$2"
-  local checksum_url="$3"
+  local legacy_sums_url="$3"
 
   if ! curl -fsSL --progress-bar "$url" -o "$archive_name"; then
     die "Failed to download $url
@@ -353,16 +371,17 @@ If this version exists, check https://github.com/$GITHUB_REPO/releases"
   fi
   success "Downloaded $archive_name"
 
-  if ! curl -fsSL "$checksum_url" -o SHA256SUMS 2>/dev/null; then
-    warning "No SHA256SUMS published for this release — skipping checksum verification"
+  if ! curl -fsSL "$url.sha256" -o checksums 2>/dev/null &&
+    ! curl -fsSL "$legacy_sums_url" -o checksums 2>/dev/null; then
+    warning "No checksum published for this release — skipping checksum verification"
     return 0
   fi
 
   local expected_checksum
-  expected_checksum=$(grep "$archive_name" SHA256SUMS | awk '{print $1}')
+  expected_checksum=$(grep -F "$archive_name" checksums | awk '{print $1}')
 
   if [ -z "$expected_checksum" ]; then
-    warning "$archive_name not listed in SHA256SUMS — skipping checksum verification"
+    warning "$archive_name not listed in the release's checksums — skipping checksum verification"
     return 0
   fi
 
@@ -469,6 +488,12 @@ uninstall() {
   fi
 
   prune_duplicate_desktop_entries "" "$target"
+
+  if [ -e "$AUTOSTART_FILE" ]; then
+    rm -f "$AUTOSTART_FILE"
+    success "Removed $AUTOSTART_FILE"
+    removed=1
+  fi
 
   local size icon
   for size in "${ICON_SIZES[@]}"; do
@@ -653,7 +678,7 @@ main() {
   echo "Detected platform: $os/$arch"
 
   if [ -z "$VERSION" ]; then
-    VERSION=$(get_latest_version)
+    VERSION=$(get_latest_version "$os" "$arch")
   fi
 
   local current

@@ -155,6 +155,14 @@ export function SetRemoteAccess(enabled: boolean, root: string): $CancellablePro
 }
 
 /**
+ * SetStartAtLogin turns starting at login on or off. The tray menu's
+ * "Start at Login" check follows.
+ */
+export function SetStartAtLogin(on: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2722350130, on);
+}
+
+/**
  * SetSyncScope saves which folders to sync.
  */
 export function SetSyncScope(all: boolean, exclude: string[] | null): $CancellablePromise<void> {
@@ -166,6 +174,22 @@ export function SetSyncScope(all: boolean, exclude: string[] | null): $Cancellab
  */
 export function ShowWindow(): $CancellablePromise<void> {
     return $Call.ByID(2390568069);
+}
+
+/**
+ * StartAtLogin is what the wizard's "Start at login" checkbox starts as: the
+ * current setting, or on for a fresh install.
+ */
+export function StartAtLogin(): $CancellablePromise<boolean> {
+    return $Call.ByID(2007504042);
+}
+
+/**
+ * StartAtLoginSupported reports whether the wizard should offer to start
+ * Brick at login (Linux and macOS).
+ */
+export function StartAtLoginSupported(): $CancellablePromise<boolean> {
+    return $Call.ByID(1702000832);
 }
 
 /**

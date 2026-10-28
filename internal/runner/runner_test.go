@@ -69,6 +69,8 @@ func newFixture(t *testing.T, configured bool) *fixture {
 		Events:        ev,
 		EngineOptions: syncengine.Options{PollInterval: 30 * time.Millisecond, Debounce: 10 * time.Millisecond},
 		DisableAgent:  true,
+		RetryMin:      20 * time.Millisecond,
+		RetryMax:      80 * time.Millisecond,
 	})
 	t.Cleanup(r.Stop)
 	return &fixture{t: t, home: home, idp: idp, fs: fs, store: store, r: r, folder: folder, ev: ev}
@@ -180,13 +182,50 @@ func TestSessionExpiryStopsWithAuthRequired(t *testing.T) {
 	}
 }
 
-func TestStorageUnreachableIsStopped(t *testing.T) {
+// An unreachable Storage API at start is no reason to stop for good: the
+// runner goes offline and starts by itself once it gets through.
+func TestStorageUnreachableRetries(t *testing.T) {
 	f := newFixture(t, true)
-	f.fs.FailNext("GET /resolve", 1)
-	if err := f.r.Start(StartParams{}); err == nil {
-		t.Fatal("expected error")
+	f.fs.FailNext("GET /resolve", 2)
+	if err := f.r.Start(StartParams{}); !errors.Is(err, ErrUnreachable) {
+		t.Fatalf("err = %v, want ErrUnreachable", err)
 	}
-	if st := f.r.Status(); st.State != StateStopped || st.LastError == "" {
+	if st := f.r.Status(); st.State != StateOffline || st.LastError == "" {
 		t.Errorf("status %+v", st)
+	}
+	waitFor(t, "idle after retrying", func() bool { return f.r.Status().State == "idle" })
+}
+
+// The same for an auth server that cannot answer a refresh at start (a laptop
+// waking before its network is back).
+func TestRefreshOutageAtStartRetries(t *testing.T) {
+	f := newFixture(t, true)
+	f.store.Update(func(c *brickcfg.Config) error { c.AccessToken = ""; return nil })
+	f.idp.SetRefreshOutage(true)
+	if err := f.r.Start(StartParams{}); !errors.Is(err, ErrUnreachable) || errors.Is(err, auth.ErrSessionExpired) {
+		t.Fatalf("err = %v, want ErrUnreachable", err)
+	}
+	waitFor(t, "a few retries", func() bool { return f.idp.RefreshCalls.Load() >= 3 })
+	if st := f.r.Status(); st.State != StateOffline {
+		t.Errorf("status %+v, want offline", st)
+	}
+	f.idp.SetRefreshOutage(false)
+	waitFor(t, "idle after the outage", func() bool { return f.r.Status().State == "idle" })
+}
+
+// Stop ends the retrying: no further attempts, and the state says stopped.
+func TestStopCancelsRetry(t *testing.T) {
+	f := newFixture(t, true)
+	f.store.Update(func(c *brickcfg.Config) error { c.AccessToken = ""; return nil })
+	f.idp.SetRefreshOutage(true)
+	_ = f.r.Start(StartParams{})
+	f.r.Stop()
+	if st := f.r.Status(); st.State != StateStopped {
+		t.Errorf("status %+v, want stopped", st)
+	}
+	calls := f.idp.RefreshCalls.Load()
+	time.Sleep(200 * time.Millisecond)
+	if got := f.idp.RefreshCalls.Load(); got != calls {
+		t.Errorf("refresh calls went from %d to %d after Stop", calls, got)
 	}
 }

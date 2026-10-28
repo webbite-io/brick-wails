@@ -6,6 +6,7 @@ export const STATE_LABELS: Record<string, string> = {
     'auth-required': 'Login required',
     locked: 'The Brick CLI is syncing',
     stopped: 'Not syncing',
+    offline: 'Waiting for the network…',
     starting: 'Starting…',
     syncing: 'Syncing…',
     idle: 'Up to date',
@@ -21,14 +22,14 @@ export function hidesPopoverForState(state: string): boolean {
 }
 
 // actionForState returns the popover button label offered when nothing is
-// syncing (it opens the setup window), or null while syncing.
+// syncing (it opens the setup window), or null while syncing — or while the
+// Brick CLI holds the sync lock, when setup couldn't start a sync here anyway.
 export function actionForState(state: string): string | null {
     switch (state) {
         case 'not-configured':
             return 'Set Up Brick';
         case 'auth-required':
             return 'Log In Again';
-        case 'locked':
         case 'stopped':
             return 'Start Syncing';
         default:

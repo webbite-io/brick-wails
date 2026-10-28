@@ -207,10 +207,15 @@ func TestDirOverrideAndDefaults(t *testing.T) {
 	if d, _ := Dir(); d != "/custom/dir" {
 		t.Errorf("Dir() = %q with override", d)
 	}
-	t.Setenv(ConfigDirEnv, "")
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	// A ~ in .env.local arrives unexpanded; it must not become ./~.
+	t.Setenv(ConfigDirEnv, "~/.config/brick-dev")
+	if d, _ := Dir(); d != filepath.Join(home, ".config", "brick-dev") {
+		t.Errorf("Dir() = %q with ~ override", d)
+	}
+	t.Setenv(ConfigDirEnv, "")
 	if d, _ := defaultDir("linux"); d != filepath.Join(home, ".config", "brick") {
 		t.Errorf("linux dir = %q", d)
 	}
@@ -273,6 +278,10 @@ func TestIsolated(t *testing.T) {
 	t.Setenv(ConfigDirEnv, def+string(filepath.Separator))
 	if Isolated() {
 		t.Error("override equal to the CLI's dir: shared, not isolated")
+	}
+	t.Setenv(ConfigDirEnv, "~/.config/brick")
+	if Isolated() {
+		t.Error("~ override equal to the CLI's dir: shared, not isolated")
 	}
 	t.Setenv(ConfigDirEnv, filepath.Join(home, "elsewhere"))
 	if !Isolated() {
