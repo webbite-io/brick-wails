@@ -47,6 +47,12 @@
       
       <Extensions>
         <desktop:Extension Category="windows.fullTrustProcess" Executable="brick-ui.exe" />
+        <!-- "Start at Login" (startatlogin_windows.go, which names the task by
+             this TaskId). Off until the user turns it on, from the setup
+             wizard or the tray menu, as on Linux and macOS. -->
+        <desktop:Extension Category="windows.startupTask" Executable="brick-ui.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="BrickStartup" Enabled="false" DisplayName="Webbite Brick" />
+        </desktop:Extension>
         
         
       </Extensions>

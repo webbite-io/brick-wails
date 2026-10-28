@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !windows
 
 package main
 
@@ -8,7 +8,7 @@ import (
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
-// startAtLogin is Linux and macOS only for now. A nil one leaves the tray
+// startAtLogin is Linux, macOS and Windows only. A nil one leaves the tray
 // item and the wizard's checkbox out.
 type startAtLogin struct{}
 
