@@ -152,9 +152,9 @@ func main() {
 	var setupWindow *application.WebviewWindow
 	syncSvc := &SyncService{runner: run}
 	onbSvc := &OnboardingService{flow: flow, runner: run, loginStart: loginStart, window: func() *application.WebviewWindow { return setupWindow }}
-	// Bound on every platform, macOS included where Sparkle takes its place,
-	// so the generated frontend bindings don't depend on the OS that
-	// generates them.
+	// Bound on every platform, including macOS (where Sparkle takes its place)
+	// and Windows (where the Microsoft Store does), so the generated frontend
+	// bindings don't depend on the OS that generates them.
 	updSvc := &UpdateService{logger: logger, version: Version}
 	updater := newAppUpdater(logger, updSvc)
 
@@ -343,10 +343,9 @@ func main() {
 	})
 	loginStart.addMenuItem(menu)
 	menu.AddSeparator()
-	// Wired by updater.start below: Sparkle on macOS, the app's own check
-	// elsewhere.
-	updateItem := menu.Add(updateMenuLabel)
-	menu.AddSeparator()
+	// Wired by updater.start below: Sparkle on macOS, the app's own check on
+	// Linux, and none on Windows, where the Microsoft Store updates the app.
+	updateItem := updater.addMenuItem(menu)
 	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
 	tray.SetMenu(menu)
 	tray.AttachWindow(popover).WindowOffset(4)

@@ -4,8 +4,9 @@
 // since this one runs silently on every launch rather than at a moment the
 // user is already waiting on the CLI.
 //
-// macOS doesn't use it: there Sparkle checks an appcast and installs the
-// update itself (updates_darwin.go in the main package).
+// Only Linux uses it: on macOS Sparkle checks an appcast and installs the
+// update itself (updates_darwin.go in the main package), and on Windows the
+// Microsoft Store does.
 package update
 
 import (

@@ -18,14 +18,14 @@ const InstallCommand = "curl -fsSL https://webbite.io/desktop/appimage/install.s
 // to press a key) so the user can see the script's output, including any
 // error, the same way brick-cli prints its own success/failure line.
 //
-// Not used on macOS, where Sparkle installs updates (see updates_darwin.go
-// in the main package).
+// Linux only: on macOS Sparkle installs updates (see updates_darwin.go in
+// the main package), and on Windows the Microsoft Store does.
 func OpenInTerminal() error {
 	switch runtime.GOOS {
 	case "darwin":
 		return fmt.Errorf("macOS updates are installed by Sparkle, not a script")
 	case "windows":
-		return openWindows()
+		return fmt.Errorf("Windows updates are installed by the Microsoft Store, not a script")
 	default:
 		return openLinux()
 	}
@@ -35,13 +35,6 @@ func OpenInTerminal() error {
 // the script exits, whatever its exit code.
 func keepOpen(shCmd string) string {
 	return shCmd + "; echo; read -n1 -r -p 'Press any key to close…'"
-}
-
-func openWindows() error {
-	// "start" opens a new console window; /k keeps it open after the command
-	// finishes. The empty "" is the window title argument `start` expects
-	// before the command it should run.
-	return exec.Command("cmd", "/C", "start", "", "cmd", "/K", InstallCommand).Start()
 }
 
 // linuxTerminal describes how to hand a shell command to one terminal

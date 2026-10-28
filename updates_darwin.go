@@ -25,8 +25,8 @@ const updateMenuLabel = "Check for Updates…"
 // appUpdater is Sparkle on macOS: it checks the appcast (SUFeedURL in
 // Info.plist) at launch and every SUScheduledCheckInterval, and owns the
 // whole update UI — prompt, release notes, download, install and relaunch.
-// The app's own GitHub check and update window are for the other platforms
-// (updates_other.go).
+// The app's own GitHub check and update window are for Linux
+// (updates_linux.go).
 type appUpdater struct {
 	logger *log.Logger
 }
@@ -35,6 +35,14 @@ type appUpdater struct {
 // the generated frontend bindings stay the same whichever OS generates them.
 func newAppUpdater(logger *log.Logger, _ *UpdateService) *appUpdater {
 	return &appUpdater{logger: logger}
+}
+
+// addMenuItem adds the tray's update item, set apart from the items below it,
+// for start to wire up.
+func (u *appUpdater) addMenuItem(menu *application.Menu) *application.MenuItem {
+	item := menu.Add(updateMenuLabel)
+	menu.AddSeparator()
+	return item
 }
 
 // updaterEvents carries Sparkle's user-driver callbacks (updater_darwin.h's
