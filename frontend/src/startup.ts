@@ -38,8 +38,8 @@ const primaryBtn = document.getElementById("primary-btn")! as HTMLButtonElement;
 const secondaryBtn = document.getElementById("secondary-btn")! as HTMLButtonElement;
 
 let home = "";
-// Whether the remote-access step offers to start Brick at login (Linux only,
-// for now).
+// Whether the remote-access step offers to start Brick at login (Linux
+// and macOS).
 let canStartAtLogin = false;
 
 // --- rendering helpers ---

@@ -186,7 +186,7 @@ export function StartAtLogin(): $CancellablePromise<boolean> {
 
 /**
  * StartAtLoginSupported reports whether the wizard should offer to start
- * Brick at login (Linux only, for now).
+ * Brick at login (Linux and macOS).
  */
 export function StartAtLoginSupported(): $CancellablePromise<boolean> {
     return $Call.ByID(1702000832);

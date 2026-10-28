@@ -151,7 +151,7 @@ func (s *OnboardingService) SetRemoteAccess(enabled bool, root string) error {
 }
 
 // StartAtLoginSupported reports whether the wizard should offer to start
-// Brick at login (Linux only, for now).
+// Brick at login (Linux and macOS).
 func (s *OnboardingService) StartAtLoginSupported() bool { return s.loginStart.Supported() }
 
 // StartAtLogin is what the wizard's "Start at login" checkbox starts as: the
