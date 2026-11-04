@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -506,5 +507,32 @@ func TestUserInfoAndAccounts(t *testing.T) {
 	idp.SetAccounts(nil)
 	if _, err := c.Accounts(context.Background()); err == nil {
 		t.Error("empty accounts should error")
+	}
+}
+
+// DoStream rewinds and resends the body after refreshing on 403, as the
+// Storage API reports an expired token that way.
+func TestDoStreamResendsBodyAfterRefresh(t *testing.T) {
+	idp, c, _ := authedFixture(t)
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		if !idp.ValidAccess(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	idp.ExpireAccess()
+	var progress int64
+	resp, err := c.DoStream(context.Background(), "POST", srv.URL, strings.NewReader("payload"), 7, nil, func(n int64) { progress = n })
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated || len(bodies) != 2 || bodies[1] != "payload" || progress != 7 || idp.RefreshCalls.Load() != 1 {
+		t.Errorf("status %d, bodies %q, progress %d, refreshes %d", resp.StatusCode, bodies, progress, idp.RefreshCalls.Load())
 	}
 }

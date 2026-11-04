@@ -1,12 +1,13 @@
 // Package fakestorage is an in-memory Storage API covering everything brick's
 // sync engine and remote agent call: resolve, children (paginated), folder
 // create (409 on duplicates), soft-delete (cascading), file
-// download/upload/replace with ETags, check-updates with a server clock and
+// download (with Range)/upload/replace with ETags, node lookup, check-updates with a server clock and
 // cursor pagination, quota, and client deregistration. Test helpers
 // manipulate the tree "server-side" (as another device or the webapp would).
 package fakestorage
 
 import (
+	"bytes"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -297,6 +298,17 @@ func (s *Server) Read(path string) (string, bool) {
 	return string(n.data), true
 }
 
+// Data returns the content of the file node id.
+func (s *Server) Data(id string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.nodes[id]
+	if !ok {
+		return nil, false
+	}
+	return n.data, true
+}
+
 // Exists reports whether a live node exists at path.
 func (s *Server) Exists(path string) bool {
 	s.mu.Lock()
@@ -459,6 +471,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{"data": kids, "count": total})
 
+	case r.Method == "GET" && strings.HasPrefix(rest, "/nodes/"):
+		id := strings.TrimPrefix(rest, "/nodes/")
+		s.mu.Lock()
+		n, ok := s.nodes[id]
+		var out Node
+		if ok {
+			out = s.withPathLocked(n)
+		}
+		s.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, 200, out)
+
 	case r.Method == "POST" && rest == "/nodes":
 		var body struct{ ParentID, Name string }
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -521,9 +548,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		case "GET":
 			data, etag := n.data, n.Etag
 			s.mu.Unlock()
+			// ServeContent answers Range/If-Range, as the real API does.
 			w.Header().Set("ETag", `"`+etag+`"`)
-			w.WriteHeader(200)
-			_, _ = w.Write(data)
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 		case "PUT":
 			s.mu.Unlock()
 			data, _ := io.ReadAll(r.Body)

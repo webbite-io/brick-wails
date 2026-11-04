@@ -213,6 +213,83 @@ func (c *Client) Do(ctx context.Context, method, fullURL string, body []byte, he
 	return resp, nil
 }
 
+// DoStream is Do for a request whose body or response is a file stream,
+// ported from brick-cli's authedStreamRequest. body (nil for a download) must
+// support Seek so a retry can resend it from the start; size is sent as its
+// Content-Length. onProgress, if set, gets the cumulative bytes sent, and
+// starts over from zero on a retry. A 401 or 403 triggers one
+// refresh-and-retry.
+//
+// It has no overall timeout, which a large file would outlast: the caller
+// ends a request that stops moving through ctx.
+func (c *Client) DoStream(ctx context.Context, method, fullURL string, body io.ReadSeeker, size int64, headers map[string]string, onProgress func(written int64)) (*http.Response, error) {
+	client := &http.Client{Transport: c.HTTP.Transport}
+	do := func(token string) (*http.Response, error) {
+		var r io.Reader
+		if body != nil {
+			if _, err := body.Seek(0, io.SeekStart); err != nil {
+				return nil, err
+			}
+			r = body
+			if onProgress != nil {
+				r = &ProgressReader{R: body, OnRead: onProgress}
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, method, fullURL, r)
+		if err != nil {
+			return nil, err
+		}
+		if body != nil {
+			req.ContentLength = size
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		return client.Do(req)
+	}
+
+	presented := c.TS.Current()
+	resp, err := do(presented)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+		if resp, err = do(presented); err != nil {
+			return nil, err
+		}
+	}
+	if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && c.TS.HasRefresh() {
+		resp.Body.Close()
+		newAccess, rerr := c.TS.Rotate(ctx, presented)
+		if rerr != nil {
+			return nil, fmt.Errorf("token refresh failed: %w", rerr)
+		}
+		if newAccess == "" {
+			return nil, fmt.Errorf("%w; no access token available", ErrSessionExpired)
+		}
+		return do(newAccess)
+	}
+	return resp, nil
+}
+
+// ProgressReader wraps an io.Reader, reporting cumulative bytes read after
+// every Read call.
+type ProgressReader struct {
+	R      io.Reader
+	OnRead func(read int64)
+	read   int64
+}
+
+func (p *ProgressReader) Read(b []byte) (int, error) {
+	n, err := p.R.Read(b)
+	if n > 0 {
+		p.read += int64(n)
+		p.OnRead(p.read)
+	}
+	return n, err
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	resp, err := c.Do(ctx, "GET", strings.TrimRight(c.TS.apiURL, "/")+path, nil, nil, false)
 	if err != nil {

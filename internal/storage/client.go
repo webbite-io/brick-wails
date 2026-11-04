@@ -1,7 +1,8 @@
 // Package storage is a client for the Webbite Storage API, covering what sync
 // and the remote agent need.
 //
-// Ported from brick-cli cmd/brick/sync.go (storageClient) @ f3ef7bd.
+// Ported from brick-cli cmd/brick/sync.go (storageClient), transfer.go and
+// transfer_retry.go @ 54eafd2.
 package storage
 
 import (
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -84,10 +86,24 @@ func (c *Client) RawRequest(ctx context.Context, method, path string) (*http.Res
 	return c.Auth.Do(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, nil, nil, true)
 }
 
+// StatusError is a Storage API answer with an unexpected status.
+type StatusError struct {
+	Code   int
+	Status string
+	Body   string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("storage API %s: %s", e.Status, e.Body)
+}
+
 func errFrom(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
-	return fmt.Errorf("storage API %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	return &StatusError{Code: resp.StatusCode, Status: resp.Status, Body: strings.TrimSpace(string(body))}
 }
+
+// ErrFrom reads resp's body into a *StatusError.
+func ErrFrom(resp *http.Response) error { return errFrom(resp) }
 
 func (c *Client) getJSON(ctx context.Context, path string, out any) error {
 	resp, err := c.Request(ctx, "GET", path, nil, nil)
@@ -128,7 +144,7 @@ func (c *Client) ListChildren(ctx context.Context, parentID string) ([]Node, err
 			return nil, err
 		}
 		var list NodeList
-		if err := c.getJSON(ctx, fmt.Sprintf("/nodes/%s/children?limit=%d&offset=%d", parentID, limit, offset), &list); err != nil {
+		if err := c.getJSON(ctx, fmt.Sprintf("/nodes/%s/children?limit=%d&offset=%d", url.PathEscape(parentID), limit, offset), &list); err != nil {
 			return nil, err
 		}
 		all = append(all, list.Data...)
@@ -242,7 +258,7 @@ func (c *Client) ServerNow(ctx context.Context) (int64, error) {
 
 // Download returns a file's content and ETag.
 func (c *Client) Download(ctx context.Context, nodeID string) ([]byte, string, error) {
-	resp, err := c.Request(ctx, "GET", "/files/"+nodeID, nil, nil)
+	resp, err := c.Request(ctx, "GET", "/files/"+url.PathEscape(nodeID), nil, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -284,7 +300,7 @@ func (c *Client) Upload(ctx context.Context, parentID, name string, data []byte)
 
 // Replace uploads new content for an existing file.
 func (c *Client) Replace(ctx context.Context, nodeID string, data []byte) (*Node, error) {
-	resp, err := c.Request(ctx, "PUT", "/files/"+nodeID, data, map[string]string{"Content-Type": "application/octet-stream"})
+	resp, err := c.Request(ctx, "PUT", "/files/"+url.PathEscape(nodeID), data, map[string]string{"Content-Type": "application/octet-stream"})
 	if err != nil {
 		return nil, err
 	}
@@ -293,7 +309,7 @@ func (c *Client) Replace(ctx context.Context, nodeID string, data []byte) (*Node
 
 // Delete soft-deletes (trashes) a node; 404 counts as success.
 func (c *Client) Delete(ctx context.Context, nodeID string) error {
-	resp, err := c.Request(ctx, "DELETE", "/nodes/"+nodeID, nil, nil)
+	resp, err := c.Request(ctx, "DELETE", "/nodes/"+url.PathEscape(nodeID), nil, nil)
 	if err != nil {
 		return err
 	}

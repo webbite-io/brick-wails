@@ -20,7 +20,7 @@ import (
 
 // TmpSuffix marks in-progress downloads; the tree walk and watcher skip them
 // (see isIgnoredName).
-const TmpSuffix = ".brick-tmp"
+const TmpSuffix = storage.TmpSuffix
 
 // Ported 1:1 from brick-cli sync.go @ f3ef7bd: buildRemoteTree … recordUpload.
 
