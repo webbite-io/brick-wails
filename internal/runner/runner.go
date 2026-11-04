@@ -299,6 +299,7 @@ func (r *Runner) start(p StartParams) error {
 				Storage: sc, Tokens: r.cfg.Tokens, ClientID: cfg.ClientID,
 				Roots: roots, RemoteControl: cfg.RemoteControl,
 				HistoryLimit: cfg.TransferHistoryLimit,
+				Settings:     &excludeDirsSettings{store: r.cfg.Store, accountID: cfg.ActiveAccountID, eng: eng, logf: r.logf},
 				Version:      agent.VersionInfo{Version: r.cfg.Version, BuildTime: r.cfg.BuildTime, GitCommit: r.cfg.GitCommit},
 				Logf:         r.logf,
 			}); err != nil {

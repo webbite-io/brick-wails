@@ -35,6 +35,10 @@ type SyncState struct {
 	// ServerTime is the check-updates cursor (server clock of the last
 	// successful poll).
 	ServerTime int64 `json:"serverTime"`
+	// ExcludeDirs is the excludeDirs list the index was last reconciled
+	// with, so a pass can tell which folders have been un-excluded since —
+	// see reconcileExcludeDirsChange.
+	ExcludeDirs []string `json:"excludeDirs,omitempty"`
 }
 
 // NewState returns an empty state for folder.

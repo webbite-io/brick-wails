@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -411,6 +412,48 @@ func TestExcludedFoldersAreNeverSynced(t *testing.T) {
 	f.reconcile()
 	if !f.fs.Exists("Camera Uploads/p.jpg") {
 		t.Error("excluded remote folder was trashed")
+	}
+}
+
+// Regression test, ported from brick-cli: un-excluding a folder must download
+// it, not trash it. While excluded, the folder is recorded in the sync index
+// but never created locally, so before reconcileExcludeDirsChange the next
+// pass read it as "deleted locally" and trashed it on the server — and a
+// local-only file under it as "deleted remotely" and removed it from disk.
+func TestUnexcludedFolderIsDownloadedNotTrashed(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads", "Notes"} })
+	f.fs.PutFile("Camera Uploads/photo1.jpg", "jpeg")
+	// The second excluded folder, Notes, exists only locally; its file was
+	// never uploaded while excluded.
+	f.writeLocal("Notes/todo.txt", "milk")
+	f.reconcile()
+	st := f.eng.State()
+	if !st.Folders["Camera Uploads"] || st.Entries["Notes/todo.txt"].RelPath == "" {
+		t.Fatal("setup: expected the excluded folder and file to be recorded in the index")
+	}
+
+	f.eng.QueueExcludeDirs(nil)
+	f.reconcile()
+
+	if !f.fs.Exists("Camera Uploads/photo1.jpg") {
+		t.Error("un-excluded folder was trashed on the server")
+	}
+	f.wantLocal("Camera Uploads/photo1.jpg", "jpeg")
+	f.wantLocal("Notes/todo.txt", "milk")
+	f.wantRemote("Notes/todo.txt", "milk")
+	if got := f.eng.State().ExcludeDirs; len(got) != 0 {
+		t.Errorf("state.ExcludeDirs = %v, want it updated to the new (empty) list", got)
+	}
+}
+
+// A pass records the exclude list it reconciled with in the state file, so a
+// change made while the app wasn't running is noticed (and the field brick-cli
+// writes there survives this app saving the state).
+func TestStateRecordsExcludeDirs(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Photos"} })
+	f.reconcile()
+	if got := f.eng.State().ExcludeDirs; !slices.Equal(got, []string{"Photos"}) {
+		t.Errorf("state.ExcludeDirs = %v, want [Photos]", got)
 	}
 }
 

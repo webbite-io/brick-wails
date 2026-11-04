@@ -125,7 +125,13 @@ type Engine struct {
 	sink      Sink
 	opts      Options
 
+	// excludeDirs is guarded by e.mu; changed mid-session only via
+	// pendingExcludeDirs.
 	excludeDirs []string
+	// pendingExcludeDirs holds an excludeDirs change made while the engine
+	// runs (remote control's PATCH /settings), for the next reconcile pass to
+	// adopt under e.mu. See QueueExcludeDirs.
+	pendingExcludeDirs atomic.Pointer[[]string]
 
 	// firstSync is true until the first reconcileAll pass *completes*.
 	// conflictMode ("device", "brick" or "copy") says how to resolve a file

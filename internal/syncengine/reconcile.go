@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -685,6 +686,11 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 		return err
 	}
 
+	if dirs := e.pendingExcludeDirs.Swap(nil); dirs != nil {
+		e.excludeDirs = *dirs
+	}
+	e.reconcileExcludeDirsChange()
+
 	// Whether the *previous* pass got through its file pass intact. Cleared the
 	// moment this one starts and set again only if this one does; see the file
 	// pass for why a scoped set of rels is only safe on top of a complete
@@ -1013,6 +1019,60 @@ func isExcludedPath(rel string, excludeDirs []string) bool {
 		}
 	}
 	return false
+}
+
+// QueueExcludeDirs hands the engine a new excludeDirs list, which the next
+// reconcile pass adopts. The caller should then trigger a pass (Notify).
+func (e *Engine) QueueExcludeDirs(dirs []string) {
+	dirs = slices.Clone(dirs)
+	e.pendingExcludeDirs.Store(&dirs)
+}
+
+// reconcileExcludeDirsChange brings the sync index in line with an
+// excludeDirs change since it was last reconciled: one made mid-session via
+// PATCH /settings, or between runs by the setup wizard, brick-cli or a
+// config edit. Must be called with e.mu held, before anything reads the
+// index. Ported from brick-cli sync.go @ 54eafd2.
+//
+// While a folder is excluded the index keeps recording it: the folder pass
+// records the remote folder even though it's never created locally, and
+// reconcileExcludedFile records each file with whichever sides it exists on.
+// Once the folder is un-excluded, an entry for a folder or file missing
+// locally would read as "synced before, deleted locally since" and get
+// trashed on the server, and a file entry with no remote node as "deleted
+// remotely" and get removed locally. So those entries are dropped, leaving
+// the paths looking new, to be downloaded or uploaded instead. Entries for
+// files on both sides stay: they're current, and spare a re-transfer.
+//
+// Any change also forces the next file pass over every path, since an
+// un-exclude changes nothing an incremental pass would otherwise notice.
+func (e *Engine) reconcileExcludeDirsChange() {
+	prev := e.state.ExcludeDirs
+	if slices.Equal(prev, e.excludeDirs) {
+		return
+	}
+	e.state.ExcludeDirs = slices.Clone(e.excludeDirs)
+	e.filesConverged = false
+	e.localTreeValid = false
+
+	unexcluded := func(rel string) bool {
+		return isExcludedPath(rel, prev) && !isExcludedPath(rel, e.excludeDirs)
+	}
+	missingLocally := func(rel string) bool {
+		_, err := os.Lstat(filepath.Join(e.folder, filepath.FromSlash(rel)))
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	for rel := range e.state.Folders {
+		if unexcluded(rel) && missingLocally(rel) {
+			delete(e.state.Folders, rel)
+			delete(e.state.FolderIDs, rel)
+		}
+	}
+	for rel, entry := range e.state.Entries {
+		if unexcluded(rel) && (entry.NodeID == "" || missingLocally(rel)) {
+			delete(e.state.Entries, rel)
+		}
+	}
 }
 
 // verifyUnsyncedFileMatches checks, for every file present on both sides with
