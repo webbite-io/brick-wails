@@ -286,7 +286,11 @@ func (r *Runner) start(p StartParams) error {
 	r.mu.Unlock()
 	ok = true
 
-	roots := agent.ResolveRoots(cfg.AgentRoots)
+	paths := make([]string, len(cfg.AgentRoots))
+	for i, r := range cfg.AgentRoots {
+		paths[i] = r.Path
+	}
+	roots := agent.ResolveRoots(paths)
 	var agentWG sync.WaitGroup
 	if !r.cfg.DisableAgent {
 		agentWG.Add(1)

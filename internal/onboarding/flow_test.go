@@ -189,14 +189,14 @@ func TestFullOnboardingHappyPath(t *testing.T) {
 
 	c := e.cfg()
 	ac := c.ActiveAccount()
-	if ac.StorageSyncFolder != def || !reflect.DeepEqual(ac.ExcludeDirs, []string{"Photos"}) || !c.RemoteControl || !reflect.DeepEqual(c.AgentRoots, []string{e.home}) {
+	if ac.StorageSyncFolder != def || !reflect.DeepEqual(ac.ExcludeDirs, []string{"Photos"}) || !c.RemoteControl || !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: e.home}}) {
 		t.Errorf("config %+v / %+v", c, ac)
 	}
 	want := []string{
 		"Logged in to account: Acme",
 		"Sync folder selected (" + filepath.Join("~", "Brick") + ")",
 		"Folders selected (1 of 2)",
-		"Remote file access enabled (root folder: ~)",
+		"Remote file access enabled (root folder: ~, read-only)",
 		"Done and ready to go!",
 	}
 	if got := e.flow.Checklist(); !reflect.DeepEqual(got, want) {
@@ -381,7 +381,7 @@ func TestSetRemoteAccessAndScopeValidation(t *testing.T) {
 	os.MkdirAll(custom, 0o755)
 	e.flow.SetRemoteAccess(true, custom)
 	e.flow.SetRemoteAccess(true, custom)
-	if c := e.cfg(); !reflect.DeepEqual(c.AgentRoots, []string{custom}) || !c.RemoteControl {
+	if c := e.cfg(); !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: custom}}) || !c.RemoteControl {
 		t.Errorf("agentRoots %v", c.AgentRoots)
 	}
 	if err := e.flow.SetRemoteAccess(true, filepath.Join(e.home, "missing")); err == nil {
@@ -394,8 +394,15 @@ func TestSetRemoteAccessAndScopeValidation(t *testing.T) {
 	if err := e.flow.SetRemoteAccess(true, other); err != nil {
 		t.Fatalf("re-answering: %v", err)
 	}
-	if c := e.cfg(); !reflect.DeepEqual(c.AgentRoots, []string{other}) {
+	if c := e.cfg(); !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: other}}) {
 		t.Errorf("root not replaced: %v", c.AgentRoots)
+	}
+	// Choosing read/write saves the mapping form brick-cli writes.
+	if err := e.flow.SetRemoteAccessWithLevel(true, other, false); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.cfg(); len(c.AgentRoots) != 1 || c.AgentRoots[0].Path != other || c.AgentRoots[0].IsReadOnly() {
+		t.Errorf("read/write root: %+v", c.AgentRoots)
 	}
 	steps := len(e.flow.Checklist())
 	if err := e.flow.SetRemoteAccess(false, ""); err != nil {

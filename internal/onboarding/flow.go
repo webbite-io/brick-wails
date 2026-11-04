@@ -557,13 +557,25 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 }
 
 // SetRemoteAccess records the remote-file-access decision. When enabled,
-// root (empty = home) is added to agentRoots.
+// root (empty = home) is added to agentRoots, read-only (the CLI's default
+// access level).
 //
 // The wizard can be walked backwards, so this overwrites its own earlier
 // answer rather than adding to it: the root this session put in agentRoots is
 // dropped before the new one goes in, and declining turns remote control back
 // off. Roots configured elsewhere (the CLI, an earlier setup) are left alone.
 func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
+	return f.setRemoteAccess(enabled, root, true)
+}
+
+// SetRemoteAccessWithLevel is SetRemoteAccess with an explicit access level:
+// readOnly false lets remote control change files under root, like choosing
+// Read/Write in the CLI's onboarding.
+func (f *Flow) SetRemoteAccessWithLevel(enabled bool, root string, readOnly bool) error {
+	return f.setRemoteAccess(enabled, root, readOnly)
+}
+
+func (f *Flow) setRemoteAccess(enabled bool, root string, readOnly bool) error {
 	var abs string
 	if enabled {
 		if strings.TrimSpace(root) == "" {
@@ -577,16 +589,26 @@ func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
 			return fmt.Errorf("%s is not a folder", abs)
 		}
 	}
+	// Read-only stays unset so the entry is saved in the plain-path form.
+	var ro *bool
+	if !readOnly {
+		ro = new(bool)
+	}
 	f.mu.Lock()
 	prev := f.remoteRoot
 	f.mu.Unlock()
 	if _, err := f.store.Update(func(c *brickcfg.Config) error {
 		if prev != "" {
-			c.AgentRoots = slices.DeleteFunc(c.AgentRoots, func(r string) bool { return r == prev })
+			c.AgentRoots = slices.DeleteFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == prev })
 		}
 		c.RemoteControl = enabled
-		if enabled && !slices.Contains(c.AgentRoots, abs) {
-			c.AgentRoots = append(c.AgentRoots, abs)
+		if !enabled {
+			return nil
+		}
+		if i := slices.IndexFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == abs }); i >= 0 {
+			c.AgentRoots[i].ReadOnly = ro
+		} else {
+			c.AgentRoots = append(c.AgentRoots, brickcfg.AgentRoot{Path: abs, ReadOnly: ro})
 		}
 		return nil
 	}); err != nil {
@@ -595,7 +617,11 @@ func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
 	f.mu.Lock()
 	f.remoteRoot = abs
 	if enabled {
-		f.done("Remote file access enabled (root folder: %s)", brickcfg.DisplayPath(abs))
+		level := "read-only"
+		if !readOnly {
+			level = "read/write"
+		}
+		f.done("Remote file access enabled (root folder: %s, %s)", brickcfg.DisplayPath(abs), level)
 	}
 	f.mu.Unlock()
 	return nil

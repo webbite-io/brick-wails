@@ -176,14 +176,14 @@ func TestUpdateIsReadModifyWrite(t *testing.T) {
 func TestSchemaMatchesCLIKeys(t *testing.T) {
 	c := &Config{
 		ClientID: "c", AccessToken: "a", RefreshToken: "r", IDToken: "i", InstanceKey: "k",
-		ActiveAccountID: "acct", RemoteControl: true, AgentRoots: []string{"/x"},
+		ActiveAccountID: "acct", RemoteControl: true, AgentRoots: []AgentRoot{{Path: "/x"}}, TransferHistoryLimit: 5,
 		Accounts: map[string]*AccountConfig{"acct": {StorageSyncFolder: "/f", ExcludeDirs: []string{"d"}}},
 	}
 	out, err := yaml.Marshal(c)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"clientId:", "accessToken:", "refreshToken:", "idToken:", "instanceKey:", "activeAccountId:", "accounts:", "agentRoots:", "remoteControl:", "storageSyncFolder:", "excludeDirs:"} {
+	for _, key := range []string{"clientId:", "accessToken:", "refreshToken:", "idToken:", "instanceKey:", "activeAccountId:", "accounts:", "agentRoots:", "remoteControl:", "transferHistoryLimit:", "storageSyncFolder:", "excludeDirs:"} {
 		if !strings.Contains(string(out), key) {
 			t.Errorf("marshalled config missing %s\n%s", key, out)
 		}
@@ -311,5 +311,58 @@ func TestLoadDevEnv(t *testing.T) {
 		if got := os.Getenv(k); got != want {
 			t.Errorf("%s = %q, want %q", k, got, want)
 		}
+	}
+}
+
+// brick-cli writes a read/write root in the mapping form; this app must load
+// it (and the plain form, which is read-only) and write each back unchanged.
+func TestAgentRootsBothForms(t *testing.T) {
+	s := newTestStore(t)
+	if err := os.MkdirAll(s.Dir(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	in := `clientId: c1
+agentRoots:
+  - /home/me/Documents
+  - path: /home/me/Shared
+    readOnly: false
+  - path: /home/me/Locked
+    readOnly: true
+transferHistoryLimit: 50
+`
+	if err := os.WriteFile(s.Path(), []byte(in), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := s.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(c.AgentRoots) != 3 || c.TransferHistoryLimit != 50 {
+		t.Fatalf("got %+v limit %d", c.AgentRoots, c.TransferHistoryLimit)
+	}
+	for i, want := range []struct {
+		path     string
+		readOnly bool
+	}{{"/home/me/Documents", true}, {"/home/me/Shared", false}, {"/home/me/Locked", true}} {
+		if r := c.AgentRoots[i]; r.Path != want.path || r.IsReadOnly() != want.readOnly {
+			t.Errorf("root %d = %+v (readOnly %v), want %s %v", i, r, r.IsReadOnly(), want.path, want.readOnly)
+		}
+	}
+
+	if _, err := s.Update(func(c *Config) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(s.Path())
+	var raw struct {
+		AgentRoots []any `yaml:"agentRoots"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw.AgentRoots[0].(string); !ok {
+		t.Errorf("plain entry rewritten:\n%s", data)
+	}
+	if m, ok := raw.AgentRoots[1].(map[string]any); !ok || m["readOnly"] != false {
+		t.Errorf("mapping entry lost:\n%s", data)
 	}
 }
