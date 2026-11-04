@@ -51,6 +51,8 @@ const (
 // load .env.local / .env.dev — the same rule brick-cli follows.
 var (
 	Version                 = "dev"
+	BuildTime               = "unknown"
+	GitCommit               = "unknown"
 	DefaultAPIURL           = ""
 	DefaultStorageAPIURL    = ""
 	DefaultOAuthClientID    = ""
@@ -146,7 +148,7 @@ func main() {
 	}
 
 	evs := &appEvents{logger: logger}
-	run := runner.New(runner.Config{Env: env, Store: store, Tokens: tokens, Version: Version, Events: evs})
+	run := runner.New(runner.Config{Env: env, Store: store, Tokens: tokens, Version: Version, BuildTime: BuildTime, GitCommit: GitCommit, Events: evs})
 	flow := onboarding.New(env, store, tokens)
 
 	var setupWindow *application.WebviewWindow

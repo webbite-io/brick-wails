@@ -3,71 +3,1565 @@
 // webapp) and, only when remote control is enabled, serves the configured
 // roots to the same user through that tunnel.
 //
-// Ported from brick-cli cmd/brick/agent.go @ f3ef7bd.
+// Ported from brick-cli cmd/brick/agent*.go @ 54eafd2. The files keep the
+// CLI's names and layout so later changes port as plain diffs. Differences
+// from the CLI, all deliberate:
+//   - Log lines go to Options.Logf (the app's log window) rather than the
+//     standard logger, yamux's included.
+//   - The tunnel is started by Run with Options rather than from the sync
+//     loop's Config; there is no --agent-root flag.
+//   - It connects with clientType brick-desktop and says "Brick" rather than
+//     "Brick CLI" in its log lines.
 package agent
 
 import (
+	"bytes"
 	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"errors"
 	"fmt"
-	"net"
+	"io"
+	"io/fs"
+	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/hashicorp/yamux"
 
 	"github.com/webbite-io/brick-wails/internal/auth"
+	"github.com/webbite-io/brick-wails/internal/brickcfg"
 	"github.com/webbite-io/brick-wails/internal/storage"
 )
 
-// agentSecretHeader is a protocol constant shared with the Storage API.
+// agentSecretHeader must match agent.SecretHeader on the storage side. This is a
+// protocol-level constant shared with rbite (the storage API's remote-agent
+// registry hardcodes this exact header name for any attaching client, brick
+// included), so it is intentionally not rebranded. The storage API injects the
+// per-session secret on every proxied request, and the agent only honors
+// requests carrying it.
 const agentSecretHeader = "X-RBite-Agent-Secret"
 
-func yamuxConfig() *yamux.Config {
+// logFunc is where the agent's log lines go.
+type logFunc func(format string, args ...any)
+
+// yamuxConfig returns the yamux configuration used for the agent tunnel. It
+// starts from yamux's defaults but raises ConnectionWriteTimeout: the default
+// (10s) is the window yamux's own internal keepalive ping has to get a pong
+// back before it kills the whole session with "keepalive timeout" — too tight
+// for a public-internet WAN link, especially since we already run our own
+// WebSocket-level ping (see wsConn.ping and the storage API's equivalent) to
+// keep idle proxies alive. A brief latency spike shouldn't tear down the
+// tunnel and force a full reconnect.
+func yamuxConfig(logf logFunc) *yamux.Config {
 	cfg := yamux.DefaultConfig()
 	cfg.ConnectionWriteTimeout = 30 * time.Second
+	// yamux's default LogOutput is os.Stderr; route its "[ERR] yamux: ..."
+	// lines to the app's log instead.
+	cfg.LogOutput = nil
+	cfg.Logger = yamuxLogger{logf}
 	return cfg
 }
+
+// yamuxLogger forwards yamux's log output to logf.
+type yamuxLogger struct{ logf logFunc }
+
+func (l yamuxLogger) Print(v ...any) { l.logf("%s", strings.TrimSuffix(fmt.Sprint(v...), "\n")) }
+
+func (l yamuxLogger) Printf(format string, v ...any) {
+	l.logf("%s", strings.TrimSuffix(fmt.Sprintf(format, v...), "\n"))
+}
+
+func (l yamuxLogger) Println(v ...any) {
+	l.logf("%s", strings.TrimSuffix(fmt.Sprintln(v...), "\n"))
+}
+
+// --- Local agent HTTP API ---
+
+// agentRoot is one directory remote control may access. A read-only root
+// rejects every endpoint that would change anything inside it.
+type agentRoot struct {
+	path     string // absolute, cleaned
+	readOnly bool
+}
+
+type agentServer struct {
+	roots []agentRoot
+	// rootReals holds each root's real path, resolved once at start-up,
+	// or "" for one that couldn't be (it is then resolved on every use,
+	// in case it appears later). See realRoot.
+	rootReals     []string
+	secret        string
+	sc            *storage.Client
+	remoteControl bool
+	// ctx is the sync session's context. Async transfers run under it rather
+	// than their request's, so they outlive the request but stop when brick
+	// shuts down.
+	ctx       context.Context
+	transfers *transferRegistry
+	// queue holds batch upload and download files waiting their turn; see
+	// agent_batch.go.
+	queue *transferQueue
+	// settings reads and changes the running sync's exclude list; nil when
+	// there's no sync to apply a change to.
+	settings ExcludeDirsSettings
+	// logf receives the agent's log lines.
+	logf logFunc
+	// version is what GET /version reports.
+	version VersionInfo
+}
+
+// VersionInfo identifies the running build for GET /version.
+type VersionInfo struct {
+	Version   string
+	BuildTime string
+	GitCommit string
+}
+
+// ExcludeDirsSettings is how the agent reads and changes the active account's
+// excludeDirs: persisted to config.yaml and applied to the running sync
+// engine (see the runner's ExcludeDirsSettings).
+type ExcludeDirsSettings interface {
+	ExcludeDirs() []string
+	SetExcludeDirs(dirs []string) error
+}
+
+type fsEntry struct {
+	Name    string `json:"name"`
+	Type    string `json:"type"` // "file" or "dir"
+	Size    int64  `json:"size"`
+	ModTime string `json:"modTime"`
+}
+
+// startAgentServer creates the agent API server; connectAgentWithReconnect
+// serves its handler over the tunnel to the storage API. historyLimit caps
+// the finished-transfer history (<= 0 means defaultTransferHistoryLimit).
+func startAgentServer(ctx context.Context, roots []agentRoot, secret string, sc *storage.Client, remoteControl bool, historyLimit int, settings ExcludeDirsSettings) *agentServer {
+	a := newAgentServer(ctx, roots, secret, sc, remoteControl, historyLimit)
+	a.settings = settings
+	return a
+}
+
+func newAgentServer(ctx context.Context, roots []agentRoot, secret string, sc *storage.Client, remoteControl bool, historyLimit int) *agentServer {
+	a := &agentServer{
+		roots:         roots,
+		secret:        secret,
+		sc:            sc,
+		remoteControl: remoteControl,
+		ctx:           ctx,
+		transfers:     newTransferRegistry(historyLimit),
+		queue:         newTransferQueue(),
+		logf:          log.Printf,
+	}
+	a.transfers.logf = func(format string, args ...any) { a.logf(format, args...) }
+	a.rootReals = make([]string, len(roots))
+	for i, root := range roots {
+		if real, err := filepath.EvalSymlinks(root.path); err == nil {
+			a.rootReals[i] = real
+		}
+	}
+	go a.runTransferQueue(ctx)
+	return a
+}
+
+func (a *agentServer) handler() http.Handler {
+	mux := http.NewServeMux()
+	// /version only needs the secret, not remote control, so Brick HQ can
+	// show which version a device runs even when remote control is off.
+	mux.HandleFunc("GET /version", a.authSecret(a.handleVersion))
+	mux.HandleFunc("GET /fs/roots", a.auth(a.handleRoots))
+	mux.HandleFunc("GET /fs/list", a.auth(a.handleList))
+	mux.HandleFunc("GET /fs/stat", a.auth(a.handleStat))
+	mux.HandleFunc("GET /fs/read", a.auth(a.handleRead))
+	mux.HandleFunc("PUT /fs/write", a.auth(a.handleWrite))
+	mux.HandleFunc("POST /fs/mkdir", a.auth(a.handleMkdir))
+	mux.HandleFunc("DELETE /fs/delete", a.auth(a.handleDelete))
+	mux.HandleFunc("POST /fs/delete-batch", a.auth(a.handleDeleteBatch))
+	mux.HandleFunc("POST /fs/move", a.auth(a.handleMove))
+	mux.HandleFunc("POST /fs/copy", a.auth(a.handleCopy))
+	mux.HandleFunc("POST /transfer/upload", a.auth(a.handleUpload))
+	mux.HandleFunc("POST /transfer/download", a.auth(a.handleDownload))
+	mux.HandleFunc("POST /transfer/upload-batch", a.auth(a.handleUploadBatch))
+	mux.HandleFunc("POST /transfer/download-batch", a.auth(a.handleDownloadBatch))
+	mux.HandleFunc("POST /transfer/client-batch", a.auth(a.handleClientBatch))
+	mux.HandleFunc("GET /transfers", a.auth(a.handleTransfers))
+	mux.HandleFunc("GET /transfers/{id}", a.auth(a.handleTransfer))
+	mux.HandleFunc("DELETE /transfers/{id}", a.auth(a.handleCancelTransfer))
+	mux.HandleFunc("GET /settings", a.auth(a.handleGetSettings))
+	mux.HandleFunc("PATCH /settings", a.auth(a.handleUpdateSettings))
+	return mux
+}
+
+// auth guards an endpoint that touches the local filesystem or storage: it
+// needs both the agent secret and remote control enabled.
+func (a *agentServer) auth(h http.HandlerFunc) http.HandlerFunc {
+	return a.authSecret(func(w http.ResponseWriter, r *http.Request) {
+		if !a.remoteControl {
+			writeError(w, http.StatusForbidden, "remote_control_disabled", "Remote control is not enabled on this client.")
+			return
+		}
+		h(w, r)
+	})
+}
+
+// authSecret only checks the agent secret, for endpoints that stay available
+// with remote control disabled.
+func (a *agentServer) authSecret(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Compared in constant time, so how long a wrong guess takes to be
+		// refused says nothing about how much of it was right.
+		if a.secret == "" || subtle.ConstantTimeCompare([]byte(r.Header.Get(agentSecretHeader)), []byte(a.secret)) != 1 {
+			writeError(w, http.StatusForbidden, "forbidden", "Missing or invalid agent secret.")
+			return
+		}
+		h(w, r)
+	}
+}
+
+func (a *agentServer) handleVersion(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"version":       a.version.Version,
+		"buildTime":     a.version.BuildTime,
+		"gitCommit":     a.version.GitCommit,
+		"os":            runtime.GOOS,
+		"arch":          runtime.GOARCH,
+		"remoteControl": a.remoteControl,
+	})
+}
+
+func writeJSON(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+// apiError is a structured error carrying a stable machine-readable code and the
+// HTTP status to respond with. Returned by helpers so handlers can surface it
+// verbatim via writeErr.
+type apiError struct {
+	Status  int    `json:"-"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+func (e *apiError) Error() string { return e.Message }
+
+func newAPIError(status int, code, message string) *apiError {
+	return &apiError{Status: status, Code: code, Message: message}
+}
+
+// writeError emits the predefined JSON error envelope: {"error":{"code","message"}}.
+func writeError(w http.ResponseWriter, status int, code, message string) {
+	writeJSON(w, status, map[string]interface{}{
+		"error": map[string]string{"code": code, "message": sentence(message)},
+	})
+}
+
+// sentence makes msg start with a capital letter and end with a period, so
+// error messages read alike whether written here or taken from a Go error.
+func sentence(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if msg == "" {
+		return msg
+	}
+	r, n := utf8.DecodeRuneInString(msg)
+	msg = string(unicode.ToUpper(r)) + msg[n:]
+	if !strings.HasSuffix(msg, ".") && !strings.HasSuffix(msg, "?") && !strings.HasSuffix(msg, "!") {
+		msg += "."
+	}
+	return msg
+}
+
+// writeErr emits err as a JSON error, preferring an *apiError's status/code and
+// falling back to a generic internal error otherwise.
+func writeErr(w http.ResponseWriter, err error) {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		writeError(w, ae.Status, ae.Code, ae.Message)
+		return
+	}
+	writeError(w, http.StatusInternalServerError, "internal", err.Error())
+}
+
+// writeOSError classifies a filesystem error into the JSON error envelope.
+func writeOSError(w http.ResponseWriter, err error) {
+	switch {
+	case os.IsNotExist(err):
+		writeError(w, http.StatusNotFound, "not_found", err.Error())
+	case os.IsPermission(err):
+		writeError(w, http.StatusForbidden, "permission_denied", err.Error())
+	default:
+		writeError(w, http.StatusInternalServerError, "io_error", err.Error())
+	}
+}
+
+// evalSafe resolves symlinks on the longest existing prefix of p so that the
+// containment check below cannot be defeated by a symlink anywhere along it:
+// root/link/new/file, with link pointing out of the roots and new not there
+// yet, resolves through link, since writing it would create new there.
+//
+// A p that is itself a symlink that can't be resolved (dangling) resolves as
+// its folder plus its name, so it can still be deleted or replaced. One that
+// can't be resolved further up the path resolves to "", which is inside no
+// root: whatever is written through it would land somewhere unknown.
+func evalSafe(p string) string {
+	cur := p
+	var rest []string // the missing names below cur, innermost first
+	for {
+		if _, err := os.Lstat(cur); err == nil {
+			break
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			return p // nothing along p exists; no symlink to follow either
+		}
+		rest = append(rest, filepath.Base(cur))
+		cur = parent
+	}
+	rp, err := filepath.EvalSymlinks(cur)
+	if err != nil {
+		if len(rest) > 0 {
+			return ""
+		}
+		dir, err := filepath.EvalSymlinks(filepath.Dir(p))
+		if err != nil {
+			return ""
+		}
+		return filepath.Join(dir, filepath.Base(p))
+	}
+	for i := len(rest) - 1; i >= 0; i-- {
+		rp = filepath.Join(rp, rest[i])
+	}
+	return rp
+}
+
+// resolveSafe expands ~, makes p absolute, and verifies it stays within one of
+// the allowed roots. An empty path defaults to the first root.
+func (a *agentServer) resolveSafe(p string) (string, error) {
+	if strings.TrimSpace(p) == "" {
+		if len(a.roots) == 0 {
+			return "", newAPIError(http.StatusForbidden, "no_roots_configured", "No allowed roots configured.")
+		}
+		return a.roots[0].path, nil
+	}
+	if strings.HasPrefix(p, "~") {
+		if home, err := os.UserHomeDir(); err == nil {
+			p = filepath.Join(home, strings.TrimPrefix(p, "~"))
+		}
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", newAPIError(http.StatusBadRequest, "invalid_path", err.Error())
+	}
+	abs = filepath.Clean(abs)
+	if _, ok := a.rootOf(abs); !ok {
+		return "", newAPIError(http.StatusForbidden, "path_outside_roots", "Path is outside the allowed roots.")
+	}
+	return abs, nil
+}
+
+// resolveWritable is resolveSafe for a path an endpoint is about to change:
+// it additionally rejects a path inside a read-only root.
+func (a *agentServer) resolveWritable(p string) (string, error) {
+	abs, err := a.resolveSafe(p)
+	if err != nil {
+		return "", err
+	}
+	if root, _ := a.rootOf(abs); root.readOnly {
+		return "", newAPIError(http.StatusForbidden, "read_only_root", "Path is inside a read-only root.")
+	}
+	return abs, nil
+}
+
+// rootOf returns the root abs lies within. When roots nest, the innermost
+// one wins, so a writable folder inside a read-only root (or the reverse)
+// gets its own setting.
+func (a *agentServer) rootOf(abs string) (agentRoot, bool) {
+	real := evalSafe(abs)
+	var best agentRoot
+	bestLen := -1
+	if real == "" {
+		return best, false
+	}
+	for i, root := range a.roots {
+		rootReal := a.realRoot(i)
+		if rootReal == "" {
+			continue // a root that can't be resolved contains nothing
+		}
+		// prefix carries a trailing separator so "/a/b" doesn't match "/a/bc";
+		// for the filesystem root ("/") rootReal already ends in a separator, so
+		// guard against producing "//" which would reject every child path.
+		prefix := rootReal
+		if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+			prefix += string(os.PathSeparator)
+		}
+		if (real == rootReal || strings.HasPrefix(real, prefix)) && len(rootReal) > bestLen {
+			best, bestLen = root, len(rootReal)
+		}
+	}
+	return best, bestLen >= 0
+}
+
+// realRoot returns root i's real path: as resolved at start-up, which keeps
+// following the folder a symlinked root led to then, or resolved now for a
+// root that didn't exist then.
+func (a *agentServer) realRoot(i int) string {
+	if i < len(a.rootReals) && a.rootReals[i] != "" {
+		return a.rootReals[i]
+	}
+	return evalSafe(a.roots[i].path)
+}
+
+// holdsRoot reports whether abs is one of the configured roots or a folder
+// with one somewhere inside it. Neither may be deleted or moved: that would
+// take the root with it, and with it a read-only root nested in a writable
+// one.
+func (a *agentServer) holdsRoot(abs string) bool {
+	real := evalSafe(abs)
+	if real == "" {
+		return false
+	}
+	prefix := real
+	if !strings.HasSuffix(prefix, string(os.PathSeparator)) {
+		prefix += string(os.PathSeparator)
+	}
+	for i := range a.roots {
+		rootReal := a.realRoot(i)
+		if rootReal != "" && (rootReal == real || strings.HasPrefix(rootReal, prefix)) {
+			return true
+		}
+	}
+	return false
+}
+
+// rootProtectedMessage is the root_protected message for refusing to op a
+// path.
+func rootProtectedMessage(op string) string {
+	return "Refusing to " + op + " an allowed root or a folder holding one."
+}
+
+func (a *agentServer) resolveParam(w http.ResponseWriter, r *http.Request, key string) (string, bool) {
+	abs, err := a.resolveSafe(r.URL.Query().Get(key))
+	if err != nil {
+		writeErr(w, err)
+		return "", false
+	}
+	return abs, true
+}
+
+// resolveWritableParam is resolveParam for a path the endpoint will change.
+func (a *agentServer) resolveWritableParam(w http.ResponseWriter, r *http.Request, key string) (string, bool) {
+	abs, err := a.resolveWritable(r.URL.Query().Get(key))
+	if err != nil {
+		writeErr(w, err)
+		return "", false
+	}
+	return abs, true
+}
+
+type rootEntry struct {
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	ReadOnly bool   `json:"readOnly"`
+}
+
+// handleRoots lists the allowed roots so a client can discover what it may
+// navigate. Each root's path is a valid value for the "path" param of the other
+// endpoints.
+func (a *agentServer) handleRoots(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]interface{}{"roots": a.rootEntries()})
+}
+
+func (a *agentServer) rootEntries() []rootEntry {
+	roots := make([]rootEntry, 0, len(a.roots))
+	for _, root := range a.roots {
+		roots = append(roots, rootEntry{Path: root.path, Name: filepath.Base(root.path), ReadOnly: root.readOnly})
+	}
+	return roots
+}
+
+// handleList serves /fs/list. Its optional query params match the Brick
+// API's GET /nodes/{id}/children: sort (name, sizeBytes or updatedAt — a
+// file's modification time here) and sortOrder (asc or desc), defaulting to
+// name ascending. As there, folders aren't grouped first, and names compare
+// byte-wise. showHidden=false leaves out dot-files and dot-folders. limit and
+// offset page through the sorted entries, and count is the total before
+// paging. Unlike the Brick API, an omitted (or 0) limit returns every entry,
+// as /fs/list always has.
+func (a *agentServer) handleList(w http.ResponseWriter, r *http.Request) {
+	abs, ok := a.resolveParam(w, r, "path")
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	sortField, sortOrder := q.Get("sort"), q.Get("sortOrder")
+	if sortField == "" {
+		sortField = "name"
+	}
+	if sortOrder == "" {
+		sortOrder = "asc"
+	}
+	if sortField != "name" && sortField != "sizeBytes" && sortField != "updatedAt" {
+		writeError(w, http.StatusBadRequest, "invalid_sort", "The sort parameter must be name, sizeBytes or updatedAt.")
+		return
+	}
+	if sortOrder != "asc" && sortOrder != "desc" {
+		writeError(w, http.StatusBadRequest, "invalid_sort", "The sortOrder parameter must be asc or desc.")
+		return
+	}
+	showHidden := true
+	if v := q.Get("showHidden"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "The showHidden parameter must be true or false.")
+			return
+		}
+		showHidden = b
+	}
+	limit, offset := 0, 0
+	for _, p := range []struct {
+		name string
+		dst  *int
+	}{{"limit", &limit}, {"offset", &offset}} {
+		if v := q.Get(p.name); v != "" {
+			n, err := strconv.Atoi(v)
+			if err != nil || n < 0 {
+				writeError(w, http.StatusBadRequest, "invalid_request", "The "+p.name+" parameter must be a non-negative integer.")
+				return
+			}
+			*p.dst = n
+		}
+	}
+
+	dirents, err := os.ReadDir(abs)
+	if err != nil {
+		writeOSError(w, err)
+		return
+	}
+	if !showHidden {
+		dirents = slices.DeleteFunc(dirents, func(d os.DirEntry) bool { return strings.HasPrefix(d.Name(), ".") })
+	}
+
+	var infos []os.FileInfo
+	var count int
+	if sortField == "name" {
+		// ReadDir already sorts by name, byte-wise, so only the page needs
+		// its entries' info (an lstat each). One that went away meanwhile
+		// is left out of the page but still counted.
+		if sortOrder == "desc" {
+			slices.Reverse(dirents)
+		}
+		count = len(dirents)
+		dirents = page(dirents, offset, limit)
+		infos = make([]os.FileInfo, 0, len(dirents))
+		for _, d := range dirents {
+			if info, err := d.Info(); err == nil {
+				infos = append(infos, info)
+			}
+		}
+	} else {
+		infos = make([]os.FileInfo, 0, len(dirents))
+		for _, d := range dirents {
+			if info, err := d.Info(); err == nil {
+				infos = append(infos, info)
+			}
+		}
+		// Ties fall back to name, the way the Brick API falls back to node ID.
+		less := func(x, y os.FileInfo) bool {
+			switch sortField {
+			case "sizeBytes":
+				if x.Size() != y.Size() {
+					return x.Size() < y.Size()
+				}
+			case "updatedAt":
+				if !x.ModTime().Equal(y.ModTime()) {
+					return x.ModTime().Before(y.ModTime())
+				}
+			}
+			return x.Name() < y.Name()
+		}
+		sort.SliceStable(infos, func(i, j int) bool {
+			if sortOrder == "desc" {
+				return less(infos[j], infos[i])
+			}
+			return less(infos[i], infos[j])
+		})
+		count = len(infos)
+		infos = page(infos, offset, limit)
+	}
+
+	entries := make([]fsEntry, len(infos))
+	for i, info := range infos {
+		entries[i] = toEntry(info)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": abs, "entries": entries, "count": count})
+}
+
+// page returns the part of s that offset and limit (0: no limit) select.
+func page[T any](s []T, offset, limit int) []T {
+	s = s[min(offset, len(s)):]
+	if limit > 0 && limit < len(s) {
+		s = s[:limit]
+	}
+	return s
+}
+
+func (a *agentServer) handleStat(w http.ResponseWriter, r *http.Request) {
+	abs, ok := a.resolveParam(w, r, "path")
+	if !ok {
+		return
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		writeOSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": abs, "entry": toEntry(info)})
+}
+
+func toEntry(info os.FileInfo) fsEntry {
+	t := "file"
+	if info.IsDir() {
+		t = "dir"
+	}
+	return fsEntry{
+		Name:    info.Name(),
+		Type:    t,
+		Size:    info.Size(),
+		ModTime: info.ModTime().UTC().Format(time.RFC3339),
+	}
+}
+
+func (a *agentServer) handleRead(w http.ResponseWriter, r *http.Request) {
+	abs, ok := a.resolveParam(w, r, "path")
+	if !ok {
+		return
+	}
+	f, info, err := openRegular(abs)
+	if err != nil {
+		writeErrOrOS(w, err)
+		return
+	}
+	defer f.Close()
+
+	ct := mime.TypeByExtension(filepath.Ext(abs))
+	if ct == "" {
+		ct = "application/octet-stream"
+	}
+	w.Header().Set("Content-Type", ct)
+	w.Header().Set("Content-Disposition", contentDisposition(info.Name()))
+	w.Header().Set("ETag", fileETag(info))
+	// ServeContent answers a Range request with just that part (206), so an
+	// interrupted read can resume; If-Range against the ETag makes it send
+	// the whole file again if it changed in between.
+	http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+}
+
+// fileETag is a strong ETag for the file's current content, as far as its
+// size and modification time tell.
+func fileETag(info os.FileInfo) string {
+	return fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano())
+}
+
+// contentDisposition is an attachment header that names the file correctly in
+// a browser saving it natively. Go's %q is not the header's quoting: it
+// escapes non-ASCII as \uXXXX, which a browser shows literally. A name that
+// isn't plain ASCII gets an ASCII stand-in in filename plus the real name,
+// UTF-8 and percent-encoded, in filename* (RFC 6266/5987), which browsers
+// prefer when present.
+func contentDisposition(name string) string {
+	var fallback strings.Builder
+	plain := true
+	for _, r := range name {
+		if r < 0x20 || r > 0x7e || r == '"' || r == '\\' {
+			fallback.WriteByte('_')
+			plain = false
+		} else {
+			fallback.WriteRune(r)
+		}
+	}
+	header := `attachment; filename="` + fallback.String() + `"`
+	if plain {
+		return header
+	}
+	var encoded strings.Builder
+	for _, b := range []byte(name) {
+		if isRFC5987AttrChar(b) {
+			encoded.WriteByte(b)
+		} else {
+			fmt.Fprintf(&encoded, "%%%02X", b)
+		}
+	}
+	return header + "; filename*=UTF-8''" + encoded.String()
+}
+
+// isRFC5987AttrChar reports whether b may appear unencoded in an RFC 5987
+// ext-value.
+func isRFC5987AttrChar(b byte) bool {
+	switch {
+	case 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z', '0' <= b && b <= '9':
+		return true
+	}
+	return strings.IndexByte("!#$&+-.^_`|~", b) >= 0
+}
+
+func (a *agentServer) handleWrite(w http.ResponseWriter, r *http.Request) {
+	abs, ok := a.resolveWritableParam(w, r, "path")
+	if !ok {
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		writeOSError(w, err)
+		return
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(abs), ".brick-agent-*")
+	if err != nil {
+		writeOSError(w, err)
+		return
+	}
+	tmpName := tmp.Name()
+	if _, err := io.Copy(tmp, r.Body); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		writeError(w, http.StatusInternalServerError, "io_error", err.Error())
+		return
+	}
+	tmp.Close()
+	if err := os.Rename(tmpName, abs); err != nil {
+		os.Remove(tmpName)
+		writeOSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": abs, "ok": true})
+}
+
+func (a *agentServer) handleMkdir(w http.ResponseWriter, r *http.Request) {
+	abs, ok := a.resolveWritableParam(w, r, "path")
+	if !ok {
+		return
+	}
+	if err := os.MkdirAll(abs, 0o755); err != nil {
+		writeOSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": abs, "ok": true})
+}
+
+func (a *agentServer) handleDelete(w http.ResponseWriter, r *http.Request) {
+	abs, ok := a.resolveWritableParam(w, r, "path")
+	if !ok {
+		return
+	}
+	if a.holdsRoot(abs) {
+		writeError(w, http.StatusForbidden, "root_protected", rootProtectedMessage("delete"))
+		return
+	}
+	if err := os.RemoveAll(abs); err != nil {
+		writeOSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": abs, "ok": true})
+}
+
+// handleDeleteBatch deletes up to maxBatchFiles paths (files, or folders with
+// everything in them) in one request. A path that can't be deleted (outside
+// the roots, read-only, a root itself, ...) is reported in "skipped" with
+// the code a single delete would have failed with, and the rest still go.
+// A path already gone, e.g. one inside a folder deleted earlier in the same
+// batch, counts as deleted.
+func (a *agentServer) handleDeleteBatch(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+		return
+	}
+	if len(req.Paths) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "The paths field is required.")
+		return
+	}
+	if len(req.Paths) > maxBatchFiles {
+		writeError(w, http.StatusBadRequest, "too_many_files",
+			fmt.Sprintf("A batch delete can hold at most %d paths.", maxBatchFiles))
+		return
+	}
+	deleted := []string{}
+	skipped := []batchSkip{}
+	for _, p := range req.Paths {
+		abs, err := a.resolveWritable(p)
+		if err == nil && a.holdsRoot(abs) {
+			err = newAPIError(http.StatusForbidden, "root_protected", rootProtectedMessage("delete"))
+		}
+		if err == nil {
+			err = os.RemoveAll(abs)
+		}
+		if err != nil {
+			skipped = append(skipped, deleteSkip(p, err))
+			continue
+		}
+		deleted = append(deleted, abs)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"deleted": deleted, "skipped": skipped})
+}
+
+// deleteSkip is the skipped entry for path p, which failed to delete with err.
+func deleteSkip(p string, err error) batchSkip {
+	var ae *apiError
+	switch {
+	case errors.As(err, &ae):
+		return batchSkip{Path: p, Code: ae.Code, Message: sentence(ae.Message)}
+	case os.IsPermission(err):
+		return batchSkip{Path: p, Code: "permission_denied", Message: sentence(err.Error())}
+	default:
+		return batchSkip{Path: p, Code: "io_error", Message: sentence(err.Error())}
+	}
+}
+
+type fromToReq struct {
+	From string `json:"from"`
+	To   string `json:"to"`
+}
+
+// resolveFromTo resolves a move/copy request's paths. to is always written
+// to; from only when fromWritable (a move removes it, a copy just reads it).
+func (a *agentServer) resolveFromTo(w http.ResponseWriter, r *http.Request, fromWritable bool) (string, string, bool) {
+	var req fromToReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+		return "", "", false
+	}
+	resolveFrom := a.resolveSafe
+	if fromWritable {
+		resolveFrom = a.resolveWritable
+	}
+	from, err := resolveFrom(req.From)
+	if err != nil {
+		writeErr(w, err)
+		return "", "", false
+	}
+	to, err := a.resolveWritable(req.To)
+	if err != nil {
+		writeErr(w, err)
+		return "", "", false
+	}
+	if err := checkFromTo(from, to, fromWritable); err != nil {
+		writeErr(w, err)
+		return "", "", false
+	}
+	return from, to, true
+}
+
+// checkFromTo refuses a move or copy that would write over something already
+// at to, or put a folder inside itself (which a copy would recurse into
+// forever). Moving a path onto itself under another case, as a rename on a
+// case-insensitive disk does, isn't writing over anything (isMove); copying
+// it there would be.
+func checkFromTo(from, to string, isMove bool) error {
+	realFrom, realTo := evalSafe(from), evalSafe(to)
+	if realTo != realFrom && strings.HasPrefix(realTo, realFrom+string(filepath.Separator)) {
+		return newAPIError(http.StatusBadRequest, "invalid_destination", "A folder can't go inside itself.")
+	}
+	toInfo, err := os.Lstat(to)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if fromInfo, err := os.Lstat(from); isMove && err == nil && os.SameFile(fromInfo, toInfo) && from != to {
+		return nil
+	}
+	return newAPIError(http.StatusConflict, "exists", "A file or folder with this name already exists.")
+}
+
+func (a *agentServer) handleMove(w http.ResponseWriter, r *http.Request) {
+	from, to, ok := a.resolveFromTo(w, r, true)
+	if !ok {
+		return
+	}
+	if a.holdsRoot(from) {
+		writeError(w, http.StatusForbidden, "root_protected", rootProtectedMessage("move"))
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
+		writeOSError(w, err)
+		return
+	}
+	if err := os.Rename(from, to); err != nil {
+		writeOSError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"from": from, "to": to, "ok": true})
+}
+
+func (a *agentServer) handleCopy(w http.ResponseWriter, r *http.Request) {
+	from, to, ok := a.resolveFromTo(w, r, false)
+	if !ok {
+		return
+	}
+	skipped, err := a.copyPath(from, to)
+	if err != nil {
+		writeErrOrOS(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"from": from, "to": to, "ok": true, "skipped": skipped})
+}
+
+// writeErrOrOS writes an *apiError as itself and anything else as
+// writeOSError classifies it.
+func writeErrOrOS(w http.ResponseWriter, err error) {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		writeErr(w, err)
+		return
+	}
+	writeOSError(w, err)
+}
+
+var errNotRegularFile = newAPIError(http.StatusBadRequest, "not_a_regular_file", "Only regular files and folders can be read.")
+
+// openRegular opens the regular file at abs for reading, with its info. A
+// folder fails with is_a_directory, and anything else that isn't a regular
+// file with not_a_regular_file before it is opened: opening a FIFO blocks
+// until something writes to it, and a device like /dev/zero never ends.
+func openRegular(abs string) (*os.File, os.FileInfo, error) {
+	info, err := os.Stat(abs)
+	if err != nil {
+		return nil, nil, err
+	}
+	if info.IsDir() {
+		return nil, nil, newAPIError(http.StatusBadRequest, "is_a_directory", "Path is a directory.")
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, errNotRegularFile
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Checked again on what was opened, in case the path changed meanwhile.
+	if info, err = f.Stat(); err != nil || !info.Mode().IsRegular() {
+		f.Close()
+		if err == nil {
+			err = errNotRegularFile
+		}
+		return nil, nil, err
+	}
+	return f, info, nil
+}
+
+// copyPath copies a file or folder tree from src to dst. Inside a folder,
+// symlinks are treated as upload-batch treats them: one to a file within the
+// roots is copied as that file, while one to a folder (which could loop) or
+// to anything outside the roots is left out, as is anything that isn't a
+// regular file (a FIFO would block the copy forever). What was left out is
+// returned; a failure to copy what wasn't is the error.
+func (a *agentServer) copyPath(src, dst string) ([]batchSkip, error) {
+	skipped := []batchSkip{}
+	info, err := os.Stat(src)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		if !info.Mode().IsRegular() {
+			return nil, errNotRegularFile
+		}
+		return skipped, copyFile(src, dst, info.Mode())
+	}
+	skip := func(p, code, message string) {
+		skipped = append(skipped, batchSkip{Path: p, Code: code, Message: sentence(message)})
+	}
+	// Walked by its real path, as WalkDir doesn't descend into a symlinked
+	// starting folder.
+	walkRoot := evalSafe(src)
+	err = filepath.WalkDir(walkRoot, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(walkRoot, p)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&fs.ModeSymlink != 0 {
+			fi, err = os.Stat(p)
+			switch {
+			case err != nil:
+				skip(p, "not_found", "Symlink points to nothing.")
+				return nil
+			case fi.IsDir():
+				skip(p, "symlinked_directory", "Symlinked folders are not followed.")
+				return nil
+			}
+			if _, ok := a.rootOf(p); !ok {
+				skip(p, "path_outside_roots", "Symlink points outside the allowed roots.")
+				return nil
+			}
+		}
+		if !fi.Mode().IsRegular() {
+			skip(p, "not_a_regular_file", "Only regular files can be copied.")
+			return nil
+		}
+		return copyFile(p, target, fi.Mode())
+	})
+	if err != nil {
+		return nil, err
+	}
+	return skipped, nil
+}
+
+// copyFile copies the regular file src to dst, which must not exist yet,
+// with src's permission bits (not setuid, setgid or sticky).
+func copyFile(src, dst string, mode os.FileMode) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode.Perm())
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// --- Transfer between local disk and the storage API ---
+//
+// Both transfer endpoints stream the file rather than holding it in memory,
+// and record it in a.transfers so its progress can be polled via
+// GET /transfers/{id}. Each accepts two optional fields:
+//
+//   - transferId: a caller-chosen UUID for the transfer, so the caller can
+//     poll its progress while a synchronous request is still in flight.
+//   - async: respond 202 with the transfer record right away and run the
+//     transfer in the background, rather than holding the request open until
+//     it finishes. Inputs are still validated before responding.
+//
+// DELETE /transfers/{id} cancels either kind. A cancelled synchronous
+// request answers 409 transfer_canceled.
+
+type uploadReq struct {
+	LocalPath  string `json:"localPath"`
+	ParentID   string `json:"parentId"`
+	Name       string `json:"name"`
+	TransferID string `json:"transferId"`
+	Async      bool   `json:"async"`
+}
+
+func (a *agentServer) handleUpload(w http.ResponseWriter, r *http.Request) {
+	var req uploadReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+		return
+	}
+	abs, err := a.resolveSafe(req.LocalPath)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	f, info, err := openRegular(abs)
+	if err != nil {
+		writeErrOrOS(w, err)
+		return
+	}
+	name := req.Name
+	if name == "" {
+		name = filepath.Base(abs)
+	}
+	ctx, cancel := a.transferContext(r, req.Async)
+	id, err := a.transfers.begin(req.TransferID, transferRecord{
+		Direction:  "upload",
+		LocalPath:  abs,
+		ParentID:   req.ParentID,
+		Name:       name,
+		BytesTotal: info.Size(),
+	}, cancel)
+	if err != nil {
+		cancel()
+		f.Close()
+		writeErr(w, err)
+		return
+	}
+
+	run := func() (*storage.Node, error) {
+		defer f.Close()
+		node, err := a.sc.UploadStream(a.transfers.retryContext(ctx, id), req.ParentID, name, f, info.Size(), func(written int64) {
+			a.transfers.progress(id, written)
+		})
+		a.transfers.finish(ctx, id, node, err)
+		return node, err
+	}
+	if req.Async {
+		go run() //nolint:errcheck // the outcome is recorded in a.transfers
+		a.writeTransferAccepted(w, id)
+		return
+	}
+	node, err := run()
+	if err != nil {
+		if a.transfers.canceled(id) {
+			writeTransferCanceled(w)
+			return
+		}
+		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+		return
+	}
+	rec, _ := a.transfers.get(id)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"node": node, "transfer": rec})
+}
+
+type downloadReq struct {
+	NodeID     string `json:"nodeId"`
+	LocalPath  string `json:"localPath"`
+	TransferID string `json:"transferId"`
+	Async      bool   `json:"async"`
+}
+
+func (a *agentServer) handleDownload(w http.ResponseWriter, r *http.Request) {
+	var req downloadReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+		return
+	}
+	abs, err := a.resolveWritable(req.LocalPath)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	// Fetched first for the file's size (a chunked download response may not
+	// carry a Content-Length), which progress is reported against.
+	node, err := a.sc.GetNode(r.Context(), req.NodeID)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+		return
+	}
+	if node.NodeType != "file" {
+		writeError(w, http.StatusBadRequest, "not_a_file", "Node is not a file.")
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
+		writeOSError(w, err)
+		return
+	}
+	ctx, cancel := a.transferContext(r, req.Async)
+	id, err := a.transfers.begin(req.TransferID, transferRecord{
+		Direction:  "download",
+		LocalPath:  abs,
+		NodeID:     node.ID,
+		Name:       node.Name,
+		BytesTotal: node.SizeBytes,
+	}, cancel)
+	if err != nil {
+		cancel()
+		writeErr(w, err)
+		return
+	}
+
+	run := func() error {
+		err := a.sc.DownloadToFile(a.transfers.retryContext(ctx, id), node.ID, abs, node.SizeBytes, func(written, _ int64) {
+			a.transfers.progress(id, written)
+		})
+		a.transfers.finish(ctx, id, nil, err)
+		return err
+	}
+	if req.Async {
+		go run() //nolint:errcheck // the outcome is recorded in a.transfers
+		a.writeTransferAccepted(w, id)
+		return
+	}
+	if err := run(); err != nil {
+		if a.transfers.canceled(id) {
+			writeTransferCanceled(w)
+			return
+		}
+		var pathErr *os.PathError
+		var linkErr *os.LinkError
+		if errors.As(err, &pathErr) || errors.As(err, &linkErr) {
+			writeOSError(w, err)
+		} else {
+			writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+		}
+		return
+	}
+	rec, _ := a.transfers.get(id)
+	writeJSON(w, http.StatusOK, map[string]interface{}{"path": abs, "ok": true, "transfer": rec})
+}
+
+// transferContext returns the context a transfer runs under, cancellable via
+// DELETE /transfers/{id}. A synchronous transfer is also tied to its request;
+// an async one outlives the request and stops only when brick shuts down.
+func (a *agentServer) transferContext(r *http.Request, async bool) (context.Context, context.CancelFunc) {
+	if async {
+		return context.WithCancel(a.ctx)
+	}
+	return context.WithCancel(r.Context())
+}
+
+func writeTransferCanceled(w http.ResponseWriter) {
+	writeError(w, http.StatusConflict, "transfer_canceled", "The transfer was canceled.")
+}
+
+// writeTransferAccepted answers an async transfer request with the
+// transfer's current record.
+func (a *agentServer) writeTransferAccepted(w http.ResponseWriter, id string) {
+	rec, _ := a.transfers.get(id)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{"transfer": rec})
+}
+
+// --- Persistent connection to the storage API ---
+
+// toWSURL rewrites an http(s) base URL to its ws(s) equivalent.
+func toWSURL(serverURL string) string {
+	switch {
+	case strings.HasPrefix(serverURL, "https://"):
+		return "wss://" + serverURL[len("https://"):]
+	case strings.HasPrefix(serverURL, "http://"):
+		return "ws://" + serverURL[len("http://"):]
+	}
+	return serverURL
+}
+
+// reconnectBackoff is the sequence of delays between agent reconnect attempts.
+// The last value is reused for all subsequent attempts.
+var reconnectBackoff = []time.Duration{
+	1 * time.Second,
+	2 * time.Second,
+	4 * time.Second,
+	8 * time.Second,
+	16 * time.Second,
+	30 * time.Second,
+}
+
+// wsConn wraps *websocket.Conn as an io.ReadWriter so io.Copy (via yamux) can
+// drive it.
+type wsConn struct {
+	ws     *websocket.Conn
+	reader io.Reader
+	mu     sync.Mutex // serializes all WebSocket writes
+}
+
+func newWSConn(ws *websocket.Conn) *wsConn {
+	return &wsConn{ws: ws}
+}
+
+func (c *wsConn) ping() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.ws.WriteMessage(websocket.PingMessage, nil)
+}
+
+func (c *wsConn) Read(b []byte) (int, error) {
+	for {
+		if c.reader != nil {
+			n, err := c.reader.Read(b)
+			if err == io.EOF {
+				c.reader = nil
+				if n > 0 {
+					return n, nil
+				}
+				continue
+			}
+			return n, err
+		}
+		msgType, r, err := c.ws.NextReader()
+		if err != nil {
+			return 0, err
+		}
+		if msgType == websocket.CloseMessage {
+			return 0, io.EOF
+		}
+		c.reader = r
+	}
+}
+
+func (c *wsConn) Write(b []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if err := c.ws.WriteMessage(websocket.BinaryMessage, b); err != nil {
+		return 0, err
+	}
+	return len(b), nil
+}
+
+func (c *wsConn) Close() error { return c.ws.Close() }
+
+// closeGracefully sends a proper WebSocket close control frame before the
+// connection is torn down, so the storage API sees an intentional disconnect
+// (code 1000 "normal closure") instead of the raw TCP drop that
+// yamux.Session.Close()/wsConn.Close() alone produces — which the server logs
+// as an alarming-looking "close 1006 (abnormal closure): unexpected EOF",
+// even on an entirely ordinary quit. Bounded by a short write deadline so a
+// slow or already-dead peer can never block shutdown on it. Guarded by the
+// same mutex as every other write: gorilla's *websocket.Conn forbids
+// concurrent writers, and both the ping goroutine and yamux (via Write) write
+// to this same connection.
+func (c *wsConn) closeGracefully() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	msg := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client shutting down")
+	_ = c.ws.WriteControl(websocket.CloseMessage, msg, time.Now().Add(2*time.Second))
+}
+
+// newAgentHTTPServer returns the server for the agent API on a tunnel: the
+// storage API opens one yamux stream per request it forwards, and each is
+// served straight from h, with no hop through a local port. Keep-alives are
+// off, so each stream is closed once its response is written, as the
+// storage API expects.
+func newAgentHTTPServer(h http.Handler, logf logFunc) *http.Server {
+	srv := &http.Server{
+		Handler: logRemoteControl(h, logf),
+		// The storage API sends the headers right away; this only stops a
+		// stream that never does from holding a goroutine.
+		ReadHeaderTimeout: 30 * time.Second,
+	}
+	srv.SetKeepAlivesEnabled(false)
+	return srv
+}
+
+// statusRecorder is a ResponseWriter that remembers the status written.
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if s.status == 0 {
+		s.status = code
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	if s.status == 0 {
+		s.status = http.StatusOK
+	}
+	return s.ResponseWriter.Write(b)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (s *statusRecorder) Unwrap() http.ResponseWriter { return s.ResponseWriter }
+
+// logRemoteControl logs each request h serves as a remote control line in
+// the log window (see remoteControlLogLine) once it has been answered.
+func logRemoteControl(h http.Handler, logf logFunc) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		target := remoteControlTarget(r)
+		rec := &statusRecorder{ResponseWriter: w}
+		h.ServeHTTP(rec, r)
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+		logf("%s", remoteControlLogLine(r.Method, r.URL.Path, target, rec.status, time.Since(start)))
+	})
+}
+
+// remoteControlAction is how the log window names an agent API endpoint:
+// generic, and with the name of the file or folder it acts on when there is
+// one (named, a format with one %s).
+type remoteControlAction struct {
+	generic, named string
+}
+
+// remoteControlActions names each agent API endpoint, keyed by method and
+// path as registered in agentServer.handler, for the log window.
+var remoteControlActions = map[string]remoteControlAction{
+	"GET /version":                  {"Checking the version", ""},
+	"GET /fs/roots":                 {"Listing roots", ""},
+	"GET /fs/list":                  {"Listing a folder", "Listing %s"},
+	"GET /fs/stat":                  {"Looking up a file", "Looking up %s"},
+	"GET /fs/read":                  {"Reading a file", "Reading %s"},
+	"PUT /fs/write":                 {"Writing a file", "Writing %s"},
+	"POST /fs/mkdir":                {"Creating a folder", "Creating the folder %s"},
+	"DELETE /fs/delete":             {"Deleting a file", "Deleting %s"},
+	"POST /fs/delete-batch":         {"Deleting files", ""},
+	"POST /fs/move":                 {"Moving a file", "Moving %s"},
+	"POST /fs/copy":                 {"Copying a file", "Copying %s"},
+	"POST /transfer/upload":         {"Starting an upload", "Uploading %s"},
+	"POST /transfer/download":       {"Starting a download", "Downloading %s"},
+	"POST /transfer/upload-batch":   {"Starting a batch upload", ""},
+	"POST /transfer/download-batch": {"Starting a batch download", ""},
+	"POST /transfer/client-batch":   {"Starting a copy from another client", ""},
+	"GET /transfers":                {"Listing transfers", ""},
+	"GET /transfers/{id}":           {"Checking a transfer", ""},
+	"DELETE /transfers/{id}":        {"Cancelling a transfer", ""},
+	"GET /settings":                 {"Reading the settings", ""},
+	"PATCH /settings":               {"Updating the settings", ""},
+}
+
+// remoteControlBodyPaths names the JSON body field holding the local path an
+// endpoint acts on, for the endpoints that take it in the body rather than in
+// the path query parameter.
+var remoteControlBodyPaths = map[string]string{
+	"POST /fs/move":           "from",
+	"POST /fs/copy":           "from",
+	"POST /transfer/upload":   "localPath",
+	"POST /transfer/download": "localPath",
+}
+
+// maxLoggedBody caps how much of a request body remoteControlTarget reads to
+// find the path; the bodies it looks at are small JSON objects.
+const maxLoggedBody = 64 << 10
+
+// remoteControlKey is the remoteControlActions key for a request.
+func remoteControlKey(method, path string) string {
+	if id, ok := strings.CutPrefix(path, "/transfers/"); ok && id != "" && !strings.Contains(id, "/") {
+		return method + " /transfers/{id}"
+	}
+	return method + " " + path
+}
+
+// remoteControlTarget returns the name of the file or folder req acts on, or
+// "" when it acts on none. It may read req's body to find it, and leaves the
+// body as it was for forwarding.
+func remoteControlTarget(req *http.Request) string {
+	key := remoteControlKey(req.Method, req.URL.Path)
+	if action := remoteControlActions[key]; action.named == "" {
+		return ""
+	}
+	field, ok := remoteControlBodyPaths[key]
+	if !ok {
+		return displayName(req.URL.Query().Get("path"))
+	}
+	if req.Body == nil {
+		return ""
+	}
+	buf, err := io.ReadAll(io.LimitReader(req.Body, maxLoggedBody+1))
+	req.Body = struct {
+		io.Reader
+		io.Closer
+	}{io.MultiReader(bytes.NewReader(buf), req.Body), req.Body}
+	if err != nil || len(buf) > maxLoggedBody {
+		return ""
+	}
+	var body map[string]any
+	if json.Unmarshal(buf, &body) != nil {
+		return ""
+	}
+	p, _ := body[field].(string)
+	return displayName(p)
+}
+
+// displayName is the last element of p, a path from the caller in either slash
+// style, so a status line names a file without its folders.
+func displayName(p string) string {
+	p = strings.TrimRight(p, `/\`)
+	if i := strings.LastIndexAny(p, `/\`); i >= 0 {
+		p = p[i+1:]
+	}
+	return p
+}
+
+// remoteControlLogLine describes a proxied request as a sentence, e.g.
+// "Remote Control: Listing roots." or `Remote Control: Reading "a.txt".`,
+// naming target when it isn't empty. A failed request gets its status code,
+// and an endpoint missing from remoteControlActions falls back to method and
+// path.
+func remoteControlLogLine(method, path, target string, status int, elapsed time.Duration) string {
+	action, ok := remoteControlActions[remoteControlKey(method, path)]
+	if !ok {
+		return fmt.Sprintf("Remote Control: %s %s %d %s", printable(method), printable(path), status, elapsed.Round(time.Millisecond))
+	}
+	text := action.generic
+	if target != "" && action.named != "" {
+		text = fmt.Sprintf(action.named, `"`+printable(target)+`"`)
+	}
+	if status >= 400 {
+		return fmt.Sprintf("Remote Control: %s failed (%d).", text, status)
+	}
+	return "Remote Control: " + text + "."
+}
+
+// printable replaces the characters in s that would do something other than
+// show up in the log window, as a name from a request may
+// hold them: control characters (a newline faking a log line, an escape
+// sequence for the terminal) and the bidirectional overrides that make text
+// read in a different order than it's stored.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || (r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069') {
+			return '?'
+		}
+		return r
+	}, s)
+}
+
+// agentClientType identifies this program to the storage API on connect, so
+// GET .../clients can tell brick apart from other clients that attach the
+// same way.
+const agentClientType = "brick-desktop"
 
 // Options configure Run.
 type Options struct {
 	Storage       *storage.Client
 	Tokens        *auth.TokenSource
 	ClientID      string
-	Roots         []string
+	Roots         []AgentRoot
 	RemoteControl bool
-	Logf          func(format string, args ...any)
+	// HistoryLimit caps the finished-transfer history (<= 0 means
+	// defaultTransferHistoryLimit).
+	HistoryLimit int
+	// Settings reads and changes the running sync's exclude list; nil
+	// answers PATCH/GET /settings with sync_not_running.
+	Settings ExcludeDirsSettings
+	Version  VersionInfo
+	Logf     func(format string, args ...any)
 }
 
-// Run starts the local agent API, keeps the tunnel connected (reconnecting
-// with backoff) until ctx is cancelled, then deregisters the device.
+// Run serves the agent API over the tunnel, keeping it connected
+// (reconnecting with backoff) until ctx is cancelled, then deregisters the
+// device.
 func Run(ctx context.Context, o Options) error {
-	logf := o.Logf
+	logf := logFunc(o.Logf)
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	secret := uuid.NewString()
-	_, ln, err := startAgentServer(o.Roots, secret, o.Storage, o.RemoteControl)
-	if err != nil {
-		return fmt.Errorf("could not start remote file agent: %w", err)
-	}
-	defer ln.Close()
+	secret := newAgentSecret()
+	a := startAgentServer(ctx, o.Roots, secret, o.Storage, o.RemoteControl, o.HistoryLimit, o.Settings)
+	a.logf = logf
+	a.version = o.Version
 	if o.RemoteControl {
-		logf("Remote control enabled (roots: %s)", strings.Join(o.Roots, ", "))
+		logf("Remote control enabled (roots: %s)", formatAgentRoots(o.Roots))
 	}
-	connectWithReconnect(ctx, o, secret, ln.Addr().String(), logf)
+	connectWithReconnect(ctx, o, secret, a.handler(), logf, nil)
 	deregister(o)
 	return nil
 }
 
-func connectOnce(ctx context.Context, o Options, secret, agentAddr string, logf func(string, ...any)) error {
+// connectOnce dials the storage API, takes the yamux server role, and serves
+// the agent API h on the streams it opens until the session ends or ctx is
+// cancelled. It presents the current access token, so reconnects pick up
+// refreshed tokens, and refreshes once on a 401/403. onConnected, if non-nil,
+// is called once the connection is actually established.
+func connectOnce(ctx context.Context, o Options, secret string, h http.Handler, logf logFunc, onConnected func()) error {
 	hostname, _ := os.Hostname()
 	q := url.Values{}
 	q.Set("clientId", o.ClientID)
@@ -75,6 +1569,8 @@ func connectOnce(ctx context.Context, o Options, secret, agentAddr string, logf 
 	q.Set("os", runtime.GOOS)
 	q.Set("arch", runtime.GOARCH)
 	q.Set("remoteControl", strconv.FormatBool(o.RemoteControl))
+	q.Set("version", o.Version.Version)
+	q.Set("clientType", agentClientType)
 	muxURL := toWSURL(strings.TrimRight(o.Storage.BaseURL, "/")) + "/v1/accounts/" + url.PathEscape(o.Storage.AccountID) + "/agent/connect?" + q.Encode()
 
 	presented := o.Tokens.Current()
@@ -85,9 +1581,14 @@ func connectOnce(ctx context.Context, o Options, secret, agentAddr string, logf 
 	dialer := *websocket.DefaultDialer
 	ws, resp, err := dialer.DialContext(ctx, muxURL, hdr)
 	if err != nil {
+		// On a failed handshake gorilla returns the HTTP response with an open
+		// body; close it so repeated reconnects don't leak file descriptors.
 		if resp != nil {
 			resp.Body.Close()
 		}
+		// The Storage API may report an expired token as 403, so refresh on
+		// both statuses; the caller reconnects with the refreshed token.
+		// Rotate is serialized with the sync engine's refreshes.
 		if resp != nil && (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && o.Tokens.HasRefresh() {
 			_, _ = o.Tokens.Rotate(ctx, presented)
 			return fmt.Errorf("dial rejected (HTTP %d); refreshed token, will retry", resp.StatusCode)
@@ -100,7 +1601,7 @@ func connectOnce(ctx context.Context, o Options, secret, agentAddr string, logf 
 	defer ws.Close()
 
 	conn := newWSConn(ws)
-	session, err := yamux.Server(conn, yamuxConfig())
+	session, err := yamux.Server(conn, yamuxConfig(logf))
 	if err != nil {
 		return fmt.Errorf("connection session failed: %w", err)
 	}
@@ -122,42 +1623,55 @@ func connectOnce(ctx context.Context, o Options, secret, agentAddr string, logf 
 	}()
 
 	logf("Brick connected to Brick Online (clientId=%s)", o.ClientID)
+	if onConnected != nil {
+		onConnected()
+	}
 
-	streamCh := make(chan net.Conn)
+	srv := newAgentHTTPServer(h, logf)
+	defer srv.Close()
 	errCh := make(chan error, 1)
-	go func() {
-		for {
-			stream, err := session.Accept()
-			if err != nil {
-				errCh <- err
-				return
-			}
-			select {
-			case streamCh <- stream:
-			case <-ctx.Done():
-				stream.Close()
-				return
-			}
-		}
-	}()
-	for {
-		select {
-		case <-ctx.Done():
-			return nil
-		case err := <-errCh:
-			return fmt.Errorf("session closed: %w", err)
-		case stream := <-streamCh:
-			go proxyAgentStream(stream, agentAddr, logf)
-		}
+	go func() { errCh <- srv.Serve(session) }()
+
+	select {
+	case <-ctx.Done():
+		// A deliberate local shutdown: send a proper close frame before the
+		// deferred srv.Close()/session.Close()/ws.Close() drop the raw
+		// connection, so the server logs a clean disconnect rather than an
+		// abnormal-closure error.
+		conn.closeGracefully()
+		return nil
+	case err := <-errCh:
+		return fmt.Errorf("session closed: %w", err)
 	}
 }
 
-func connectWithReconnect(ctx context.Context, o Options, secret, agentAddr string, logf func(string, ...any)) {
+// connectWithReconnect keeps the agent connected, retrying with backoff
+// until ctx is cancelled. It never gives up, since the agent is a long-lived
+// background service alongside sync. connected, if non-nil, is closed the
+// first time a connection succeeds.
+func connectWithReconnect(ctx context.Context, o Options, secret string, h http.Handler, logf logFunc, connected chan<- struct{}) {
+	var signalOnce sync.Once
+	signalConnected := func() {
+		if connected != nil {
+			signalOnce.Do(func() { close(connected) })
+		}
+	}
+
 	attempt := 0
 	for {
-		err := connectOnce(ctx, o, secret, agentAddr, logf)
+		established := false
+		err := connectOnce(ctx, o, secret, h, logf, func() {
+			established = true
+			signalConnected()
+		})
 		if ctx.Err() != nil || err == nil {
 			return
+		}
+		// A connection that was up and then dropped (e.g. a Storage API
+		// restart) starts the backoff over, so the device is back as soon as
+		// the server is, however many drops came before.
+		if established {
+			attempt = 0
 		}
 		delay := reconnectBackoff[min(attempt, len(reconnectBackoff)-1)]
 		logf("Brick Online disconnected (%v); reconnecting in %v...", err, delay)
@@ -170,20 +1684,29 @@ func connectWithReconnect(ctx context.Context, o Options, secret, agentAddr stri
 	}
 }
 
-// deregister best-effort removes this client from the Storage API.
+// deregister best-effort removes this client from the storage API on clean
+// shutdown. An unclean exit is handled server-side when the connection drops.
+// It uses a fresh context, as the session's is already cancelled.
 func deregister(o Options) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if resp, err := o.Storage.RawRequest(ctx, "DELETE", "/v1/accounts/"+o.Storage.AccountID+"/clients/"+o.ClientID); err == nil {
+	path := "/v1/accounts/" + url.PathEscape(o.Storage.AccountID) + "/clients/" + url.PathEscape(o.ClientID)
+	if resp, err := o.Storage.RawRequest(ctx, "DELETE", path); err == nil {
 		resp.Body.Close()
 	}
 }
 
-// ResolveRoots returns the absolute, de-duplicated agent roots.
-func ResolveRoots(roots []string) []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, p := range roots {
+// AgentRoot is a resolved remote-control root; see ResolveRoots.
+type AgentRoot = agentRoot
+
+// ResolveRoots returns the absolute, de-duplicated set of roots the agent
+// may access from the config's agentRoots. The sync folder itself is not
+// implicitly included. A root is read-only unless it sets readOnly: false,
+// and a path listed more than once is read-only if any listing says so.
+func ResolveRoots(roots []brickcfg.AgentRoot) []AgentRoot {
+	index := map[string]int{}
+	var out []agentRoot
+	add := func(p string, readOnly bool) {
 		if strings.HasPrefix(p, "~") {
 			if home, err := os.UserHomeDir(); err == nil {
 				p = filepath.Join(home, strings.TrimPrefix(p, "~"))
@@ -191,13 +1714,34 @@ func ResolveRoots(roots []string) []string {
 		}
 		abs, err := filepath.Abs(p)
 		if err != nil {
-			continue
+			return
 		}
 		abs = filepath.Clean(abs)
-		if !seen[abs] {
-			seen[abs] = true
-			out = append(out, abs)
+		if i, ok := index[abs]; ok {
+			out[i].readOnly = out[i].readOnly || readOnly
+			return
 		}
+		index[abs] = len(out)
+		out = append(out, agentRoot{path: abs, readOnly: readOnly})
+	}
+	for _, r := range roots {
+		add(r.Path, r.IsReadOnly())
 	}
 	return out
 }
+
+// formatAgentRoots renders roots for the "Remote control enabled" log line.
+func formatAgentRoots(roots []agentRoot) string {
+	parts := make([]string, len(roots))
+	for i, r := range roots {
+		mode := "read-write"
+		if r.readOnly {
+			mode = "read-only"
+		}
+		parts[i] = fmt.Sprintf("%s (%s)", r.path, mode)
+	}
+	return strings.Join(parts, ", ")
+}
+
+// newAgentSecret returns a fresh random secret for the agent session.
+func newAgentSecret() string { return uuid.NewString() }

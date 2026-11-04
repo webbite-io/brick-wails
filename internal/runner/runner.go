@@ -67,7 +67,10 @@ type Config struct {
 	Store   *brickcfg.Store
 	Tokens  *auth.TokenSource
 	Version string
-	Events  Events
+	// BuildTime and GitCommit identify the build to remote control's
+	// GET /version.
+	BuildTime, GitCommit string
+	Events               Events
 	// EngineOptions override loop timings (tests).
 	EngineOptions syncengine.Options
 	// DisableAgent turns the remote-file agent off (tests).
@@ -286,17 +289,19 @@ func (r *Runner) start(p StartParams) error {
 	r.mu.Unlock()
 	ok = true
 
-	paths := make([]string, len(cfg.AgentRoots))
-	for i, r := range cfg.AgentRoots {
-		paths[i] = r.Path
-	}
-	roots := agent.ResolveRoots(paths)
+	roots := agent.ResolveRoots(cfg.AgentRoots)
 	var agentWG sync.WaitGroup
 	if !r.cfg.DisableAgent {
 		agentWG.Add(1)
 		go func() {
 			defer agentWG.Done()
-			if err := agent.Run(ctx, agent.Options{Storage: sc, Tokens: r.cfg.Tokens, ClientID: cfg.ClientID, Roots: roots, RemoteControl: cfg.RemoteControl, Logf: r.logf}); err != nil {
+			if err := agent.Run(ctx, agent.Options{
+				Storage: sc, Tokens: r.cfg.Tokens, ClientID: cfg.ClientID,
+				Roots: roots, RemoteControl: cfg.RemoteControl,
+				HistoryLimit: cfg.TransferHistoryLimit,
+				Version:      agent.VersionInfo{Version: r.cfg.Version, BuildTime: r.cfg.BuildTime, GitCommit: r.cfg.GitCommit},
+				Logf:         r.logf,
+			}); err != nil {
 				r.logf("%v", err)
 			}
 		}()
