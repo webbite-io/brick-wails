@@ -26,13 +26,6 @@ do not "re-sync" these away:
   and a remote poll walks the folder while the watcher has reports the debounce
   worker hasn't acted on. A pass that fails or is interrupted drops
   `localTreeValid`.
-- `downloadFile`, `uploadNewFile` and `replaceFile` stream the file between
-  disk and the Storage API (`DownloadForSync`, `UploadStream`, `ReplaceStream`)
-  instead of holding it in memory, and record the hash of the bytes actually
-  written or sent. Each makes one attempt, cut off after
-  `TransferStallTimeout` without data (`storage.WithSingleAttempt`); a
-  failure is left for the next pass, as before. The CLI still reads whole
-  files into memory there.
 
 | brick-wails | brick-cli origin (`cmd/brick/`) | Notes |
 |---|---|---|
@@ -42,7 +35,7 @@ do not "re-sync" these away:
 | `auth.StartLogin` / `LoginSession.Wait` | `auth.go`: `runLogin` | no stdout; listener bound up front; account selection moved to `onboarding` |
 | `auth.TokenSource.Rotate`, `Client.Do` | `sync.go`: `tokenMu`, `rotateAccessToken`, `authedRequest`; `auth.go`: `authedGet/Post` | + re-reads config before refreshing (cross-process) |
 | `storage.Client` | `sync.go`: `storageClient` and its methods | identical endpoints; errors are `*storage.StatusError` (the CLI's `storageStatusError`) |
-| `storage` streaming and retries (`stream.go`, `retry.go`), `auth.Client.DoStream` | `transfer.go`: `getNode`, `downloadToFile`, `downloadToNewFile`, `streamGet`, `authedStreamRequest`, `progressReader`, `streamRequest`, `uploadStream`, `replaceStream`; `transfer_retry.go` | synced at `54eafd2`; exported names (`RetryTransfer`, `TransientError`, `PlaceNoClobber`, …) |
+| `storage` streaming and retries (`stream.go`, `retry.go`), `auth.Client.DoStream` | `transfer.go`: `getNode`, `downloadToFile`, `downloadToNewFile`, `streamGet`, `authedStreamRequest`, `progressReader`, `streamRequest`, `uploadStream`, `replaceStream`, `downloadForSync`; `transfer_retry.go` (incl. `withSingleAttempt`) | synced at `54eafd2`, plus sync streaming from `74558f4` (branch `perf/stream-sync-transfers`); exported names (`RetryTransfer`, `TransientError`, `PlaceNoClobber`, …) |
 | `syncengine.SyncState`, `LoadState`, `StatePath` | `sync.go`: `SyncEntry`, `SyncState`, `loadSyncState`, `syncStatePath` | identical JSON; atomic save |
 | `syncengine.Engine.QueueExcludeDirs`, `reconcileExcludeDirsChange`, `pendingExcludeDirs` | `sync.go`: `queueExcludeDirs`, `reconcileExcludeDirsChange`, `pendingExcludeDirs` | synced at `54eafd2` |
 | `runner.excludeDirsSettings` | `sync.go`: `syncExcludeDirsSettings` | saves via `Store.Update` (read-modify-write) instead of `tokenMu` + `saveConfig`, for the account the session syncs |
