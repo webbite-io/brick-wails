@@ -276,6 +276,12 @@ func New(cfg Config) *Engine {
 	return e
 }
 
+// syncLogPrefix starts every log line about something the sync engine did,
+// the way "Remote Control: " starts every remote control one — the form
+// brick-cli writes the same lines to brick.log in ("Sync: Uploaded a.txt").
+// Its TUI shows them with an icon after the prefix, which brick.log leaves out.
+const syncLogPrefix = "Sync: "
+
 func (e *Engine) logf(format string, args ...any) { e.sink.Logf(format, args...) }
 
 // Notify wakes the debounced reconcile worker for a local change whose location
@@ -417,9 +423,9 @@ func (e *Engine) SetPaused(p bool) {
 		return
 	}
 	if p {
-		e.logf("⏸ sync paused")
+		e.logf(syncLogPrefix + "Paused")
 	} else {
-		e.logf("▶ sync resumed")
+		e.logf(syncLogPrefix + "Resumed")
 		e.Notify()
 	}
 	e.sink.StatusChanged()

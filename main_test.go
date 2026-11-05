@@ -16,7 +16,7 @@ import (
 func TestOpenLogWritesDashedTimestamps(t *testing.T) {
 	dir := t.TempDir()
 	lg := openLog(dir, false)
-	lg.Printf("▶ sync resumed")
+	lg.Printf("Sync: Resumed")
 	lg.Printf("syncing %s (account %s)", "/home/someone/Brick", "acct-1")
 
 	data, err := os.ReadFile(filepath.Join(dir, logfile.Name))
@@ -25,7 +25,7 @@ func TestOpenLogWritesDashedTimestamps(t *testing.T) {
 	}
 	got := string(data)
 
-	want := regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UI: ▶ sync resumed\n` +
+	want := regexp.MustCompile(`^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UI: Sync: Resumed\n` +
 		`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UI: syncing /home/someone/Brick \(account acct-1\)\n$`)
 	if !want.MatchString(got) {
 		t.Errorf("brick.log =\n%q\nwant lines matching %v", got, want)

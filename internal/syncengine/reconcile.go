@@ -517,7 +517,7 @@ func (e *Engine) applyRemoteFolderMoves(remoteFolders map[string]storage.Node, l
 			}
 		}
 		e.moved.Add(1)
-		e.logf("→ moved %s to %s", m.oldRel, m.newRel)
+		e.logf(syncLogPrefix+"Moved %s to %s", m.oldRel, m.newRel)
 		e.publishActivity("move-folder", m.newRel)
 	}
 }
@@ -559,7 +559,7 @@ func (e *Engine) applyRemoteFileMoves(remoteFiles map[string]storage.Node, local
 		entry.RemoteEtag = node.Etag
 		e.state.Entries[newRel] = entry
 		e.moved.Add(1)
-		e.logf("→ moved %s to %s", oldRel, newRel)
+		e.logf(syncLogPrefix+"Moved %s to %s", oldRel, newRel)
 		e.publishActivity("move", newRel)
 	}
 }
@@ -767,7 +767,7 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 		handledDeletes[rel] = true
 		e.pruneRemoteSubtree(rel, remoteFolders, remoteFiles, folderID)
 		e.deleted.Add(1)
-		e.logf("🗑  trashed folder %s (deleted locally)", rel)
+		e.logf(syncLogPrefix+"Trashed folder %s (deleted locally)", rel)
 		e.publishActivity("trash-folder", rel)
 	}
 
@@ -904,7 +904,7 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 		}
 		delete(localDirs, rel)
 		e.deleted.Add(1)
-		e.logf("🗑  removed folder %s (deleted on server)", rel)
+		e.logf(syncLogPrefix+"Removed folder %s (deleted on server)", rel)
 		e.publishActivity("remove-folder", rel)
 	}
 
@@ -1153,7 +1153,7 @@ func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[
 			delete(localFiles, rel)
 			delete(e.state.Entries, rel)
 			e.deleted.Add(1)
-			e.logf("🗑  removed %s (deleted on server)", rel)
+			e.logf(syncLogPrefix+"Removed %s (deleted on server)", rel)
 			e.publishActivity("remove", rel)
 			return nil
 		}
@@ -1261,7 +1261,7 @@ func (e *Engine) keepBothFile(ctx context.Context, rel string, remoteNode storag
 	if err := e.uploadNewFile(ctx, copyRel, remoteFolders, folderID); err != nil {
 		return err
 	}
-	e.logf("⧉ kept both copies of %s (as %s)", rel, copyRel)
+	e.logf(syncLogPrefix+"Kept both copies of %s (as %s)", rel, copyRel)
 	e.publishActivity("keep-both", rel)
 	return nil
 }
@@ -1312,7 +1312,7 @@ func (e *Engine) downloadFile(ctx context.Context, rel string, node storage.Node
 	}
 	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: etag, LocalHash: got.SHA256, LocalSize: got.Size, SyncedAt: time.Now()}
 	e.downloaded.Add(1)
-	e.logf("↓ downloaded %s", rel)
+	e.logf(syncLogPrefix+"Downloaded %s", rel)
 	e.publishActivity("download", rel)
 	return nil
 }
@@ -1323,7 +1323,7 @@ func (e *Engine) deleteRemoteFile(ctx context.Context, rel, nodeID string) error
 	}
 	delete(e.state.Entries, rel)
 	e.deleted.Add(1)
-	e.logf("🗑  trashed %s (deleted locally)", rel)
+	e.logf(syncLogPrefix+"Trashed %s (deleted locally)", rel)
 	e.publishActivity("trash", rel)
 	return nil
 }
@@ -1376,7 +1376,7 @@ func (e *Engine) uploadNewFile(ctx context.Context, rel string, remoteFolders ma
 		return err
 	}
 	e.recordUpload(rel, node, body)
-	e.logf("↑ uploaded %s", rel)
+	e.logf(syncLogPrefix+"Uploaded %s", rel)
 	e.publishActivity("upload", rel)
 	return nil
 }
@@ -1395,7 +1395,7 @@ func (e *Engine) replaceFile(ctx context.Context, rel, nodeID string) error {
 		return err
 	}
 	e.recordUpload(rel, node, body)
-	e.logf("↑ uploaded %s (updated)", rel)
+	e.logf(syncLogPrefix+"Uploaded %s (updated)", rel)
 	e.publishActivity("update", rel)
 	return nil
 }
