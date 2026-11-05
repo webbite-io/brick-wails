@@ -26,6 +26,13 @@ do not "re-sync" these away:
   and a remote poll walks the folder while the watcher has reports the debounce
   worker hasn't acted on. A pass that fails or is interrupted drops
   `localTreeValid`.
+- `downloadFile`, `uploadNewFile` and `replaceFile` stream the file between
+  disk and the Storage API (`DownloadForSync`, `UploadStream`, `ReplaceStream`)
+  instead of holding it in memory, and record the hash of the bytes actually
+  written or sent. Each makes one attempt, cut off after
+  `TransferStallTimeout` without data (`storage.WithSingleAttempt`); a
+  failure is left for the next pass, as before. The CLI still reads whole
+  files into memory there.
 
 | brick-wails | brick-cli origin (`cmd/brick/`) | Notes |
 |---|---|---|

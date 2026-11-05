@@ -2,10 +2,13 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 )
 
@@ -42,6 +45,45 @@ func (c *Client) downloadNode(ctx context.Context, nodeID, destPath string, tota
 	return ResumableDownload(ctx, destPath, total, noClobber, onProgress, func(ctx context.Context, headers map[string]string) (*http.Response, error) {
 		return c.StreamGet(ctx, "/files/"+url.PathEscape(nodeID), headers)
 	}, errFrom)
+}
+
+// DownloadedFile is what DownloadForSync reports about the file it wrote.
+type DownloadedFile struct {
+	Size   int64
+	ETag   string // the response's ETag, unquoted; "" if it had none
+	SHA256 string // hex SHA-256 of the bytes put at destPath
+}
+
+// DownloadForSync is DownloadToFile for the sync engine, which records what
+// it wrote: the file's ETag, and the size and SHA-256 of the bytes put at
+// destPath. They're hashed off the temporary file before it is put in place,
+// so an edit landing right after can't be mistaken for the download.
+func (c *Client) DownloadForSync(ctx context.Context, nodeID, destPath string, total int64) (*DownloadedFile, error) {
+	var d DownloadedFile
+	fetch := func(ctx context.Context, headers map[string]string) (*http.Response, error) {
+		resp, err := c.StreamGet(ctx, "/files/"+url.PathEscape(nodeID), headers)
+		if err == nil && (resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusPartialContent) {
+			d.ETag = strings.Trim(resp.Header.Get("ETag"), `"`)
+		}
+		return resp, err
+	}
+	hashTemp := func(tmpPath string) error {
+		f, err := os.Open(tmpPath)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		h := sha256.New()
+		if d.Size, err = io.Copy(h, f); err != nil {
+			return err
+		}
+		d.SHA256 = hex.EncodeToString(h.Sum(nil))
+		return nil
+	}
+	if err := resumableDownload(ctx, destPath, total, false, nil, fetch, errFrom, hashTemp); err != nil {
+		return nil, err
+	}
+	return &d, nil
 }
 
 // StreamGet is Request for a GET whose response body is a file: it has no

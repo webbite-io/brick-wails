@@ -8,6 +8,7 @@ package fakestorage
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -73,6 +74,7 @@ type Server struct {
 	clock    int64
 	quota    int64
 	failNext map[string]int // "METHOD /suffix" prefix → remaining failures
+	failCode map[string]int // the status failNext answers with; 500 if unset
 
 	requests map[string]int
 }
@@ -101,6 +103,7 @@ func newServer(accountID string) *Server {
 		clock:     1000,
 		quota:     10 << 30,
 		failNext:  map[string]int{},
+		failCode:  map[string]int{},
 		requests:  map[string]int{},
 	}
 	s.nodes["root"] = &node{Node: Node{ID: "root", NodeType: "root"}}
@@ -354,8 +357,14 @@ func (s *Server) Paths() []string {
 // FailNext makes the next n requests whose "METHOD path-suffix" starts with
 // key fail with 500 (e.g. "GET /files/", "POST /files").
 func (s *Server) FailNext(key string, n int) {
+	s.FailNextWith(key, n, http.StatusInternalServerError)
+}
+
+// FailNextWith is FailNext answering with status code instead of 500.
+func (s *Server) FailNextWith(key string, n, code int) {
 	s.mu.Lock()
 	s.failNext[key] = n
+	s.failCode[key] = code
 	s.mu.Unlock()
 }
 
@@ -405,8 +414,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	for k, n := range s.failNext {
 		if n > 0 && strings.HasPrefix(key, k) {
 			s.failNext[k] = n - 1
+			code := cmp.Or(s.failCode[k], http.StatusInternalServerError)
 			s.mu.Unlock()
-			http.Error(w, "injected failure", http.StatusInternalServerError)
+			http.Error(w, "injected failure", code)
 			return
 		}
 	}

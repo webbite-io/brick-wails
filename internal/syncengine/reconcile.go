@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -1284,30 +1285,32 @@ func DupPath(rel string) string {
 // suppresses it, so our own download isn't mistaken for a local edit and echoed
 // back as an upload) — so without this the cache would not learn the file exists
 // until the next full walk.
+//
+// The file streams to disk rather than through memory, in one attempt: a
+// download that fails is left for the next pass, as before (see
+// storage.WithSingleAttempt).
 func (e *Engine) downloadFile(ctx context.Context, rel string, node storage.Node, localFiles map[string]int64, localDirs map[string]bool) error {
 	e.setInFlight(rel, "download")
 	defer e.clearInFlight()
 
-	data, etag, err := e.sc.Download(ctx, node.ID)
-	if err != nil {
-		return err
-	}
-	if etag == "" {
-		etag = node.Etag
-	}
 	abs := filepath.Join(e.folder, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return err
 	}
 	e.markRecentlyWritten(abs)
-	if err := AtomicWrite(abs, data); err != nil {
+	got, err := e.sc.DownloadForSync(storage.WithSingleAttempt(ctx), node.ID, abs, node.SizeBytes)
+	if err != nil {
 		return err
 	}
-	localFiles[rel] = int64(len(data))
+	etag := got.ETag
+	if etag == "" {
+		etag = node.Etag
+	}
+	localFiles[rel] = got.Size
 	if parent := parentOf(rel); parent != "" {
 		localDirs[parent] = true
 	}
-	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: etag, LocalHash: hashBytes(data), LocalSize: int64(len(data)), SyncedAt: time.Now()}
+	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: etag, LocalHash: got.SHA256, LocalSize: got.Size, SyncedAt: time.Now()}
 	e.downloaded.Add(1)
 	e.logf("↓ downloaded %s", rel)
 	e.publishActivity("download", rel)
@@ -1359,19 +1362,20 @@ func (e *Engine) uploadNewFile(ctx context.Context, rel string, remoteFolders ma
 	e.setInFlight(rel, "upload")
 	defer e.clearInFlight()
 
-	data, err := os.ReadFile(filepath.Join(e.folder, filepath.FromSlash(rel)))
+	body, size, err := openUpload(filepath.Join(e.folder, filepath.FromSlash(rel)))
 	if err != nil {
 		return err
 	}
+	defer body.Close()
 	parentID, err := e.ensureRemoteFolder(ctx, parentOf(rel), remoteFolders, folderID)
 	if err != nil {
 		return err
 	}
-	node, err := e.sc.Upload(ctx, parentID, baseName(rel), data)
+	node, err := e.sc.UploadStream(storage.WithSingleAttempt(ctx), parentID, baseName(rel), body, size, nil)
 	if err != nil {
 		return err
 	}
-	e.recordUpload(rel, node, data)
+	e.recordUpload(rel, node, body)
 	e.logf("↑ uploaded %s", rel)
 	e.publishActivity("upload", rel)
 	return nil
@@ -1381,44 +1385,76 @@ func (e *Engine) replaceFile(ctx context.Context, rel, nodeID string) error {
 	e.setInFlight(rel, "upload")
 	defer e.clearInFlight()
 
-	data, err := os.ReadFile(filepath.Join(e.folder, filepath.FromSlash(rel)))
+	body, size, err := openUpload(filepath.Join(e.folder, filepath.FromSlash(rel)))
 	if err != nil {
 		return err
 	}
-	node, err := e.sc.Replace(ctx, nodeID, data)
+	defer body.Close()
+	node, err := e.sc.ReplaceStream(storage.WithSingleAttempt(ctx), nodeID, body, size, nil)
 	if err != nil {
 		return err
 	}
-	e.recordUpload(rel, node, data)
+	e.recordUpload(rel, node, body)
 	e.logf("↑ uploaded %s (updated)", rel)
 	e.publishActivity("update", rel)
 	return nil
 }
 
-func (e *Engine) recordUpload(rel string, node *storage.Node, data []byte) {
-	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: node.Etag, LocalHash: hashBytes(data), LocalSize: int64(len(data)), SyncedAt: time.Now()}
+func (e *Engine) recordUpload(rel string, node *storage.Node, sent *uploadBody) {
+	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: node.Etag, LocalHash: sent.sum(), LocalSize: sent.n, SyncedAt: time.Now()}
 	e.uploaded.Add(1)
 }
 
+// uploadBody streams a file to the server, hashing what it reads so the sync
+// entry records exactly the bytes sent, not what the file holds by the time
+// the upload finishes. A resent request reads the body again from the start
+// (see auth.Client.DoStream), which starts the hash over.
+type uploadBody struct {
+	f *os.File
+	r *io.SectionReader // the file's first size bytes: what Content-Length promised
+	h hash.Hash
+	n int64
+}
+
+// openUpload opens path to be uploaded, returning its size.
+func openUpload(path string) (*uploadBody, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	return &uploadBody{f: f, r: io.NewSectionReader(f, 0, fi.Size()), h: sha256.New()}, fi.Size(), nil
+}
+
+func (b *uploadBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.h.Write(p[:n])
+	b.n += int64(n)
+	return n, err
+}
+
+func (b *uploadBody) Seek(offset int64, whence int) (int64, error) {
+	pos, err := b.r.Seek(offset, whence)
+	if err != nil {
+		return pos, err
+	}
+	if pos != 0 {
+		return pos, errors.New("upload body can only seek back to the start")
+	}
+	b.h.Reset()
+	b.n = 0
+	return 0, nil
+}
+
+func (b *uploadBody) Close() error { return b.f.Close() }
+
+func (b *uploadBody) sum() string { return hex.EncodeToString(b.h.Sum(nil)) }
+
 // --- helpers ---
-
-// AtomicWrite writes via a TmpSuffix temp file + rename.
-func AtomicWrite(path string, data []byte) error {
-	tmp := path + TmpSuffix
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
-func hashBytes(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
-}
 
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)

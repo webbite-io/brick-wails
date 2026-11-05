@@ -6,6 +6,8 @@ package storage_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -499,5 +501,35 @@ func TestPlaceNoClobber(t *testing.T) {
 	}
 	if got, _ := os.ReadFile(dest); string(got) != "new" {
 		t.Errorf("dest = %q, want it kept", got)
+	}
+}
+
+func TestSingleAttemptIsNotRetried(t *testing.T) {
+	fastRetries(t)
+	fs, sc := newFlakyFileServer(t, retryTestContent, "503")
+	dest, err := downloadTo(t, storage.WithSingleAttempt(context.Background()), sc, int64(len(retryTestContent)))
+	if err == nil {
+		t.Fatal("DownloadToFile succeeded, want the 503 to fail it")
+	}
+	if n := fs.requestCount(); n != 1 {
+		t.Errorf("server saw %d requests, want 1", n)
+	}
+	if left := tempFileFor(dest); left != "" {
+		t.Errorf("temp file %s left behind", left)
+	}
+}
+
+func TestDownloadForSyncReportsWhatItWrote(t *testing.T) {
+	fastRetries(t)
+	_, sc := newFlakyFileServer(t, retryTestContent, "drop")
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	got, err := sc.DownloadForSync(context.Background(), "f1", dest, int64(len(retryTestContent)))
+	if err != nil {
+		t.Fatalf("DownloadForSync: %v", err)
+	}
+	assertFileContent(t, dest, retryTestContent)
+	sum := sha256.Sum256(retryTestContent)
+	if got.Size != int64(len(retryTestContent)) || got.SHA256 != hex.EncodeToString(sum[:]) || got.ETag != "v1" {
+		t.Errorf("DownloadForSync = %+v, want the whole resumed file's size and hash, and ETag v1", got)
 	}
 }
