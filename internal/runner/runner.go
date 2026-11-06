@@ -108,6 +108,22 @@ type Runner struct {
 	statusMu      sync.Mutex
 	lastEmit      time.Time
 	pendingStatus bool
+
+	// agentMu guards the running remote-file agent, which ReloadAgent
+	// replaces without stopping the engine.
+	agentMu sync.Mutex
+	agent   *agentRun
+}
+
+// agentRun is one run of the remote-file agent within a sync session: what
+// it was started with, so ReloadAgent can start the next one the same way.
+type agentRun struct {
+	ctx       context.Context // the session's
+	cancel    context.CancelFunc
+	done      chan struct{}
+	sc        *storage.Client
+	eng       *syncengine.Engine
+	accountID string
 }
 
 // New returns a Runner in the not-configured state.
@@ -289,30 +305,22 @@ func (r *Runner) start(p StartParams) error {
 	r.mu.Unlock()
 	ok = true
 
-	roots := agent.ResolveRoots(cfg.AgentRoots)
-	var agentWG sync.WaitGroup
 	if !r.cfg.DisableAgent {
-		agentWG.Add(1)
-		go func() {
-			defer agentWG.Done()
-			if err := agent.Run(ctx, agent.Options{
-				Storage: sc, Tokens: r.cfg.Tokens, ClientID: cfg.ClientID,
-				Roots: roots, RemoteControl: cfg.RemoteControl,
-				HistoryLimit: cfg.TransferHistoryLimit,
-				Settings:     &excludeDirsSettings{store: r.cfg.Store, accountID: cfg.ActiveAccountID, eng: eng, logf: r.logf},
-				Version:      agent.VersionInfo{Version: r.cfg.Version, BuildTime: r.cfg.BuildTime, GitCommit: r.cfg.GitCommit},
-				Logf:         r.logf,
-			}); err != nil {
-				r.logf("%v", err)
-			}
-		}()
+		r.agentMu.Lock()
+		r.agent = r.startAgent(ctx, sc, eng, cfg)
+		r.agentMu.Unlock()
 	}
 
 	r.logf("syncing %s (account %s)", folder, cfg.ActiveAccountID)
 	go func() {
 		runErr := eng.Run(ctx)
 		cancel()
-		agentWG.Wait()
+		r.agentMu.Lock()
+		if r.agent != nil {
+			<-r.agent.done
+			r.agent = nil
+		}
+		r.agentMu.Unlock()
 		lk.Release()
 
 		r.mu.Lock()
@@ -328,6 +336,55 @@ func (r *Runner) start(p StartParams) error {
 		r.emitStatus()
 	}()
 	r.emitStatus()
+	return nil
+}
+
+// startAgent starts the remote-file agent for the session ctx with cfg's
+// roots and remote control setting.
+func (r *Runner) startAgent(ctx context.Context, sc *storage.Client, eng *syncengine.Engine, cfg *brickcfg.Config) *agentRun {
+	actx, cancel := context.WithCancel(ctx)
+	a := &agentRun{ctx: ctx, cancel: cancel, done: make(chan struct{}), sc: sc, eng: eng, accountID: cfg.ActiveAccountID}
+	go func() {
+		defer close(a.done)
+		if err := agent.Run(actx, agent.Options{
+			Storage: sc, Tokens: r.cfg.Tokens, ClientID: cfg.ClientID,
+			Roots: agent.ResolveRoots(cfg.AgentRoots), RemoteControl: cfg.RemoteControl,
+			HistoryLimit: cfg.TransferHistoryLimit,
+			Settings:     &excludeDirsSettings{store: r.cfg.Store, accountID: a.accountID, eng: eng, logf: r.logf},
+			Version:      agent.VersionInfo{Version: r.cfg.Version, BuildTime: r.cfg.BuildTime, GitCommit: r.cfg.GitCommit},
+			Logf:         r.logf,
+		}); err != nil {
+			r.logf("%v", err)
+		}
+	}()
+	return a
+}
+
+// ReloadAgent restarts the remote-file agent with config.yaml's current
+// remoteControl and agentRoots, which it otherwise only reads when syncing
+// starts. Sync carries on meanwhile. A no-op while not syncing: the next
+// start reads the config anyway.
+func (r *Runner) ReloadAgent() error {
+	r.agentMu.Lock()
+	defer r.agentMu.Unlock()
+	old := r.agent
+	if old == nil || old.ctx.Err() != nil {
+		return nil
+	}
+	cfg, err := r.cfg.Store.Load()
+	if err != nil {
+		return err
+	}
+	old.cancel()
+	<-old.done
+	if old.ctx.Err() != nil {
+		// The session ended while the old agent was shutting down.
+		r.agent = nil
+		return nil
+	}
+	// The session's account, even if another one has been made active since.
+	cfg.ActiveAccountID = old.accountID
+	r.agent = r.startAgent(old.ctx, old.sc, old.eng, cfg)
 	return nil
 }
 

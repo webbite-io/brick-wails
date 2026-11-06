@@ -344,13 +344,31 @@ func main() {
 		}
 	})
 	loginStart.addMenuItem(menu)
-	menu.AddSeparator()
+	// The remote control section comes between menu and tail. Its items
+	// change with agentRoots, and Wails menus can't insert items in the
+	// middle, so the tray's menu is put together from the three parts again
+	// whenever they do.
+	remote := newRemoteControlMenu(store, logger, run.ReloadAgent)
+	tail := app.NewMenu()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.
-	updateItem := menu.Add(updateMenuLabel)
-	menu.AddSeparator()
-	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
-	tray.SetMenu(menu)
+	updateItem := tail.Add(updateMenuLabel)
+	tail.AddSeparator()
+	tail.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
+	var layoutMu sync.Mutex
+	layoutMenu := func() {
+		layoutMu.Lock()
+		defer layoutMu.Unlock()
+		m := app.NewMenu()
+		m.Append(menu)
+		m.AddSeparator()
+		m.Append(remote.menu())
+		m.AddSeparator()
+		m.Append(tail)
+		tray.SetMenu(m)
+	}
+	remote.relayout = layoutMenu
+	layoutMenu()
 	tray.AttachWindow(popover).WindowOffset(4)
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		// Route the click to the menu, which is what both desktops expect of
@@ -449,6 +467,9 @@ func main() {
 			select {
 			case <-t.C:
 				evs.Status(run.Status())
+				// Picks up agentRoots and remoteControl changed by the setup
+				// wizard or brick-cli.
+				remote.refresh(false)
 			case <-app.Context().Done():
 				return
 			}
