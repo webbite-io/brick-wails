@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"log"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -24,11 +25,13 @@ const (
 	readOnlyLabel      = "Read-Only"
 	readWriteLabel     = "Read/Write"
 	removeRootLabel    = "Remove…"
+	addRootLabel       = "New Shared Folder…"
 )
 
 // remoteControlMenu is the tray's remote control section: a toggle for
 // config.yaml's remoteControl, then one submenu per agentRoots entry to
-// choose between read-only and read/write access to it, or remove it. The roots stay
+// choose between read-only and read/write access to it, or remove it, and
+// last an item to share another folder. The roots stay
 // listed while remote control is off, dimmed. The state is read from
 // config.yaml rather than kept here, so a change made by the setup wizard or
 // brick-cli shows on the next refresh.
@@ -41,12 +44,15 @@ type remoteControlMenu struct {
 	// which happens when roots are added or removed.
 	relayout func()
 	// confirmRemove asks the user before a root's "Remove…" item takes it
-	// out (see RemoteControlService).
+	// out, and pickNewRoot asks which folder "New Shared Folder…" adds (see
+	// RemoteControlService).
 	confirmRemove func(path string)
+	pickNewRoot   func()
 
-	mu     sync.Mutex
-	toggle *application.MenuItem
-	roots  []*rootMenuItem
+	mu      sync.Mutex
+	toggle  *application.MenuItem
+	roots   []*rootMenuItem
+	addRoot *application.MenuItem
 	shown  *remoteControlState
 }
 
@@ -79,6 +85,14 @@ func newRemoteControlMenu(store *brickcfg.Store, logger *log.Logger, apply func(
 			return "Remote control turned off from the tray"
 		})
 	})
+	// Enabled with remote control off too: a folder shared then is ready for
+	// when it's turned on.
+	m.addRoot = application.NewMenuItem(addRootLabel)
+	m.addRoot.OnClick(func(*application.Context) {
+		if m.pickNewRoot != nil {
+			m.pickNewRoot()
+		}
+	})
 	// The first call builds the items the tray menu starts with; there is
 	// nothing to replace yet.
 	m.refreshLocked(m.load(), false)
@@ -93,7 +107,7 @@ func (m *remoteControlMenu) menu() *application.Menu {
 	for _, r := range m.roots {
 		roots = append(roots, r.item)
 	}
-	return application.NewMenuFromItems(m.toggle, roots...)
+	return application.NewMenuFromItems(m.toggle, append(roots, m.addRoot)...)
 }
 
 // refresh brings the section in step with config.yaml. force redraws every
@@ -186,6 +200,40 @@ func (m *remoteControlMenu) newRootItem(path string) *rootMenuItem {
 	r.readOnly.OnClick(func(*application.Context) { m.setReadOnly(path, true) })
 	r.readWrite.OnClick(func(*application.Context) { m.setReadOnly(path, false) })
 	return r
+}
+
+// newRoot adds path to agentRoots with the given access level and so to the
+// tray, and hands it to the running agent. A folder already shared is left
+// as it is: its own submenu changes its access level.
+func (m *remoteControlMenu) newRoot(path string, readOnly bool) error {
+	abs, err := filepath.Abs(brickcfg.ExpandHome(path))
+	if err != nil {
+		return err
+	}
+	if info, err := os.Stat(abs); err != nil || !info.IsDir() {
+		return errors.New(abs + " is not a folder")
+	}
+	// Read-only stays unset so the entry is saved in the plain-path form.
+	var ro *bool
+	if !readOnly {
+		ro = new(bool)
+	}
+	shared := false
+	err = m.update(func(c *brickcfg.Config) string {
+		if shared = slices.ContainsFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == abs }); shared {
+			return ""
+		}
+		c.AgentRoots = append(c.AgentRoots, brickcfg.AgentRoot{Path: abs, ReadOnly: ro})
+		level := "read-only"
+		if !readOnly {
+			level = "read/write"
+		}
+		return "Remote control folder " + brickcfg.DisplayPath(abs) + " added from the tray (" + level + ")"
+	})
+	if err == nil && shared {
+		err = errors.New(brickcfg.DisplayPath(abs) + " is already shared")
+	}
+	return err
 }
 
 // removeRoot takes path out of agentRoots, every entry for it, and so out of

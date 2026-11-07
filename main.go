@@ -158,8 +158,11 @@ func main() {
 	// so the generated frontend bindings don't depend on the OS that
 	// generates them.
 	updSvc := &UpdateService{logger: logger, version: Version}
-	var removeWindow *application.WebviewWindow
-	rcSvc := &RemoteControlService{window: func() *application.WebviewWindow { return removeWindow }}
+	var removeWindow, addWindow *application.WebviewWindow
+	rcSvc := &RemoteControlService{
+		removeWindow: func() *application.WebviewWindow { return removeWindow },
+		addWindow:    func() *application.WebviewWindow { return addWindow },
+	}
 	updater := newAppUpdater(logger, updSvc)
 
 	app := application.New(application.Options{
@@ -252,11 +255,28 @@ func main() {
 		rcSvc.Cancel()
 		e.Cancel()
 	})
+	// Shares a new folder over remote control, from the tray's "New Shared
+	// Folder…" (see frontend/src/add.ts). The remove window's look, with a
+	// folder to pick and the setup wizard's access-level choice below.
+	addWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "AddRoot",
+		Title:            "Webbite Brick",
+		Width:            420,
+		Height:           480,
+		DisableResize:    true,
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/add.html",
+	})
+	addWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		rcSvc.CloseAdd()
+		e.Cancel()
+	})
 
 	// On macOS, be in the Dock and Cmd-Tab while any window is open and
 	// tray-only otherwise. Sparkle's windows count too (setUpdaterUIOpen);
 	// the update window of the other platforms doesn't exist there.
-	trackAppSwitcher(app, popover, setupWindow, removeWindow)
+	trackAppSwitcher(app, popover, setupWindow, removeWindow, addWindow)
 	// On macOS, the app menu's About item opens Brick's own About window,
 	// which links to the website.
 	setupAboutWindow(app)
@@ -370,8 +390,8 @@ func main() {
 	// middle, so the tray's menu is put together from the three parts again
 	// whenever they do.
 	remote := newRemoteControlMenu(store, logger, run.ReloadAgent)
-	remote.confirmRemove = rcSvc.confirmRemove
-	rcSvc.remove = remote.removeRoot
+	remote.confirmRemove, remote.pickNewRoot = rcSvc.confirmRemove, rcSvc.pickNewRoot
+	rcSvc.remove, rcSvc.add = remote.removeRoot, remote.newRoot
 	tail := app.NewMenu()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.

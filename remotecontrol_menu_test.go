@@ -79,3 +79,39 @@ func TestRemoveRoot(t *testing.T) {
 		t.Errorf("a no-op removal reloaded the agent")
 	}
 }
+
+func TestNewRoot(t *testing.T) {
+	store := brickcfg.NewStoreAt(filepath.Join(t.TempDir(), "config.yaml"))
+	applied := 0
+	m := newRemoteControlMenu(store, log.New(io.Discard, "", 0), func() error { applied++; return nil })
+	m.relayout = func() {}
+	ro, rw := t.TempDir(), t.TempDir()
+
+	if err := m.newRoot(ro, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.newRoot(rw, false); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Read-only keeps the plain-path form; read/write is saved explicitly.
+	off := false
+	if !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: ro}, {Path: rw, ReadOnly: &off}}) {
+		t.Errorf("agentRoots %+v", c.AgentRoots)
+	}
+	if applied != 2 || len(m.roots) != 2 {
+		t.Errorf("applied %d, tray roots %d", applied, len(m.roots))
+	}
+	if err := m.newRoot(ro, false); err == nil {
+		t.Error("sharing a folder twice should say it's already shared")
+	}
+	if err := m.newRoot(filepath.Join(ro, "missing"), true); err == nil {
+		t.Error("a missing folder was shared")
+	}
+	if applied != 2 {
+		t.Errorf("a refused share reloaded the agent")
+	}
+}
