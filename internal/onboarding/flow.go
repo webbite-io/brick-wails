@@ -500,7 +500,14 @@ func (f *Flow) Connect(ctx context.Context) (*ScopeInfo, error) {
 	if !first {
 		return info, nil
 	}
-	top, total, err := sc.FolderSummary(ctx, root.ID)
+	top, err := sc.TopFolders(ctx, root.ID)
+	if err != nil {
+		return nil, err
+	}
+	// The calling user's quota usage stands in for the size of a full sync:
+	// summing every file instead would mean walking the whole tree. It counts
+	// trash too, so the step calls it approximate.
+	q, err := sc.Quota(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +515,7 @@ func (f *Flow) Connect(ctx context.Context) (*ScopeInfo, error) {
 		info.Folders = append(info.Folders, n.Name)
 	}
 	info.ShowScope = len(top) > 0
-	info.TotalHuman = storage.HumanSize(total)
+	info.TotalHuman = storage.HumanSize(q.CallingUser.UsedBytes)
 	if ac := cfg.ActiveAccount(); ac != nil {
 		info.AlreadyExcluded = append([]string{}, ac.ExcludeDirs...)
 	}

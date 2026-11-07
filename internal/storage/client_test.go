@@ -287,23 +287,19 @@ func TestCreateFolderReusesOn409(t *testing.T) {
 	}
 }
 
-func TestFolderSummary(t *testing.T) {
+func TestTopFolders(t *testing.T) {
 	c, fs := testutil.NewStorage(t)
-	fs.PutFile("A/x.bin", "12345")
 	fs.PutFile("A/deep/y.bin", "123")
 	fs.PutFile("B/z.bin", "12")
 	fs.PutFile("top.bin", "1")
 	fs.PutFile("Gone/w.bin", "1234567890")
 	fs.Trash("Gone")
-	folders, total, err := c.FolderSummary(context.Background(), "root")
+	folders, err := c.TopFolders(context.Background(), "root")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(folders) != 2 || folders[0].Name != "A" || folders[1].Name != "B" {
 		t.Errorf("folders = %+v", folders)
-	}
-	if total != 11 {
-		t.Errorf("total = %d, want 11", total)
 	}
 }
 

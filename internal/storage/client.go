@@ -351,33 +351,20 @@ func (c *Client) CreateFolder(ctx context.Context, parentID, name string) (*Node
 	return &n, nil
 }
 
-// FolderSummary walks the tree under rootID and returns its direct folder
-// children plus the total size of every file (for the sync-scope step).
-func (c *Client) FolderSummary(ctx context.Context, rootID string) (topFolders []Node, totalSize int64, err error) {
-	queue := []string{rootID}
-	for len(queue) > 0 {
-		id := queue[0]
-		queue = queue[1:]
-		children, err := c.ListChildren(ctx, id)
-		if err != nil {
-			return nil, 0, err
-		}
-		for _, ch := range children {
-			if ch.IsDeleted {
-				continue
-			}
-			switch ch.NodeType {
-			case "folder":
-				if id == rootID {
-					topFolders = append(topFolders, ch)
-				}
-				queue = append(queue, ch.ID)
-			case "file":
-				totalSize += ch.SizeBytes
-			}
+// TopFolders returns the folders directly under rootID (for the sync-scope
+// step), skipping trashed ones.
+func (c *Client) TopFolders(ctx context.Context, rootID string) ([]Node, error) {
+	children, err := c.ListChildren(ctx, rootID)
+	if err != nil {
+		return nil, err
+	}
+	var folders []Node
+	for _, ch := range children {
+		if ch.NodeType == "folder" && !ch.IsDeleted {
+			folders = append(folders, ch)
 		}
 	}
-	return topFolders, totalSize, nil
+	return folders, nil
 }
 
 // HumanSize renders bytes as e.g. "12.3 GB".

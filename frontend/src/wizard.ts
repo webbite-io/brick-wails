@@ -111,9 +111,11 @@ export const CONFLICT_OPTIONS: Option[] = [
 // default, like brick-cli: it tends to hold a lot of large files.
 export const CAMERA_UPLOADS = "Camera Uploads";
 
+// totalHuman is the user's quota usage, which also counts trash, so it is
+// only roughly what a full sync downloads.
 export function scopeOptions(totalHuman: string): Option[] {
   return [
-    { value: "all", label: `Sync all folders from Brick (${totalHuman})` },
+    { value: "all", label: `Sync all folders from Brick (about ${totalHuman} used)` },
     { value: "allButCamera", label: `Sync all folders except "${CAMERA_UPLOADS}" from Brick` },
     { value: "pick", label: "Pick which folders to sync" },
   ];
