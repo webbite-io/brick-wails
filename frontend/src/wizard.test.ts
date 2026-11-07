@@ -9,6 +9,7 @@ import {
   needsWindow,
   progressDots,
   remoteRootOptions,
+  scopeChoice,
   scopeOptions,
   screenForRoute,
 } from "./wizard";
@@ -82,6 +83,15 @@ describe("options", () => {
 
   it("shows the total size in the scope choice", () => {
     expect(scopeOptions("12.3 GB")[0].label).toBe("Sync all folders from Brick (12.3 GB)");
+  });
+
+  it("offers leaving out Camera Uploads between all and pick, and opens on it", () => {
+    expect(scopeOptions("1 GB").map((o) => o.value)).toEqual(["all", "allButCamera", "pick"]);
+    expect(scopeOptions("1 GB")[1].label).toBe('Sync all folders except "Camera Uploads" from Brick');
+    expect(scopeChoice([])).toBe("allButCamera");
+    expect(scopeChoice(["Camera Uploads"])).toBe("allButCamera");
+    expect(scopeChoice(["Photos"])).toBe("pick");
+    expect(scopeChoice(["Camera Uploads", "Photos"])).toBe("pick");
   });
 
   it("shows the custom remote root once picked", () => {

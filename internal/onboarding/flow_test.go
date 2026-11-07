@@ -419,6 +419,23 @@ func TestSetRemoteAccessAndScopeValidation(t *testing.T) {
 	}
 }
 
+// Leaving out Camera Uploads works whether or not the account has the folder
+// yet, so it stays out once the first camera upload creates it.
+func TestSetSyncScopeExceptCameraUploads(t *testing.T) {
+	e := newEnv(t)
+	e.login()
+	e.route()
+	if err := e.flow.SetSyncScopeExceptCameraUploads(); err != nil {
+		t.Fatal(err)
+	}
+	if ac := e.cfg().ActiveAccount(); !reflect.DeepEqual(ac.ExcludeDirs, []string{CameraUploadsFolder}) {
+		t.Errorf("excludeDirs %v", ac.ExcludeDirs)
+	}
+	if got := e.flow.Checklist(); got[len(got)-1] != "Folders selected (all except Camera Uploads)" {
+		t.Errorf("checklist %q", got)
+	}
+}
+
 func TestLoginCancelAndBeginErrors(t *testing.T) {
 	e := newEnv(t)
 	if _, err := e.flow.AwaitLogin(context.Background()); err == nil {

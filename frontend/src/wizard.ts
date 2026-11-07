@@ -35,7 +35,7 @@ export function needsWindow(step: string): boolean {
 // (o--o--o--o--o) instead of the numbered checklist brick-cli prints, which
 // cost too much vertical space here. Logging in is the first: it is already
 // behind the user when the wizard's own screens start, so its dot is green
-// from the sync-folder step on, and answering the last one (remote access)
+// from the sync-folder step on, and answering the last one (remote control)
 // leaves the whole bar green.
 export const WIZARD_STEPS = ["login", "folder", "conflict", "scope", "remote"] as const;
 
@@ -107,16 +107,29 @@ export const CONFLICT_OPTIONS: Option[] = [
   { value: "copy", label: "Clone duplicate files so nothing is lost." },
 ];
 
+// CAMERA_UPLOADS is the top-level folder the sync-scope step leaves out by
+// default, like brick-cli: it tends to hold a lot of large files.
+export const CAMERA_UPLOADS = "Camera Uploads";
+
 export function scopeOptions(totalHuman: string): Option[] {
   return [
     { value: "all", label: `Sync all folders from Brick (${totalHuman})` },
+    { value: "allButCamera", label: `Sync all folders except "${CAMERA_UPLOADS}" from Brick` },
     { value: "pick", label: "Pick which folders to sync" },
   ];
 }
 
-export const REMOTE_OPTIONS: Option[] = [
-  { value: "yes", label: "Yes" },
-  { value: "no", label: "No" },
+// scopeChoice is the option the sync-scope step opens on: brick-cli's default
+// of everything but Camera Uploads, unless the account already leaves out
+// some other set of folders, which only the list can show.
+export function scopeChoice(excluded: string[]): string {
+  if (excluded.length === 0 || (excluded.length === 1 && excluded[0] === CAMERA_UPLOADS)) return "allButCamera";
+  return "pick";
+}
+
+export const ACCESS_OPTIONS: Option[] = [
+  { value: "ro", label: "Read-Only" },
+  { value: "rw", label: "Read/Write" },
 ];
 
 export function remoteRootOptions(home: string, custom?: string): Option[] {

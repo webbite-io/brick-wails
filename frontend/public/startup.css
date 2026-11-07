@@ -298,7 +298,18 @@
     flex-shrink: 0;
 }
 
-/* Shown but not answerable: the remote-access folders once the user says no. */
+/* Radio rows side by side, splitting the width: the remote-control access
+   level. */
+.option-row {
+    display: flex;
+    gap: 6px;
+}
+
+.option-row .option {
+    flex: 1;
+}
+
+/* Shown but not answerable: the remote-control choices once the user unticks Enable. */
 .option.disabled,
 .step-label.disabled {
     opacity: 0.4;

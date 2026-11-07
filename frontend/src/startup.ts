@@ -9,14 +9,16 @@ import { Events } from "@wailsio/runtime";
 import { OnboardingService } from "../bindings/github.com/webbite-io/brick-wails";
 import type { Route, ScopeInfo } from "../bindings/github.com/webbite-io/brick-wails/internal/onboarding/models";
 import {
+  ACCESS_OPTIONS,
+  CAMERA_UPLOADS,
   CONFLICT_OPTIONS,
-  REMOTE_OPTIONS,
   describeError,
   folderOptions,
   needsWindow,
   presentable,
   progressDots,
   remoteRootOptions,
+  scopeChoice,
   scopeOptions,
   screenForRoute,
   type Icon,
@@ -187,10 +189,18 @@ interface Radios {
   setEnabled: (on: boolean) => void;
 }
 
-// radioGroup renders options as radio rows.
-function radioGroup(name: string, options: Option[], selected?: string, onChange?: (v: string) => void): Radios {
+// radioGroup renders options as radio rows; inline puts them side by side in
+// one row, for a short choice like an access level.
+function radioGroup(
+  name: string,
+  options: Option[],
+  selected?: string,
+  onChange?: (v: string) => void,
+  inline = false,
+): Radios {
   const group = document.createElement("div");
-  group.style.display = "contents";
+  if (inline) group.className = "option-row";
+  else group.style.display = "contents";
   for (const [i, o] of options.entries()) {
     const label = document.createElement("label");
     label.className = "option";
@@ -526,7 +536,9 @@ async function connectStep() {
   }
 }
 
-function scopeStep(info: ScopeInfo) {
+// choice is what the user picked last time through, so Back returns to it
+// rather than to the default.
+function scopeStep(info: ScopeInfo, choice?: string) {
   render({ icon: "ok", title: "Sync scope", message: "One last decision to make:" });
   setProgress("scope");
   bodyEl.innerHTML = "";
@@ -536,22 +548,26 @@ function scopeStep(info: ScopeInfo) {
   // The list is phrased as what to sync, so a tick means "sync this" and the
   // backend gets the unticked ones (it takes exclusions, like brick-cli).
   let getSelected: () => string[] = () => folders;
+  // With nothing left out yet, the list starts out ticking every folder but
+  // Camera Uploads, like brick-cli's.
+  const unticked = excluded.length ? excluded : [CAMERA_UPLOADS];
   const listFolders = () => {
     if (picking) return;
     picking = true;
     stepLabel("Select folders to sync");
     getSelected = checkboxGroup(
       folders,
-      folders.filter((f) => !excluded.includes(f)),
+      folders.filter((f) => !unticked.includes(f)),
     );
   };
-  // An account that already leaves folders out — including one the user has
-  // just walked back into this step to change — opens on the list, showing
-  // what is synced today rather than resetting them to "all".
-  const scope = radioGroup("scope", scopeOptions(info.totalHuman), excluded.length ? "pick" : "all", (v) => {
+  // An account that already leaves out other folders — including one the
+  // user has just walked back into this step to change — opens on the list,
+  // showing what is synced today rather than resetting to the default.
+  const selected = choice ?? scopeChoice(excluded);
+  const scope = radioGroup("scope", scopeOptions(info.totalHuman), selected, (v) => {
     if (v === "pick") listFolders();
   });
-  if (excluded.length) listFolders();
+  if (selected === "pick") listFolders();
   setActions(
     {
       label: "Next",
@@ -559,11 +575,18 @@ function scopeStep(info: ScopeInfo) {
       icon: "next",
       onClick: async () => {
         try {
-          const all = scope.value() === "all";
-          const keep = getSelected();
-          const drop = all ? [] : folders.filter((f) => !keep.includes(f));
-          await OnboardingService.SetSyncScope(all, drop);
-          remember(() => scopeStep({ ...info, alreadyExcluded: drop }));
+          const picked = scope.value();
+          let drop: string[];
+          if (picked === "allButCamera") {
+            drop = [CAMERA_UPLOADS];
+            await OnboardingService.SetSyncScopeExceptCameraUploads();
+          } else {
+            const all = picked === "all";
+            const keep = getSelected();
+            drop = all ? [] : folders.filter((f) => !keep.includes(f));
+            await OnboardingService.SetSyncScope(all, drop);
+          }
+          remember(() => scopeStep({ ...info, alreadyExcluded: drop }, picked));
           await firstRemoteStep();
         } catch (err) {
           fieldError(describeError(err));
@@ -574,33 +597,38 @@ function scopeStep(info: ScopeInfo) {
   );
 }
 
-// --- remote access (promptForRemoteControl) ---
+// --- remote control (promptForRemoteControl) ---
 
-// firstRemoteStep enters the remote-access step from the one before it, with
+// firstRemoteStep enters the remote-control step from the one before it, with
 // "Start at login" showing the current setting — on for a fresh install.
 async function firstRemoteStep() {
   const startAtLogin = canStartAtLogin ? await OnboardingService.StartAtLogin().catch(() => true) : true;
-  remoteStep(undefined, "yes", startAtLogin);
+  remoteStep(undefined, true, true, startAtLogin);
 }
 
-// answer and startAtLogin are what the user said last time through, so Back
-// returns to their choices rather than to the defaults.
-function remoteStep(custom?: string, answer: string = "yes", startAtLogin = true) {
-  render({ icon: "ok", title: "Remote access", message: "Do you want to remotely access files on this device via Brick?" });
+// enabled, readOnly and startAtLogin are what the user said last time
+// through, so Back returns to their choices rather than to the defaults.
+function remoteStep(custom?: string, enabled = true, readOnly = true, startAtLogin = true) {
+  render({ icon: "ok", title: "Remote Control", message: "Do you want to remotely access files on this device via Brick?" });
   setProgress("remote");
   bodyEl.innerHTML = "";
-  const yesNo = radioGroup("remote", REMOTE_OPTIONS, answer, (v) => enableRoots(v === "yes"));
+  const enableBox = checkboxOption("Enable", enabled);
+  // Read-Only is the CLI's default access level, and the one the tray's
+  // per-root menu starts on.
+  const access = radioGroup("access", ACCESS_OPTIONS, readOnly ? "ro" : "rw", undefined, true);
   const rootLabel = stepLabel("Which folder should be accessible remotely?");
   const roots = radioGroup("root", remoteRootOptions(home, custom), custom ? "custom" : "home");
-  // Saying no leaves the folder choice on screen, greyed out and inert: it
+  // Unticking leaves the rest of the step on screen, greyed out and inert: it
   // answers a question the user has just declined, and taking the rows away
   // would make the step jump around as they change their mind.
-  const enableRoots = (on: boolean) => {
+  const enableRest = (on: boolean) => {
+    access.setEnabled(on);
     rootLabel.classList.toggle("disabled", !on);
     roots.setEnabled(on);
   };
-  enableRoots(answer === "yes"); // Back into a declined step lands on "no"
-  // Not a remote-access question, but this is the last step that asks
+  enableBox.onchange = () => enableRest(enableBox.checked);
+  enableRest(enabled); // Back into a declined step lands unticked
+  // Not a remote-control question, but this is the last step that asks
   // anything. Ticked or not, Next applies it, and the tray's own
   // "Start at Login" item follows.
   let loginBox: HTMLInputElement | null = null;
@@ -609,6 +637,7 @@ function remoteStep(custom?: string, answer: string = "yes", startAtLogin = true
     loginBox = checkboxOption("Start at login", startAtLogin);
   }
   const wantsLoginStart = () => loginBox?.checked ?? startAtLogin;
+  const wantsReadOnly = () => access.value() !== "rw";
   setActions(
     {
       label: "Next",
@@ -616,21 +645,21 @@ function remoteStep(custom?: string, answer: string = "yes", startAtLogin = true
       icon: "next",
       onClick: async () => {
         try {
-          if (yesNo.value() === "no") {
-            await OnboardingService.SetRemoteAccess(false, "");
+          if (!enableBox.checked) {
+            await OnboardingService.SetRemoteAccess(false, "", true);
           } else if (roots.value() === "custom") {
             const picked = custom || (await OnboardingService.PickDirectory("/", "Pick a folder to expose remotely"));
             if (!picked) return; // cancelled: stay
             if (!custom) {
-              remoteStep(picked, "yes", wantsLoginStart()); // show the choice before saving
+              remoteStep(picked, true, wantsReadOnly(), wantsLoginStart()); // show the choice before saving
               return;
             }
-            await OnboardingService.SetRemoteAccess(true, picked);
+            await OnboardingService.SetRemoteAccess(true, picked, wantsReadOnly());
           } else {
-            await OnboardingService.SetRemoteAccess(true, home);
+            await OnboardingService.SetRemoteAccess(true, home, wantsReadOnly());
           }
           if (loginBox) await OnboardingService.SetStartAtLogin(loginBox.checked);
-          remember(() => remoteStep(custom, yesNo.value(), wantsLoginStart()));
+          remember(() => remoteStep(custom, enableBox.checked, wantsReadOnly(), wantsLoginStart()));
           doneStep();
         } catch (err) {
           fieldError(describeError(err));

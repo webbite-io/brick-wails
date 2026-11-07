@@ -556,6 +556,31 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 	return nil
 }
 
+// CameraUploadsFolder is the top-level folder the sync-scope step leaves out
+// by default, since it tends to hold a lot of large files.
+const CameraUploadsFolder = "Camera Uploads"
+
+// SetSyncScopeExceptCameraUploads syncs every folder but Camera Uploads, like
+// brick-cli's default sync-scope choice. The folder is excluded even when it
+// doesn't exist yet, so it is still left out once the first camera upload
+// creates it.
+func (f *Flow) SetSyncScopeExceptCameraUploads() error {
+	if _, err := f.store.Update(func(c *brickcfg.Config) error {
+		ac := c.EnsureActiveAccount()
+		if ac == nil {
+			return errors.New("no account selected")
+		}
+		ac.ExcludeDirs = []string{CameraUploadsFolder}
+		return nil
+	}); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.done("Folders selected (all except %s)", CameraUploadsFolder)
+	f.mu.Unlock()
+	return nil
+}
+
 // SetRemoteAccess records the remote-file-access decision. When enabled,
 // root (empty = home) is added to agentRoots, read-only (the CLI's default
 // access level).
