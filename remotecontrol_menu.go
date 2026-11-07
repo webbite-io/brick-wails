@@ -23,11 +23,12 @@ const (
 	remoteControlLabel = "Remote Control"
 	readOnlyLabel      = "Read-Only"
 	readWriteLabel     = "Read/Write"
+	removeRootLabel    = "Remove…"
 )
 
 // remoteControlMenu is the tray's remote control section: a toggle for
 // config.yaml's remoteControl, then one submenu per agentRoots entry to
-// choose between read-only and read/write access to it. The roots stay
+// choose between read-only and read/write access to it, or remove it. The roots stay
 // listed while remote control is off, dimmed. The state is read from
 // config.yaml rather than kept here, so a change made by the setup wizard or
 // brick-cli shows on the next refresh.
@@ -39,6 +40,9 @@ type remoteControlMenu struct {
 	// relayout re-sets the tray menu once the section's items have changed,
 	// which happens when roots are added or removed.
 	relayout func()
+	// confirmRemove asks the user before a root's "Remove…" item takes it
+	// out (see RemoteControlService).
+	confirmRemove func(path string)
 
 	mu     sync.Mutex
 	toggle *application.MenuItem
@@ -173,9 +177,34 @@ func (m *remoteControlMenu) newRootItem(path string) *rootMenuItem {
 		readWrite: newCheckMenuItem(readWriteLabel),
 	}
 	sub.Append(application.NewMenuFromItems(r.readOnly, r.readWrite))
+	sub.AddSeparator()
+	sub.Add(removeRootLabel).OnClick(func(*application.Context) {
+		if m.confirmRemove != nil {
+			m.confirmRemove(path)
+		}
+	})
 	r.readOnly.OnClick(func(*application.Context) { m.setReadOnly(path, true) })
 	r.readWrite.OnClick(func(*application.Context) { m.setReadOnly(path, false) })
 	return r
+}
+
+// removeRoot takes path out of agentRoots, every entry for it, and so out of
+// the tray. Remote control itself stays as it was.
+func (m *remoteControlMenu) removeRoot(path string) error {
+	found := false
+	err := m.update(func(c *brickcfg.Config) string {
+		n := len(c.AgentRoots)
+		c.AgentRoots = slices.DeleteFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == path })
+		if found = len(c.AgentRoots) < n; !found {
+			return ""
+		}
+		return "Remote control folder " + brickcfg.DisplayPath(path) + " removed from the tray"
+	})
+	if err == nil && !found {
+		// Already gone: brick-cli or the setup wizard removed it meanwhile.
+		err = errors.New(brickcfg.DisplayPath(path) + " is no longer shared")
+	}
+	return err
 }
 
 func (m *remoteControlMenu) setReadOnly(path string, readOnly bool) {
@@ -206,8 +235,8 @@ func (m *remoteControlMenu) setReadOnly(path string, readOnly bool) {
 
 // update saves fn's change to config.yaml, hands it to the running agent and
 // refreshes the section. fn returns the line to log, or "" when it changed
-// nothing.
-func (m *remoteControlMenu) update(fn func(c *brickcfg.Config) string) {
+// nothing. A config.yaml that couldn't be saved is logged and returned.
+func (m *remoteControlMenu) update(fn func(c *brickcfg.Config) string) error {
 	var msg string
 	_, err := m.store.Update(func(c *brickcfg.Config) error {
 		msg = fn(c)
@@ -225,6 +254,7 @@ func (m *remoteControlMenu) update(fn func(c *brickcfg.Config) string) {
 	// Forced, to put back a check the platform flipped by itself (macOS's
 	// checkbox items) when that isn't what was saved.
 	m.refresh(true)
+	return err
 }
 
 // rootLabel is how the tray names the root at path: under the home folder it

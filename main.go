@@ -158,6 +158,8 @@ func main() {
 	// so the generated frontend bindings don't depend on the OS that
 	// generates them.
 	updSvc := &UpdateService{logger: logger, version: Version}
+	var removeWindow *application.WebviewWindow
+	rcSvc := &RemoteControlService{window: func() *application.WebviewWindow { return removeWindow }}
 	updater := newAppUpdater(logger, updSvc)
 
 	app := application.New(application.Options{
@@ -167,6 +169,7 @@ func main() {
 			application.NewService(syncSvc),
 			application.NewService(onbSvc),
 			application.NewService(updSvc),
+			application.NewService(rcSvc),
 		},
 		Assets: application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 		Mac: application.MacOptions{
@@ -180,7 +183,7 @@ func main() {
 			run.Stop()
 		},
 	})
-	evs.app, syncSvc.app, onbSvc.app, updSvc.app = app, app, app, app
+	evs.app, syncSvc.app, onbSvc.app, updSvc.app, rcSvc.app = app, app, app, app, app
 
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
@@ -232,10 +235,28 @@ func main() {
 		e.Cancel()
 	})
 
+	// Asks before a remote control root's tray item "Remove…" takes it out
+	// (see frontend/src/remove.ts). Styled after the setup window, but sized
+	// to its one question and not resizable. Closing it is the same as Cancel.
+	removeWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "RemoveRoot",
+		Title:            "Webbite Brick",
+		Width:            420,
+		Height:           340,
+		DisableResize:    true,
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/remove.html",
+	})
+	removeWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		rcSvc.Cancel()
+		e.Cancel()
+	})
+
 	// On macOS, be in the Dock and Cmd-Tab while any window is open and
 	// tray-only otherwise. Sparkle's windows count too (setUpdaterUIOpen);
 	// the update window of the other platforms doesn't exist there.
-	trackAppSwitcher(app, popover, setupWindow)
+	trackAppSwitcher(app, popover, setupWindow, removeWindow)
 	// On macOS, the app menu's About item opens Brick's own About window,
 	// which links to the website.
 	setupAboutWindow(app)
@@ -349,6 +370,8 @@ func main() {
 	// middle, so the tray's menu is put together from the three parts again
 	// whenever they do.
 	remote := newRemoteControlMenu(store, logger, run.ReloadAgent)
+	remote.confirmRemove = rcSvc.confirmRemove
+	rcSvc.remove = remote.removeRoot
 	tail := app.NewMenu()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.

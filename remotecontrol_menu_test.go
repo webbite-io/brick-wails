@@ -2,7 +2,15 @@
 
 package main
 
-import "testing"
+import (
+	"io"
+	"log"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/webbite-io/brick-wails/internal/brickcfg"
+)
 
 func TestRootLabel(t *testing.T) {
 	t.Setenv("HOME", "/home/blund")
@@ -32,5 +40,42 @@ func TestRootLabel(t *testing.T) {
 		if n := len([]rune(got)); n > tc.keep+3 {
 			t.Errorf("rootLabel(%q, %d) is %d characters", tc.path, tc.keep, n)
 		}
+	}
+}
+
+func TestRemoveRoot(t *testing.T) {
+	store := brickcfg.NewStoreAt(filepath.Join(t.TempDir(), "config.yaml"))
+	rw := false
+	if _, err := store.Update(func(c *brickcfg.Config) error {
+		c.RemoteControl = true
+		c.AgentRoots = []brickcfg.AgentRoot{{Path: "/srv/a"}, {Path: "/srv/b", ReadOnly: &rw}, {Path: "/srv/a"}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	applied := 0
+	m := newRemoteControlMenu(store, log.New(io.Discard, "", 0), func() error { applied++; return nil })
+	relaid := 0
+	m.relayout = func() { relaid++ }
+
+	if err := m.removeRoot("/srv/a"); err != nil {
+		t.Fatal(err)
+	}
+	c, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Every entry for the path goes; remote control itself stays on.
+	if !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: "/srv/b", ReadOnly: &rw}}) || !c.RemoteControl {
+		t.Errorf("config after removal: %v %+v", c.RemoteControl, c.AgentRoots)
+	}
+	if applied != 1 || relaid != 1 || len(m.roots) != 1 || m.roots[0].path != "/srv/b" {
+		t.Errorf("applied %d, relaid out %d, tray roots %d", applied, relaid, len(m.roots))
+	}
+	if err := m.removeRoot("/srv/a"); err == nil {
+		t.Error("removing a root that is already gone should say so")
+	}
+	if applied != 1 {
+		t.Errorf("a no-op removal reloaded the agent")
 	}
 }
