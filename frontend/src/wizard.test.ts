@@ -107,6 +107,11 @@ describe("describeError", () => {
     expect(describeError("plain")).toBe("plain");
   });
 
+  it("unwraps the error a Go method returned", () => {
+    const err = new Error('{"message":"~/Docs is already shared","cause":{},"kind":"RuntimeError"}');
+    expect(describeError(err)).toBe("~/Docs is already shared");
+  });
+
   it("never surfaces a raw payload", () => {
     expect(describeError(new Error('{"kind":"ReferenceError","message":"x"}'))).toBe(GENERIC_ERROR);
     expect(describeError({})).toBe(GENERIC_ERROR);

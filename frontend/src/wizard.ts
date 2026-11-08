@@ -162,5 +162,20 @@ export function describeError(err: unknown): string {
       : err && typeof err === "object" && "message" in err
         ? String((err as { message: unknown }).message)
         : String(err);
-  return presentable(raw, GENERIC_ERROR);
+  return presentable(runtimeErrorMessage(raw) ?? raw, GENERIC_ERROR);
+}
+
+// runtimeErrorMessage unwraps the error a bound Go method returned. Wails
+// rejects the call with it as JSON — {"message": …, "kind": "RuntimeError"}
+// — and the message is the Go side's own sentence, written to be shown. The
+// other kinds (ReferenceError, TypeError) are the binding itself failing,
+// and stay out of the window.
+function runtimeErrorMessage(raw: string): string | undefined {
+  try {
+    const e = JSON.parse(raw) as { kind?: unknown; message?: unknown };
+    if (e?.kind === "RuntimeError" && typeof e.message === "string") return e.message;
+  } catch {
+    // not JSON: a plain message
+  }
+  return undefined;
 }
