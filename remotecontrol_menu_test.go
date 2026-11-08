@@ -105,13 +105,17 @@ func TestNewRoot(t *testing.T) {
 	if applied != 2 || len(m.roots) != 2 {
 		t.Errorf("applied %d, tray roots %d", applied, len(m.roots))
 	}
-	if err := m.newRoot(ro, false); err == nil {
-		t.Error("sharing a folder twice should say it's already shared")
+	// Sharing a folder again is a no-op that succeeds, closing the window.
+	if err := m.newRoot(ro, false); err != nil {
+		t.Errorf("sharing a folder twice: %v", err)
+	}
+	if c, _ := store.Load(); len(c.AgentRoots) != 2 || c.AgentRoots[0].ReadOnly != nil {
+		t.Errorf("sharing a folder twice changed agentRoots: %+v", c.AgentRoots)
 	}
 	if err := m.newRoot(filepath.Join(ro, "missing"), true); err == nil {
 		t.Error("a missing folder was shared")
 	}
 	if applied != 2 {
-		t.Errorf("a refused share reloaded the agent")
+		t.Errorf("a share that changed nothing reloaded the agent")
 	}
 }

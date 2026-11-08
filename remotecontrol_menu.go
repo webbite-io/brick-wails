@@ -53,7 +53,7 @@ type remoteControlMenu struct {
 	toggle  *application.MenuItem
 	roots   []*rootMenuItem
 	addRoot *application.MenuItem
-	shown  *remoteControlState
+	shown   *remoteControlState
 }
 
 type rootMenuItem struct {
@@ -204,7 +204,8 @@ func (m *remoteControlMenu) newRootItem(path string) *rootMenuItem {
 
 // newRoot adds path to agentRoots with the given access level and so to the
 // tray, and hands it to the running agent. A folder already shared is left
-// as it is: its own submenu changes its access level.
+// as it is, and that counts as done: its own submenu changes its access
+// level.
 func (m *remoteControlMenu) newRoot(path string, readOnly bool) error {
 	abs, err := filepath.Abs(brickcfg.ExpandHome(path))
 	if err != nil {
@@ -218,9 +219,8 @@ func (m *remoteControlMenu) newRoot(path string, readOnly bool) error {
 	if !readOnly {
 		ro = new(bool)
 	}
-	shared := false
-	err = m.update(func(c *brickcfg.Config) string {
-		if shared = slices.ContainsFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == abs }); shared {
+	return m.update(func(c *brickcfg.Config) string {
+		if slices.ContainsFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == abs }) {
 			return ""
 		}
 		c.AgentRoots = append(c.AgentRoots, brickcfg.AgentRoot{Path: abs, ReadOnly: ro})
@@ -230,10 +230,6 @@ func (m *remoteControlMenu) newRoot(path string, readOnly bool) error {
 		}
 		return "Remote control folder " + brickcfg.DisplayPath(abs) + " added from the tray (" + level + ")"
 	})
-	if err == nil && shared {
-		err = errors.New(brickcfg.DisplayPath(abs) + " is already shared")
-	}
-	return err
 }
 
 // removeRoot takes path out of agentRoots, every entry for it, and so out of
