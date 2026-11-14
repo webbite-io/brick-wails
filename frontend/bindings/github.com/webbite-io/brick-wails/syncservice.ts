@@ -31,8 +31,8 @@ export function Activity(limit: number): $CancellablePromise<syncengine$0.Activi
 }
 
 /**
- * Identity returns the logged-in account's name and the user's, for the
- * popover's second row. Changes are pushed as "brick:identity" events.
+ * Identity returns the logged-in account's name and the user's email, for
+ * the popover's second row. Changes are pushed as "brick:identity" events.
  */
 export function Identity(): $CancellablePromise<$models.Identity> {
     return $Call.ByID(1576828696);

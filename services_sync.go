@@ -22,8 +22,8 @@ type SyncService struct {
 // Status returns the current sync status (see runner.Status).
 func (s *SyncService) Status() runner.Status { return s.runner.Status() }
 
-// Identity returns the logged-in account's name and the user's, for the
-// popover's second row. Changes are pushed as "brick:identity" events.
+// Identity returns the logged-in account's name and the user's email, for
+// the popover's second row. Changes are pushed as "brick:identity" events.
 func (s *SyncService) Identity() Identity {
 	if s.identity == nil {
 		return Identity{}

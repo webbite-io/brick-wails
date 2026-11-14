@@ -42,7 +42,7 @@ func TestIdentityWatcher(t *testing.T) {
 			return Identity{}
 		}
 	}
-	if got, want := next(), (Identity{Account: "Acme", User: "Ada Lovelace"}); got != want {
+	if got, want := next(), (Identity{Account: "Acme", User: "ada@example.com"}); got != want {
 		t.Errorf("identity = %+v, want %+v", got, want)
 	}
 	if got := w.current(); got.Account != "Acme" {

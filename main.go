@@ -558,7 +558,7 @@ func main() {
 				// Picks up agentRoots and remoteControl changed by the setup
 				// wizard or brick-cli.
 				remote.refresh(false)
-				// Fetches the account and user names after a new login.
+				// Fetches the account name and user email after a new login.
 				identity.refresh()
 			case <-app.Context().Done():
 				return

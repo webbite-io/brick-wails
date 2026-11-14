@@ -114,7 +114,7 @@ function renderStatus(status: any) {
 }
 
 // renderIdentity shows the logged-in account's name on the left and the
-// user's on the right; the row is hidden while neither is known.
+// user's email on the right; the row is hidden while neither is known.
 function renderIdentity(id: any) {
     const account = id?.account ?? '';
     const user = id?.user ?? '';

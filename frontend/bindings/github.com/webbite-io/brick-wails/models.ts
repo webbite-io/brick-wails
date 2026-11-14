@@ -3,8 +3,9 @@
 
 /**
  * Identity is who the status popover says is logged in: the active account's
- * name and the user's, fetched the way brick-cli's whoami does
- * (/oauth2/userinfo and /v1/accounts/{id}). Either is "" when unknown.
+ * name and the user's email address (their name when no email is given),
+ * fetched the way brick-cli's whoami does (/oauth2/userinfo and
+ * /v1/accounts/{id}). Either is "" when unknown.
  */
 export interface Identity {
     "account": string;

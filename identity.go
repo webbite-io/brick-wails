@@ -12,8 +12,9 @@ import (
 )
 
 // Identity is who the status popover says is logged in: the active account's
-// name and the user's, fetched the way brick-cli's whoami does
-// (/oauth2/userinfo and /v1/accounts/{id}). Either is "" when unknown.
+// name and the user's email address (their name when no email is given),
+// fetched the way brick-cli's whoami does (/oauth2/userinfo and
+// /v1/accounts/{id}). Either is "" when unknown.
 type Identity struct {
 	Account string `json:"account"`
 	User    string `json:"user"`
@@ -79,8 +80,8 @@ func (w *identityWatcher) fetch(key, accountID string) {
 	var id Identity
 	u, err := w.client.UserInfo(ctx)
 	if err == nil {
-		if id.User = strings.TrimSpace(u.GivenName + " " + u.FamilyName); id.User == "" {
-			id.User = u.Email
+		if id.User = strings.TrimSpace(u.Email); id.User == "" {
+			id.User = strings.TrimSpace(u.GivenName + " " + u.FamilyName)
 		}
 		var a *auth.Account
 		if a, err = w.client.Account(ctx, accountID); err == nil {
