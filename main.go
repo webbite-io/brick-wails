@@ -326,11 +326,23 @@ func main() {
 		}
 		return badged
 	}
+	// Padded after badging, so the dot shrinks along with the glyph.
+	pad := func(icon []byte) []byte {
+		if trayIconScale == 1 {
+			return icon
+		}
+		padded, err := trayicon.Pad(icon, trayIconScale)
+		if err != nil {
+			logger.Printf("tray icon: %v", err)
+			return icon
+		}
+		return padded
+	}
 	faces := func(icon []byte) trayIconSet {
 		return trayIconSet{
-			plain:  icon,
-			update: badge(icon, trayicon.UpdateBlue),
-			paused: badge(icon, trayicon.PausedYellow),
+			plain:  pad(icon),
+			update: pad(badge(icon, trayicon.UpdateBlue)),
+			paused: pad(badge(icon, trayicon.PausedYellow)),
 		}
 	}
 	lightIcons, darkIcons := faces(trayIconLight), faces(trayIconDark)
