@@ -48,6 +48,13 @@ export interface Route {
  */
 export interface ScopeInfo {
     "showScope": boolean;
+
+    /**
+     * HasCameraUploads is whether the account has a top-level Camera Uploads
+     * folder. Without one, it is left out of sync whatever the scope step
+     * picks, so the step has no separate "all but Camera Uploads" choice.
+     */
+    "hasCameraUploads": boolean;
     "showRemote": boolean;
     "totalHuman": string;
     "folders": string[] | null;

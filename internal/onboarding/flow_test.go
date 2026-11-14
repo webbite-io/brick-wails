@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -173,7 +174,7 @@ func TestFullOnboardingHappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !scope.ShowScope || !scope.ShowRemote || scope.TotalHuman != "8 B" || !reflect.DeepEqual(scope.Folders, []string{"Photos", "Work"}) {
+	if !scope.ShowScope || !scope.ShowRemote || scope.HasCameraUploads || scope.TotalHuman != "8 B" || !reflect.DeepEqual(scope.Folders, []string{"Photos", "Work"}) {
 		t.Errorf("scope %+v", scope)
 	}
 	if err := e.flow.SetSyncScope(false, []string{"Photos"}); err != nil {
@@ -189,7 +190,7 @@ func TestFullOnboardingHappyPath(t *testing.T) {
 
 	c := e.cfg()
 	ac := c.ActiveAccount()
-	if ac.StorageSyncFolder != def || !reflect.DeepEqual(ac.ExcludeDirs, []string{"Photos"}) || !c.RemoteControl || !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: e.home}}) {
+	if ac.StorageSyncFolder != def || !reflect.DeepEqual(ac.ExcludeDirs, []string{"Photos", CameraUploadsFolder}) || !c.RemoteControl || !reflect.DeepEqual(c.AgentRoots, []brickcfg.AgentRoot{{Path: e.home}}) {
 		t.Errorf("config %+v / %+v", c, ac)
 	}
 	want := []string{
@@ -255,6 +256,10 @@ func TestNonEmptyFolderRequiresConflictMode(t *testing.T) {
 	scope, err := e.flow.Connect(context.Background())
 	if err != nil || scope.ShowScope {
 		t.Errorf("no remote folders → no scope step: %+v %v", scope, err)
+	}
+	// With no step to ask in, a future Camera Uploads folder is left out anyway.
+	if ac := e.cfg().ActiveAccount(); !reflect.DeepEqual(ac.ExcludeDirs, []string{CameraUploadsFolder}) {
+		t.Errorf("excludeDirs %v, want Camera Uploads left out", ac.ExcludeDirs)
 	}
 	if p := e.flow.Finish(); !p.FirstSync || p.ConflictMode != "copy" {
 		t.Errorf("params %+v", p)
@@ -453,4 +458,52 @@ func TestLoginCancelAndBeginErrors(t *testing.T) {
 		t.Errorf("begin after cancel: %v", err)
 	}
 	e.flow.CancelLogin()
+}
+
+// Camera Uploads is only left out by default while it doesn't exist on Brick:
+// once it does, the scope step offers it like any other folder, and syncing
+// everything means everything.
+func TestSyncScopeLeavesOutCameraUploadsOnlyWhileMissing(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		files   []string
+		all     bool
+		exclude []string
+		want    []string
+	}{
+		{"missing, sync all", []string{"Work/a.txt"}, true, nil, []string{CameraUploadsFolder}},
+		{"missing, pick", []string{"Work/a.txt", "Music/b.mp3"}, false, []string{"Music"}, []string{"Music", CameraUploadsFolder}},
+		{"present, sync all", []string{"Work/a.txt", "Camera Uploads/p.jpg"}, true, nil, nil},
+		{"present, pick", []string{"Work/a.txt", "Camera Uploads/p.jpg"}, false, []string{"Work"}, []string{"Work"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			for _, f := range tc.files {
+				e.fs.PutFile(f, "x")
+			}
+			e.login()
+			e.route()
+			def, _ := e.flow.DefaultSyncFolder()
+			if _, err := e.flow.ChooseSyncFolder(def); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := e.flow.ConfirmSyncFolder(""); err != nil {
+				t.Fatal(err)
+			}
+			scope, err := e.flow.Connect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			present := slices.Contains(tc.files, "Camera Uploads/p.jpg")
+			if !scope.ShowScope || scope.HasCameraUploads != present {
+				t.Errorf("scope %+v", scope)
+			}
+			if err := e.flow.SetSyncScope(tc.all, tc.exclude); err != nil {
+				t.Fatal(err)
+			}
+			if got := e.cfg().ActiveAccount().ExcludeDirs; !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("excludeDirs %v, want %v", got, tc.want)
+			}
+		})
+	}
 }

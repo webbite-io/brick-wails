@@ -112,21 +112,25 @@ export const CONFLICT_OPTIONS: Option[] = [
 export const CAMERA_UPLOADS = "Camera Uploads";
 
 // totalHuman is the user's quota usage, which also counts trash, so it is
-// only roughly what a full sync downloads.
-export function scopeOptions(totalHuman: string): Option[] {
+// only roughly what a full sync downloads. Without a Camera Uploads folder on
+// Brick, the backend leaves one out whatever is picked, so leaving it out is
+// no separate choice.
+export function scopeOptions(totalHuman: string, hasCameraUploads = true): Option[] {
   return [
     { value: "all", label: `Sync all folders from Brick (about ${totalHuman} used)` },
-    { value: "allButCamera", label: `Sync all folders except "${CAMERA_UPLOADS}" from Brick` },
+    ...(hasCameraUploads ? [{ value: "allButCamera", label: `Sync all folders except "${CAMERA_UPLOADS}" from Brick` }] : []),
     { value: "pick", label: "Pick which folders to sync" },
   ];
 }
 
 // scopeChoice is the option the sync-scope step opens on: brick-cli's default
-// of everything but Camera Uploads, unless the account already leaves out
+// of everything but Camera Uploads (or just everything, when there is no
+// Camera Uploads folder to leave out), unless the account already leaves out
 // some other set of folders, which only the list can show.
-export function scopeChoice(excluded: string[]): string {
-  if (excluded.length === 0 || (excluded.length === 1 && excluded[0] === CAMERA_UPLOADS)) return "allButCamera";
-  return "pick";
+export function scopeChoice(excluded: string[], hasCameraUploads = true): string {
+  const others = excluded.filter((f) => f !== CAMERA_UPLOADS);
+  if (others.length > 0) return "pick";
+  return hasCameraUploads ? "allButCamera" : "all";
 }
 
 export const ACCESS_OPTIONS: Option[] = [

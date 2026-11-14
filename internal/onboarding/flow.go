@@ -80,11 +80,15 @@ type FolderChoice struct {
 
 // ScopeInfo is returned by Connect: whether to show the sync-scope step.
 type ScopeInfo struct {
-	ShowScope       bool     `json:"showScope"`
-	ShowRemote      bool     `json:"showRemote"`
-	TotalHuman      string   `json:"totalHuman"`
-	Folders         []string `json:"folders"`
-	AlreadyExcluded []string `json:"alreadyExcluded"`
+	ShowScope bool `json:"showScope"`
+	// HasCameraUploads is whether the account has a top-level Camera Uploads
+	// folder. Without one, it is left out of sync whatever the scope step
+	// picks, so the step has no separate "all but Camera Uploads" choice.
+	HasCameraUploads bool     `json:"hasCameraUploads"`
+	ShowRemote       bool     `json:"showRemote"`
+	TotalHuman       string   `json:"totalHuman"`
+	Folders          []string `json:"folders"`
+	AlreadyExcluded  []string `json:"alreadyExcluded"`
 }
 
 // Flow holds one onboarding session's in-memory decisions.
@@ -515,6 +519,14 @@ func (f *Flow) Connect(ctx context.Context) (*ScopeInfo, error) {
 		info.Folders = append(info.Folders, n.Name)
 	}
 	info.ShowScope = len(top) > 0
+	info.HasCameraUploads = slices.Contains(info.Folders, CameraUploadsFolder)
+	if !info.ShowScope {
+		// No scope step to ask in, but a future Camera Uploads folder is
+		// still left out, as SetSyncScope does when there is one.
+		if err := f.excludeCameraUploads(); err != nil {
+			return nil, err
+		}
+	}
 	info.TotalHuman = storage.HumanSize(q.CallingUser.UsedBytes)
 	if ac := cfg.ActiveAccount(); ac != nil {
 		info.AlreadyExcluded = append([]string{}, ac.ExcludeDirs...)
@@ -543,6 +555,12 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 			excl = append(excl, e)
 		}
 	}
+	picked := len(excl)
+	if !valid[CameraUploadsFolder] {
+		// Not on Brick yet: left out regardless, so it isn't synced by
+		// default once the first camera upload creates it.
+		excl = append(excl, CameraUploadsFolder)
+	}
 	if _, err := f.store.Update(func(c *brickcfg.Config) error {
 		ac := c.EnsureActiveAccount()
 		if ac == nil {
@@ -554,10 +572,10 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 		return err
 	}
 	f.mu.Lock()
-	if all || len(excl) == 0 {
+	if picked == 0 {
 		f.done("Folders selected (all)")
 	} else {
-		f.done("Folders selected (%d of %d)", len(top)-len(excl), len(top))
+		f.done("Folders selected (%d of %d)", len(top)-picked, len(top))
 	}
 	f.mu.Unlock()
 	return nil
@@ -586,6 +604,22 @@ func (f *Flow) SetSyncScopeExceptCameraUploads() error {
 	f.done("Folders selected (all except %s)", CameraUploadsFolder)
 	f.mu.Unlock()
 	return nil
+}
+
+// excludeCameraUploads adds Camera Uploads to the active account's
+// excludeDirs, keeping whatever else is already there.
+func (f *Flow) excludeCameraUploads() error {
+	_, err := f.store.Update(func(c *brickcfg.Config) error {
+		ac := c.EnsureActiveAccount()
+		if ac == nil {
+			return errors.New("no account selected")
+		}
+		if !slices.Contains(ac.ExcludeDirs, CameraUploadsFolder) {
+			ac.ExcludeDirs = append(ac.ExcludeDirs, CameraUploadsFolder)
+		}
+		return nil
+	})
+	return err
 }
 
 // SetRemoteAccess records the remote-file-access decision. When enabled,

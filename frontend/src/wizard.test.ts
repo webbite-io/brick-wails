@@ -94,6 +94,13 @@ describe("options", () => {
     expect(scopeChoice(["Camera Uploads", "Photos"])).toBe("pick");
   });
 
+  it("drops the Camera Uploads option and opens on all when there is no such folder", () => {
+    expect(scopeOptions("1 GB", false).map((o) => o.value)).toEqual(["all", "pick"]);
+    expect(scopeChoice([], false)).toBe("all");
+    expect(scopeChoice(["Camera Uploads"], false)).toBe("all");
+    expect(scopeChoice(["Photos"], false)).toBe("pick");
+  });
+
   it("shows the custom remote root once picked", () => {
     expect(remoteRootOptions("/home/ada")[1].hint).toBeUndefined();
     expect(remoteRootOptions("/home/ada", "/srv")[1].hint).toBe("/srv");

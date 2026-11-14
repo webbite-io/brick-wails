@@ -563,8 +563,8 @@ function scopeStep(info: ScopeInfo, choice?: string) {
   // An account that already leaves out other folders — including one the
   // user has just walked back into this step to change — opens on the list,
   // showing what is synced today rather than resetting to the default.
-  const selected = choice ?? scopeChoice(excluded);
-  const scope = radioGroup("scope", scopeOptions(info.totalHuman), selected, (v) => {
+  const selected = choice ?? scopeChoice(excluded, info.hasCameraUploads);
+  const scope = radioGroup("scope", scopeOptions(info.totalHuman, info.hasCameraUploads), selected, (v) => {
     if (v === "pick") listFolders();
   });
   if (selected === "pick") listFolders();
