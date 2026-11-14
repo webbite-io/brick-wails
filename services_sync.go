@@ -15,10 +15,21 @@ type SyncService struct {
 	runner *runner.Runner
 	// openSetup shows the setup window (for "Finish setup"/"Log in again").
 	openSetup func()
+	// identity reports who is logged in (see identityWatcher).
+	identity func() Identity
 }
 
 // Status returns the current sync status (see runner.Status).
 func (s *SyncService) Status() runner.Status { return s.runner.Status() }
+
+// Identity returns the logged-in account's name and the user's, for the
+// popover's second row. Changes are pushed as "brick:identity" events.
+func (s *SyncService) Identity() Identity {
+	if s.identity == nil {
+		return Identity{}
+	}
+	return s.identity()
+}
 
 // Activity returns up to limit recent sync events, newest first.
 func (s *SyncService) Activity(limit int) []syncengine.ActivityEvent {

@@ -19,11 +19,23 @@ import * as runner$0 from "./internal/runner/models.js";
 // @ts-ignore: Unused imports
 import * as syncengine$0 from "./internal/syncengine/models.js";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
 /**
  * Activity returns up to limit recent sync events, newest first.
  */
 export function Activity(limit: number): $CancellablePromise<syncengine$0.ActivityEvent[] | null> {
     return $Call.ByID(2574522431, limit);
+}
+
+/**
+ * Identity returns the logged-in account's name and the user's, for the
+ * popover's second row. Changes are pushed as "brick:identity" events.
+ */
+export function Identity(): $CancellablePromise<$models.Identity> {
+    return $Call.ByID(1576828696);
 }
 
 /**

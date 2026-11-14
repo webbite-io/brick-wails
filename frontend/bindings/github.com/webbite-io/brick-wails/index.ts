@@ -15,6 +15,7 @@ export {
 };
 
 export type {
+    Identity,
     RemoteControlStatus,
     StartResult,
     UpdateView

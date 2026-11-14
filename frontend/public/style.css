@@ -81,6 +81,28 @@ body {
 .rc-access.rw { color: #22c55e; }
 .rc-access.ro { color: #ef4444; }
 
+/* The account (left) and the user (right) each get half the row, cut with
+   an ellipsis when longer. */
+.identity {
+    display: flex;
+    margin: 0 0 4px;
+    font-size: 12px;
+    color: #a1a1aa;
+}
+
+.identity-account,
+.identity-user {
+    flex: 0 0 50%;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.identity-user {
+    text-align: right;
+}
+
 .folder {
     margin: 0 0 4px;
     color: #a1a1aa;

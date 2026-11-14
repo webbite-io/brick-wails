@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -313,6 +314,17 @@ func (c *Client) UserInfo(ctx context.Context) (*UserInfo, error) {
 		return nil, err
 	}
 	return &u, nil
+}
+
+// Account fetches one account by ID, as brick-cli's whoami does.
+func (c *Client) Account(ctx context.Context, id string) (*Account, error) {
+	var body struct {
+		Account Account `json:"account"`
+	}
+	if err := c.getJSON(ctx, "/v1/accounts/"+url.PathEscape(id), &body); err != nil {
+		return nil, err
+	}
+	return &body.Account, nil
 }
 
 // Accounts fetches every account the user has access to.

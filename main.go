@@ -152,7 +152,8 @@ func main() {
 	flow := onboarding.New(env, store, tokens)
 
 	var setupWindow *application.WebviewWindow
-	syncSvc := &SyncService{runner: run}
+	identity := &identityWatcher{store: store, client: auth.NewClient(tokens), logger: logger}
+	syncSvc := &SyncService{runner: run, identity: identity.current}
 	onbSvc := &OnboardingService{flow: flow, runner: run, loginStart: loginStart, window: func() *application.WebviewWindow { return setupWindow }}
 	// Bound on every platform, macOS included where Sparkle takes its place,
 	// so the generated frontend bindings don't depend on the OS that
@@ -416,6 +417,8 @@ func main() {
 	remote.confirmRemove, remote.pickNewRoot = rcSvc.confirmRemove, rcSvc.pickNewRoot
 	rcSvc.remove, rcSvc.add, rcSvc.status = remote.removeRoot, remote.newRoot, remote.status
 	remote.onChange = func(s RemoteControlStatus) { app.Event.Emit("brick:remote-control", s) }
+	identity.onChange = func(id Identity) { app.Event.Emit("brick:identity", id) }
+	identity.refresh()
 	tail := app.NewMenu()
 	// Its own section, above the update item. Enabled once a sync folder is
 	// configured, as "Open Brick Folder" is (see updateTray).
@@ -543,6 +546,8 @@ func main() {
 				// Picks up agentRoots and remoteControl changed by the setup
 				// wizard or brick-cli.
 				remote.refresh(false)
+				// Fetches the account and user names after a new login.
+				identity.refresh()
 			case <-app.Context().Done():
 				return
 			}

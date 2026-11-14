@@ -13,6 +13,9 @@ const countMoved = document.getElementById('count-moved')! as HTMLSpanElement;
 const activityList = document.getElementById('activity-list')! as HTMLUListElement;
 const pauseBtn = document.getElementById('pause-btn')! as HTMLButtonElement;
 const setupBtn = document.getElementById('setup-btn')! as HTMLButtonElement;
+const identityEl = document.getElementById('identity')! as HTMLDivElement;
+const identityAccount = document.getElementById('identity-account')! as HTMLSpanElement;
+const identityUser = document.getElementById('identity-user')! as HTMLSpanElement;
 const rcEl = document.getElementById('remote-control')! as HTMLSpanElement;
 const rcDot = document.getElementById('rc-dot')! as HTMLSpanElement;
 const rcAccess = document.getElementById('rc-access')! as HTMLSpanElement;
@@ -108,6 +111,18 @@ function renderStatus(status: any) {
     const action = actionForState(state);
     setupBtn.style.display = action ? '' : 'none';
     setupBtn.innerText = action ?? '';
+}
+
+// renderIdentity shows the logged-in account's name on the left and the
+// user's on the right; the row is hidden while neither is known.
+function renderIdentity(id: any) {
+    const account = id?.account ?? '';
+    const user = id?.user ?? '';
+    identityAccount.innerText = account;
+    identityAccount.title = account;
+    identityUser.innerText = user;
+    identityUser.title = user;
+    identityEl.style.display = account || user ? '' : 'none';
 }
 
 // renderRemoteControl shows remote control on (green) or off (red) and, with
@@ -275,6 +290,11 @@ Events.On('brick:status', (event) => {
 Events.On('brick:remote-control', (event) => {
     renderRemoteControl(event.data);
 });
+// "brick:identity" comes once the account and user names are fetched after
+// a login, and when logging out clears them.
+Events.On('brick:identity', (event) => {
+    renderIdentity(event.data);
+});
 Events.On('brick:activity', (event) => {
     addActivity(event.data);
 });
@@ -306,4 +326,5 @@ pauseBtn.addEventListener('click', async () => {
 // Initial paint before the first status event arrives.
 SyncService.Status().then(renderStatus).catch(console.error);
 RemoteControlService.Status().then(renderRemoteControl).catch(console.error);
+SyncService.Identity().then(renderIdentity).catch(console.error);
 refreshActivity();
