@@ -48,6 +48,9 @@ type remoteControlMenu struct {
 	// RemoteControlService).
 	confirmRemove func(path string)
 	pickNewRoot   func()
+	// onChange hears the section's state each time it changes, for the
+	// status popover (see RemoteControlStatus).
+	onChange func(RemoteControlStatus)
 
 	mu      sync.Mutex
 	toggle  *application.MenuItem
@@ -71,6 +74,35 @@ type remoteControlState struct {
 type rootState struct {
 	path     string
 	readOnly bool
+}
+
+// RemoteControlStatus is what the status popover shows of remote control:
+// whether it's on, and with exactly one root shared, that root's access
+// level ("R/O" or "R/W", as brick-cli's TUI writes it; "" otherwise).
+type RemoteControlStatus struct {
+	Enabled bool   `json:"enabled"`
+	Access  string `json:"access"`
+}
+
+func (st *remoteControlState) status() RemoteControlStatus {
+	if st == nil {
+		return RemoteControlStatus{}
+	}
+	s := RemoteControlStatus{Enabled: st.enabled}
+	if len(st.roots) == 1 {
+		s.Access = "R/W"
+		if st.roots[0].readOnly {
+			s.Access = "R/O"
+		}
+	}
+	return s
+}
+
+// status returns the state the section shows now.
+func (m *remoteControlMenu) status() RemoteControlStatus {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.shown.status()
 }
 
 func newRemoteControlMenu(store *brickcfg.Store, logger *log.Logger, apply func() error) *remoteControlMenu {
@@ -115,8 +147,13 @@ func (m *remoteControlMenu) menu() *application.Menu {
 func (m *remoteControlMenu) refresh(force bool) {
 	st := m.load()
 	m.mu.Lock()
+	before := m.shown.status()
 	stale, relayout := m.refreshLocked(st, force)
+	after := m.shown.status()
 	m.mu.Unlock()
+	if after != before && m.onChange != nil {
+		m.onChange(after)
+	}
 	if !relayout {
 		return
 	}

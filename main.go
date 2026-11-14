@@ -414,7 +414,8 @@ func main() {
 	// whenever they do.
 	remote := newRemoteControlMenu(store, logger, run.ReloadAgent)
 	remote.confirmRemove, remote.pickNewRoot = rcSvc.confirmRemove, rcSvc.pickNewRoot
-	rcSvc.remove, rcSvc.add = remote.removeRoot, remote.newRoot
+	rcSvc.remove, rcSvc.add, rcSvc.status = remote.removeRoot, remote.newRoot, remote.status
+	remote.onChange = func(s RemoteControlStatus) { app.Event.Emit("brick:remote-control", s) }
 	tail := app.NewMenu()
 	// Its own section, above the update item. Enabled once a sync folder is
 	// configured, as "Open Brick Folder" is (see updateTray).

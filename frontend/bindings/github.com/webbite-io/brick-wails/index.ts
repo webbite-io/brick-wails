@@ -15,6 +15,7 @@ export {
 };
 
 export type {
+    RemoteControlStatus,
     StartResult,
     UpdateView
 } from "./models.js";

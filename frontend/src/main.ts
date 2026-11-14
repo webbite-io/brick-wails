@@ -1,5 +1,5 @@
 import {Events, Window} from "@wailsio/runtime";
-import {SyncService} from "../bindings/github.com/webbite-io/brick-wails";
+import {RemoteControlService, SyncService} from "../bindings/github.com/webbite-io/brick-wails";
 import {actionForState, hidesPopoverForState, STATE_LABELS} from "./status";
 
 const stateDot = document.getElementById('state-dot')! as HTMLSpanElement;
@@ -13,6 +13,9 @@ const countMoved = document.getElementById('count-moved')! as HTMLSpanElement;
 const activityList = document.getElementById('activity-list')! as HTMLUListElement;
 const pauseBtn = document.getElementById('pause-btn')! as HTMLButtonElement;
 const setupBtn = document.getElementById('setup-btn')! as HTMLButtonElement;
+const rcEl = document.getElementById('remote-control')! as HTMLSpanElement;
+const rcDot = document.getElementById('rc-dot')! as HTMLSpanElement;
+const rcAccess = document.getElementById('rc-access')! as HTMLSpanElement;
 
 // Path data copied from lucide icons (arrow-up, arrow-down, arrow-right, trash).
 const ARROW_UP_PATHS = ['m5 12 7-7 7 7', 'M12 19V5'];
@@ -105,6 +108,18 @@ function renderStatus(status: any) {
     const action = actionForState(state);
     setupBtn.style.display = action ? '' : 'none';
     setupBtn.innerText = action ?? '';
+}
+
+// renderRemoteControl shows remote control on (green) or off (red) and, with
+// exactly one shared folder and remote control on, its access level: (R/W)
+// green, (R/O) red.
+function renderRemoteControl(rc: any) {
+    rcEl.style.display = '';
+    rcDot.className = 'dot ' + (rc?.enabled ? 'rc-on' : 'rc-off');
+    const access = rc?.enabled ? (rc.access ?? '') : '';
+    rcAccess.innerText = access ? `(${access})` : '';
+    rcAccess.className = 'rc-access ' + (access === 'R/W' ? 'rw' : 'ro');
+    rcAccess.style.display = access ? '' : 'none';
 }
 
 // activityRow is one line of the list: an icon slot and the text.
@@ -255,6 +270,11 @@ async function refreshActivity() {
 Events.On('brick:status', (event) => {
     renderStatus(event.data);
 });
+// "brick:remote-control" comes whenever remote control is turned on or off
+// or its shared folders change (from the tray, the setup wizard or brick-cli).
+Events.On('brick:remote-control', (event) => {
+    renderRemoteControl(event.data);
+});
 Events.On('brick:activity', (event) => {
     addActivity(event.data);
 });
@@ -285,4 +305,5 @@ pauseBtn.addEventListener('click', async () => {
 
 // Initial paint before the first status event arrives.
 SyncService.Status().then(renderStatus).catch(console.error);
+RemoteControlService.Status().then(renderRemoteControl).catch(console.error);
 refreshActivity();

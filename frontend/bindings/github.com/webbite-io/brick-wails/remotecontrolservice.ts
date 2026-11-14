@@ -14,6 +14,10 @@
 // @ts-ignore: Unused imports
 import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
+import * as $models from "./models.js";
+
 /**
  * Cancel closes the remove window without removing anything.
  */
@@ -56,4 +60,13 @@ export function PickFolder(startDir: string): $CancellablePromise<string> {
  */
 export function Save(path: string, readOnly: boolean): $CancellablePromise<void> {
     return $Call.ByID(2665170099, path, readOnly);
+}
+
+/**
+ * Status reports whether remote control is on and, with a single shared
+ * folder, its access level, for the status popover's header. Changes are
+ * pushed as "brick:remote-control" events.
+ */
+export function Status(): $CancellablePromise<$models.RemoteControlStatus> {
+    return $Call.ByID(1652936792);
 }

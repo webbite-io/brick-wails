@@ -59,6 +59,28 @@ body {
     font-size: 14px;
 }
 
+/* Right-aligned in the header: remote control on/off, and with a single
+   shared folder its access level, as brick-cli's TUI shows it. */
+.remote-control {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 14px;
+    color: #a1a1aa;
+    white-space: nowrap;
+}
+
+.dot.rc-on { background: #22c55e; }
+.dot.rc-off { background: #ef4444; }
+
+.rc-access {
+    font-weight: 600;
+}
+
+.rc-access.rw { color: #22c55e; }
+.rc-access.ro { color: #ef4444; }
+
 .folder {
     margin: 0 0 4px;
     color: #a1a1aa;

@@ -119,3 +119,48 @@ func TestNewRoot(t *testing.T) {
 		t.Errorf("a share that changed nothing reloaded the agent")
 	}
 }
+
+func TestRemoteControlStatus(t *testing.T) {
+	store := brickcfg.NewStoreAt(filepath.Join(t.TempDir(), "config.yaml"))
+	set := func(fn func(c *brickcfg.Config)) {
+		t.Helper()
+		if _, err := store.Update(func(c *brickcfg.Config) error { fn(c); return nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := newRemoteControlMenu(store, log.New(io.Discard, "", 0), func() error { return nil })
+	var heard []RemoteControlStatus
+	m.onChange = func(s RemoteControlStatus) { heard = append(heard, s) }
+	if got := m.status(); got != (RemoteControlStatus{}) {
+		t.Errorf("status with no config = %+v", got)
+	}
+
+	rw := false
+	set(func(c *brickcfg.Config) {
+		c.RemoteControl = true
+		c.AgentRoots = []brickcfg.AgentRoot{{Path: "/srv/a"}}
+	})
+	m.refresh(false)
+	set(func(c *brickcfg.Config) { c.AgentRoots[0].ReadOnly = &rw })
+	m.refresh(false)
+	// Unchanged: not heard again.
+	m.refresh(false)
+	set(func(c *brickcfg.Config) {
+		c.RemoteControl = false
+		c.AgentRoots = append(c.AgentRoots, brickcfg.AgentRoot{Path: "/srv/b"})
+	})
+	m.refresh(false)
+
+	want := []RemoteControlStatus{
+		{Enabled: true, Access: "R/O"},
+		{Enabled: true, Access: "R/W"},
+		// Two roots: no single access level to show.
+		{Enabled: false},
+	}
+	if !reflect.DeepEqual(heard, want) {
+		t.Errorf("heard %+v, want %+v", heard, want)
+	}
+	if got := m.status(); got != want[2] {
+		t.Errorf("status = %+v, want %+v", got, want[2])
+	}
+}

@@ -23,10 +23,22 @@ type RemoteControlService struct {
 	// in (set by main.go, which owns the tray's remote control section).
 	remove func(path string) error
 	add    func(path string, readOnly bool) error
+	// status reports remote control's state as the tray shows it.
+	status func() RemoteControlStatus
 
 	mu sync.Mutex
 	// pending is the root the remove window asks about, "" while it's closed.
 	pending string
+}
+
+// Status reports whether remote control is on and, with a single shared
+// folder, its access level, for the status popover's header. Changes are
+// pushed as "brick:remote-control" events.
+func (s *RemoteControlService) Status() RemoteControlStatus {
+	if s.status == nil {
+		return RemoteControlStatus{}
+	}
+	return s.status()
 }
 
 // confirmRemove opens the window asking whether to remove the root at path.
