@@ -878,3 +878,35 @@ func TestRemoteFolderMoveOutOfExcludedFolderDownloads(t *testing.T) {
 		t.Error("excluded folder created locally")
 	}
 }
+
+// ExcludeAndRemove adopts the new list and removes the local copy at once,
+// and the next pass neither trashes the folder on the server nor downloads
+// it again. A folder the new list doesn't exclude is never removed.
+func TestExcludeAndRemove(t *testing.T) {
+	f := newFixture(t, nil)
+	f.fs.PutFile("Music/a.mp3", "a")
+	f.fs.PutFile("Work/b.txt", "b")
+	f.reconcile()
+
+	if err := f.eng.ExcludeAndRemove([]string{"Music"}, []string{"Music", "Work", "../escape"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.localExists("Music") {
+		t.Error("local copy of the excluded folder not removed")
+	}
+	f.wantLocal("Work/b.txt", "b")
+	if !f.sink.has("remove-folder:Music") {
+		t.Errorf("activity %v", f.sink.kinds)
+	}
+	if got := f.eng.State().ExcludeDirs; !slices.Equal(got, []string{"Music"}) {
+		t.Errorf("state.ExcludeDirs = %v", got)
+	}
+
+	f.reconcile()
+	if !f.fs.Exists("Music/a.mp3") {
+		t.Error("excluded folder trashed on the server")
+	}
+	if f.localExists("Music") {
+		t.Error("excluded folder downloaded again")
+	}
+}

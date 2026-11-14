@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"io/fs"
@@ -1051,6 +1052,50 @@ func isExcludedPath(rel string, excludeDirs []string) bool {
 func (e *Engine) QueueExcludeDirs(dirs []string) {
 	dirs = slices.Clone(dirs)
 	e.pendingExcludeDirs.Store(&dirs)
+}
+
+// ExcludeAndRemove adopts dirs as the excludeDirs list at once and deletes the
+// local copy of each folder in remove (slash-separated, relative to the sync
+// folder) — the tray's Selective Sync, brick-cli's `brick sync -s` for a
+// running engine. A folder in remove that dirs doesn't exclude is left alone.
+//
+// It runs under e.mu, between passes: a pass still working from the old list
+// would read the deleted folders as removed locally and trash them on the
+// server. A pass in flight is asked to unwind between files, so this waits at
+// most for the transfer under way; a follow-up pass is then triggered.
+func (e *Engine) ExcludeAndRemove(dirs, remove []string) error {
+	e.interrupts.Add(1)
+	e.mu.Lock()
+	e.interrupts.Add(-1)
+
+	e.pendingExcludeDirs.Store(nil) // superseded by dirs
+	e.excludeDirs = slices.Clone(dirs)
+	e.reconcileExcludeDirsChange()
+
+	var errs []error
+	for _, rel := range remove {
+		rel = strings.Trim(filepath.ToSlash(rel), "/")
+		if !filepath.IsLocal(filepath.FromSlash(rel)) || !isExcludedPath(rel, e.excludeDirs) {
+			continue
+		}
+		abs := filepath.Join(e.folder, filepath.FromSlash(rel))
+		if _, err := os.Lstat(abs); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err := os.RemoveAll(abs); err != nil {
+			e.logf("remove excluded folder %s: %v", rel, err)
+			errs = append(errs, fmt.Errorf("could not remove %s: %w", rel, err))
+			continue
+		}
+		e.deleted.Add(1)
+		e.logf(syncLogPrefix+"Removed local copy of %s (excluded from sync)", rel)
+		e.publishActivity("remove-folder", rel)
+	}
+	e.saveStateLocked()
+	e.mu.Unlock()
+
+	e.Notify()
+	return errors.Join(errs...)
 }
 
 // reconcileExcludeDirsChange brings the sync index in line with an

@@ -90,6 +90,11 @@ type StartParams struct {
 type Runner struct {
 	cfg Config
 
+	// startMu serializes starting an engine with SetSyncedFolders' changes
+	// to the sync folder while no engine runs, so neither sees the other's
+	// hold on the sync lock as brick-cli syncing.
+	startMu sync.Mutex
+
 	mu        sync.Mutex
 	eng       *syncengine.Engine
 	cancel    context.CancelFunc
@@ -211,6 +216,8 @@ func (r *Runner) Start(p StartParams) error {
 }
 
 func (r *Runner) start(p StartParams) error {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
 	r.mu.Lock()
 	if r.eng != nil {
 		r.mu.Unlock()

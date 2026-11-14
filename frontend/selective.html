@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+    <link rel="stylesheet" href="/fonts.css"/>
+    <link rel="preload" href="/fonts/roboto-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin/>
+    <link rel="preload" href="/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin/>
+    <link rel="preload" href="/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin/>
+    <link rel="stylesheet" href="/style.css"/>
+    <link rel="stylesheet" href="/startup.css"/>
+    <title>Webbite Brick</title>
+</head>
+<body>
+<!-- The add window's layout (add.html) with the setup wizard's folder list
+     below: which top-level folders to sync. Opened from the tray's
+     "Selective Sync…". -->
+<main class="startup-panel ready">
+    <div class="brand">
+        <div class="brand-logo-wrap">
+            <img class="brand-logo" src="/appicon.png" alt=""/>
+        </div>
+        <h1 class="brand-title">Webbite Brick</h1>
+        <p class="brand-subtitle">Storage for all your devices</p>
+    </div>
+
+    <div class="status-indicator">
+        <span class="status-icon visible icon-ok">✓</span>
+        <div class="status-text">
+            <p class="status-title">Selective Sync</p>
+            <p class="status-message">Pick which folders to sync</p>
+        </div>
+    </div>
+
+    <section class="step-body">
+        <p class="step-label">Select which folders to sync</p>
+        <!-- Filled by selective.ts: the folders, or a note while loading or
+             when there are none. -->
+        <div class="check-list" id="folder-list"></div>
+        <p class="list-note" id="list-note" hidden></p>
+        <p class="field-error" id="selective-error" hidden></p>
+    </section>
+
+    <footer class="startup-actions nav">
+        <button id="cancel-btn" class="btn btn-quiet btn-cta visible">Cancel</button>
+        <button id="save-btn" class="btn btn-primary btn-cta visible">Save</button>
+    </footer>
+</main>
+
+<script type="module" src="/src/selective.js"></script>
+</body>
+</html>

@@ -3,11 +3,13 @@
 
 import * as OnboardingService from "./onboardingservice.js";
 import * as RemoteControlService from "./remotecontrolservice.js";
+import * as SelectiveSyncService from "./selectivesyncservice.js";
 import * as SyncService from "./syncservice.js";
 import * as UpdateService from "./updateservice.js";
 export {
     OnboardingService,
     RemoteControlService,
+    SelectiveSyncService,
     SyncService,
     UpdateService
 };

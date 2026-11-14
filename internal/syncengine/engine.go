@@ -126,7 +126,7 @@ type Engine struct {
 	opts      Options
 
 	// excludeDirs is guarded by e.mu; changed mid-session only via
-	// pendingExcludeDirs.
+	// pendingExcludeDirs or ExcludeAndRemove.
 	excludeDirs []string
 	// pendingExcludeDirs holds an excludeDirs change made while the engine
 	// runs (remote control's PATCH /settings), for the next reconcile pass to
@@ -229,8 +229,12 @@ type Engine struct {
 	recentMu        sync.Mutex
 	recentlyWritten map[string]time.Time
 
-	paused  atomic.Bool
-	trigger chan struct{}
+	paused atomic.Bool
+	// interrupts counts callers waiting to take e.mu between passes (see
+	// ExcludeAndRemove): while non-zero, a pass in flight unwinds between
+	// files as it does for a pause, without the user-visible pause.
+	interrupts atomic.Int32
+	trigger    chan struct{}
 
 	ctrlMu        sync.RWMutex
 	ctrlState     string
@@ -443,7 +447,7 @@ func (e *Engine) checkInterrupted(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if e.paused.Load() {
+	if e.paused.Load() || e.interrupts.Load() > 0 {
 		return ErrPausedMidPass
 	}
 	return nil

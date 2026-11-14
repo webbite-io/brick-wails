@@ -546,3 +546,12 @@
         opacity: 0;
     }
 }
+
+/* A line in place of a list: "Loading folders…" or "No folders on Brick." in
+   the Selective Sync window. */
+.list-note {
+    margin: 2px 0 0;
+    font-size: 13.5px;
+    line-height: 19px;
+    color: #a1a1aa;
+}

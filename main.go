@@ -163,6 +163,8 @@ func main() {
 		removeWindow: func() *application.WebviewWindow { return removeWindow },
 		addWindow:    func() *application.WebviewWindow { return addWindow },
 	}
+	var selectiveWindow *application.WebviewWindow
+	selSvc := &SelectiveSyncService{runner: run, window: func() *application.WebviewWindow { return selectiveWindow }}
 	updater := newAppUpdater(logger, updSvc)
 
 	app := application.New(application.Options{
@@ -173,6 +175,7 @@ func main() {
 			application.NewService(onbSvc),
 			application.NewService(updSvc),
 			application.NewService(rcSvc),
+			application.NewService(selSvc),
 		},
 		Assets: application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 		Mac: application.MacOptions{
@@ -186,7 +189,7 @@ func main() {
 			run.Stop()
 		},
 	})
-	evs.app, syncSvc.app, onbSvc.app, updSvc.app, rcSvc.app = app, app, app, app, app
+	evs.app, syncSvc.app, onbSvc.app, updSvc.app, rcSvc.app, selSvc.app = app, app, app, app, app, app
 
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
@@ -273,10 +276,30 @@ func main() {
 		e.Cancel()
 	})
 
+	// Updates which top-level folders are synced, from the tray's "Selective
+	// Sync…" (see frontend/src/selective.ts): the add window's look, at the
+	// setup window's size since the folder list can be long, and resizable
+	// upwards like it. Closing it is the same as Cancel.
+	selectiveWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "SelectiveSync",
+		Title:            "Webbite Brick",
+		Width:            420,
+		Height:           680,
+		MinWidth:         420,
+		MinHeight:        680,
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/selective.html",
+	})
+	selectiveWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		selSvc.Close()
+		e.Cancel()
+	})
+
 	// On macOS, be in the Dock and Cmd-Tab while any window is open and
 	// tray-only otherwise. Sparkle's windows count too (setUpdaterUIOpen);
 	// the update window of the other platforms doesn't exist there.
-	trackAppSwitcher(app, popover, setupWindow, removeWindow, addWindow)
+	trackAppSwitcher(app, popover, setupWindow, removeWindow, addWindow, selectiveWindow)
 	// On macOS, the app menu's About item opens Brick's own About window,
 	// which links to the website.
 	setupAboutWindow(app)
@@ -393,6 +416,11 @@ func main() {
 	remote.confirmRemove, remote.pickNewRoot = rcSvc.confirmRemove, rcSvc.pickNewRoot
 	rcSvc.remove, rcSvc.add = remote.removeRoot, remote.newRoot
 	tail := app.NewMenu()
+	// Its own section, above the update item. Enabled once a sync folder is
+	// configured, as "Open Brick Folder" is (see updateTray).
+	selectiveItem := tail.Add("Selective Sync…")
+	selectiveItem.OnClick(func(*application.Context) { selSvc.open() })
+	tail.AddSeparator()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check
 	// elsewhere.
 	updateItem := tail.Add(updateMenuLabel)
@@ -443,6 +471,7 @@ func main() {
 		prev := lastState
 		lastState = s.State
 		openFolderItem.SetEnabled(s.Folder != "")
+		selectiveItem.SetEnabled(s.Folder != "")
 		needsSetup := true
 		switch s.State {
 		case runner.StateNotConfigured:
