@@ -164,7 +164,8 @@ function activityRow(icon: SVGSVGElement | string | null, text: string): HTMLLIE
 let inFlight: any = null;
 let activityEvents: any[] = [];
 
-const ACTIVITY_LIMIT = 20;
+// As many as the engine keeps (activityCap in internal/syncengine/engine.go).
+const ACTIVITY_LIMIT = 200;
 
 // A transfer that has left in-flight but whose activity event hasn't landed
 // yet. It keeps its row until the event replaces it in place, so the list
