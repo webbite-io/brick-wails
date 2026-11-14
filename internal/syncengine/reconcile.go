@@ -168,6 +168,19 @@ func (e *Engine) applyRemoteDelta(nodes []storage.Node) (affectedFiles []string)
 				e.rewriteRemotePrefix(oldRel, rel)
 				delete(e.remoteTreeFolders, oldRel)
 				delete(e.remoteTreeFolderID, oldRel)
+				if isExcludedPath(oldRel, e.excludeDirs) != isExcludedPath(rel, e.excludeDirs) {
+					// Moved into or out of an excluded folder: pass 0 never
+					// mirrors that locally (see applyRemoteFolderMoves), so
+					// the file pass must visit every file under both paths —
+					// to remove the local copies left at the old one, or to
+					// download the ones that just became synced at the new.
+					prefix := rel + "/"
+					for k := range e.remoteTreeFiles {
+						if strings.HasPrefix(k, prefix) {
+							affectedFiles = append(affectedFiles, k, oldRel+"/"+strings.TrimPrefix(k, prefix))
+						}
+					}
+				}
 			}
 			e.remoteTreeFolders[rel] = n
 			e.remoteTreeFolderID[rel] = n.ID
@@ -496,6 +509,14 @@ func (e *Engine) applyRemoteFolderMoves(remoteFolders map[string]storage.Node, l
 		if m.oldRel == m.newRel {
 			continue
 		}
+		if isExcludedPath(m.oldRel, e.excludeDirs) || isExcludedPath(m.newRel, e.excludeDirs) {
+			// Into an excluded folder: it's no longer synced, so let the
+			// normal passes treat the old path as deleted on the server
+			// rather than carry a local copy into a folder sync ignores. Out
+			// of one: there's no synced local copy to carry; the normal
+			// passes download it at the new path.
+			continue
+		}
 		if !localDirs[m.oldRel] || localDirs[m.newRel] {
 			continue
 		}
@@ -533,6 +554,9 @@ func (e *Engine) applyRemoteFileMoves(remoteFiles map[string]storage.Node, local
 		oldRel, ok := oldRelByID[node.ID]
 		if !ok || oldRel == newRel {
 			continue
+		}
+		if isExcludedPath(oldRel, e.excludeDirs) || isExcludedPath(newRel, e.excludeDirs) {
+			continue // as for folders; see applyRemoteFolderMoves
 		}
 		if _, stillLocal := localFiles[oldRel]; !stillLocal {
 			continue

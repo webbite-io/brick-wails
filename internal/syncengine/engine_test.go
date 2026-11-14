@@ -798,3 +798,83 @@ func keys[V any](m map[string]V) []string {
 	sort.Strings(out)
 	return out
 }
+
+// A synced folder moved into an excluded one on the server must leave sync,
+// not be carried into the excluded folder locally, where it would sit as a
+// stale copy nothing ever updates again. Run both on a full pass and on an
+// incremental one (watcher live, remote delta patched in), whose file pass
+// only visits the rels the delta reports.
+func TestRemoteFolderMoveIntoExcludedFolderLeavesSync(t *testing.T) {
+	for _, watched := range []bool{false, true} {
+		t.Run(fmt.Sprintf("watched=%v", watched), func(t *testing.T) {
+			f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads"} })
+			if watched {
+				f.watched()
+			}
+			f.fs.PutFile("Photos/a.jpg", "A")
+			f.fs.PutFile("Photos/sub/b.jpg", "B")
+			f.fs.PutFile("Camera Uploads/c.jpg", "C")
+			f.reconcile()
+			f.reconcile() // converge, so the watched pass below may scope itself
+
+			f.fs.Move("Photos", "Camera Uploads/Photos")
+			if watched {
+				f.reconcileChanged()
+			} else {
+				f.reconcile()
+			}
+
+			for _, rel := range []string{"Photos", "Camera Uploads"} {
+				if f.localExists(rel) {
+					t.Errorf("%s exists locally, want it gone", rel)
+				}
+			}
+			for _, rel := range []string{"Camera Uploads/Photos/a.jpg", "Camera Uploads/Photos/sub/b.jpg"} {
+				if !f.fs.Exists(rel) {
+					t.Errorf("%s gone from the server, want the move left alone", rel)
+				}
+			}
+			if f.fs.Exists("Photos") {
+				t.Error("old folder recreated on the server")
+			}
+			if f.sink.has("move-folder:Camera Uploads/Photos") {
+				t.Errorf("move mirrored locally: %v", f.sink.kinds)
+			}
+		})
+	}
+}
+
+// The same for a single file.
+func TestRemoteFileMoveIntoExcludedFolderLeavesSync(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads"} })
+	f.fs.PutFile("a.jpg", "A")
+	f.fs.PutFile("Camera Uploads/c.jpg", "C")
+	f.reconcile()
+	f.fs.Move("a.jpg", "Camera Uploads/a.jpg")
+	f.reconcile()
+	if f.localExists("a.jpg") || f.localExists("Camera Uploads") {
+		t.Error("moved file still present locally")
+	}
+	if !f.fs.Exists("Camera Uploads/a.jpg") || f.fs.Exists("a.jpg") {
+		t.Error("server-side move not left as is")
+	}
+}
+
+// And the reverse: a folder moved out of an excluded one becomes synced, and
+// must be downloaded — including by an incremental pass, whose delta reports
+// only the moved folder's own row.
+func TestRemoteFolderMoveOutOfExcludedFolderDownloads(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads"} }).watched()
+	f.fs.PutFile("Camera Uploads/Trip/a.jpg", "A")
+	f.fs.PutFile("keep.txt", "k")
+	f.reconcile()
+	f.reconcile()
+
+	f.fs.Move("Camera Uploads/Trip", "Trip")
+	f.reconcileChanged()
+
+	f.wantLocal("Trip/a.jpg", "A")
+	if f.localExists("Camera Uploads") {
+		t.Error("excluded folder created locally")
+	}
+}
