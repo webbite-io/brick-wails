@@ -298,7 +298,18 @@
     flex-shrink: 0;
 }
 
-/* Shown but not answerable: the remote-access folders once the user says no. */
+/* Radio rows side by side, splitting the width: the remote-control access
+   level. */
+.option-row {
+    display: flex;
+    gap: 6px;
+}
+
+.option-row .option {
+    flex: 1;
+}
+
+/* Shown but not answerable: the remote-control choices once the user unticks Enable. */
 .option.disabled,
 .step-label.disabled {
     opacity: 0.4;
@@ -534,4 +545,13 @@
     100% {
         opacity: 0;
     }
+}
+
+/* A line in place of a list: "Loading folders…" or "No folders on Brick." in
+   the Selective Sync window. */
+.list-note {
+    margin: 2px 0 0;
+    font-size: 13.5px;
+    line-height: 19px;
+    color: #a1a1aa;
 }

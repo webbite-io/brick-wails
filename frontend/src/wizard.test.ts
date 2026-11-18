@@ -9,6 +9,7 @@ import {
   needsWindow,
   progressDots,
   remoteRootOptions,
+  scopeChoice,
   scopeOptions,
   screenForRoute,
 } from "./wizard";
@@ -81,7 +82,23 @@ describe("options", () => {
   });
 
   it("shows the total size in the scope choice", () => {
-    expect(scopeOptions("12.3 GB")[0].label).toBe("Sync all folders from Brick (12.3 GB)");
+    expect(scopeOptions("12.3 GB")[0].label).toBe("Sync all folders from Brick (about 12.3 GB used)");
+  });
+
+  it("offers leaving out Camera Uploads between all and pick, and opens on it", () => {
+    expect(scopeOptions("1 GB").map((o) => o.value)).toEqual(["all", "allButCamera", "pick"]);
+    expect(scopeOptions("1 GB")[1].label).toBe('Sync all folders except "Camera Uploads" from Brick');
+    expect(scopeChoice([])).toBe("allButCamera");
+    expect(scopeChoice(["Camera Uploads"])).toBe("allButCamera");
+    expect(scopeChoice(["Photos"])).toBe("pick");
+    expect(scopeChoice(["Camera Uploads", "Photos"])).toBe("pick");
+  });
+
+  it("drops the Camera Uploads option and opens on all when there is no such folder", () => {
+    expect(scopeOptions("1 GB", false).map((o) => o.value)).toEqual(["all", "pick"]);
+    expect(scopeChoice([], false)).toBe("all");
+    expect(scopeChoice(["Camera Uploads"], false)).toBe("all");
+    expect(scopeChoice(["Photos"], false)).toBe("pick");
   });
 
   it("shows the custom remote root once picked", () => {
@@ -95,6 +112,11 @@ describe("describeError", () => {
     expect(describeError(new Error("boom"))).toBe("boom");
     expect(describeError({ message: "from go" })).toBe("from go");
     expect(describeError("plain")).toBe("plain");
+  });
+
+  it("unwraps the error a Go method returned", () => {
+    const err = new Error('{"message":"~/Docs is already shared","cause":{},"kind":"RuntimeError"}');
+    expect(describeError(err)).toBe("~/Docs is already shared");
   });
 
   it("never surfaces a raw payload", () => {

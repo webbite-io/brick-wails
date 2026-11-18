@@ -145,9 +145,15 @@ func (s *OnboardingService) SetSyncScope(all bool, exclude []string) error {
 	return s.flow.SetSyncScope(all, exclude)
 }
 
-// SetRemoteAccess saves the remote-file-access decision.
-func (s *OnboardingService) SetRemoteAccess(enabled bool, root string) error {
-	return s.flow.SetRemoteAccess(enabled, root)
+// SetSyncScopeExceptCameraUploads syncs every folder but Camera Uploads.
+func (s *OnboardingService) SetSyncScopeExceptCameraUploads() error {
+	return s.flow.SetSyncScopeExceptCameraUploads()
+}
+
+// SetRemoteAccess saves the remote-file-access decision and the root's
+// access level.
+func (s *OnboardingService) SetRemoteAccess(enabled bool, root string, readOnly bool) error {
+	return s.flow.SetRemoteAccessWithLevel(enabled, root, readOnly)
 }
 
 // StartAtLoginSupported reports whether the wizard should offer to start

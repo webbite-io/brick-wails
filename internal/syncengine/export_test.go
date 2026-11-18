@@ -2,6 +2,8 @@ package syncengine
 
 // Test-only accessors.
 
+import "slices"
+
 // FirstSyncPending reports whether the first full pass hasn't completed yet.
 func (e *Engine) FirstSyncPending() bool {
 	e.mu.Lock()
@@ -13,7 +15,7 @@ func (e *Engine) FirstSyncPending() bool {
 func (e *Engine) State() SyncState {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	cp := SyncState{Folder: e.state.Folder, ServerTime: e.state.ServerTime,
+	cp := SyncState{Folder: e.state.Folder, ServerTime: e.state.ServerTime, ExcludeDirs: slices.Clone(e.state.ExcludeDirs),
 		Entries: map[string]SyncEntry{}, Folders: map[string]bool{}, FolderIDs: map[string]string{}}
 	for k, v := range e.state.Entries {
 		cp.Entries[k] = v

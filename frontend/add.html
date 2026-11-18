@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+    <link rel="stylesheet" href="/fonts.css"/>
+    <link rel="preload" href="/fonts/roboto-condensed-latin-700-normal.woff2" as="font" type="font/woff2" crossorigin/>
+    <link rel="preload" href="/fonts/inter-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin/>
+    <link rel="preload" href="/fonts/inter-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin/>
+    <link rel="stylesheet" href="/style.css"/>
+    <link rel="stylesheet" href="/startup.css"/>
+    <title>Webbite Brick</title>
+</head>
+<body>
+<!-- The remove window's layout (remove.html) with the setup wizard's
+     remote-control choices below: which folder to share, and how. Opened
+     from the tray's "New Shared Folder…". -->
+<main class="startup-panel ready">
+    <div class="brand">
+        <div class="brand-logo-wrap">
+            <img class="brand-logo" src="/appicon.png" alt=""/>
+        </div>
+        <h1 class="brand-title">Webbite Brick</h1>
+        <p class="brand-subtitle">Storage for all your devices</p>
+    </div>
+
+    <div class="status-indicator">
+        <span class="status-icon visible icon-ok">✓</span>
+        <div class="status-text">
+            <p class="status-title">Add Shared Folder</p>
+            <p class="status-message">Pick a folder to share via remote control</p>
+        </div>
+    </div>
+
+    <section class="step-body">
+        <p class="step-label">Which folder should be accessible remotely?</p>
+        <!-- One row, always selected: a click opens the folder picker. -->
+        <label class="option">
+            <input type="radio" name="root" id="folder-radio" checked/>
+            <span>Folder (click to change)<span class="option-hint" id="folder-hint"></span></span>
+        </label>
+        <div class="option-row">
+            <label class="option">
+                <input type="radio" name="access" value="ro" id="ro-radio" checked/>
+                <span>Read-Only</span>
+            </label>
+            <label class="option">
+                <input type="radio" name="access" value="rw"/>
+                <span>Read/Write</span>
+            </label>
+        </div>
+        <p class="field-error" id="add-error" hidden></p>
+    </section>
+
+    <footer class="startup-actions nav">
+        <button id="cancel-btn" class="btn btn-quiet btn-cta visible">Cancel</button>
+        <button id="save-btn" class="btn btn-primary btn-cta visible">Save</button>
+    </footer>
+</main>
+
+<script type="module" src="/src/add.js"></script>
+</body>
+</html>

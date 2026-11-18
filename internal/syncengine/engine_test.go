@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"testing"
@@ -414,6 +415,48 @@ func TestExcludedFoldersAreNeverSynced(t *testing.T) {
 	}
 }
 
+// Regression test, ported from brick-cli: un-excluding a folder must download
+// it, not trash it. While excluded, the folder is recorded in the sync index
+// but never created locally, so before reconcileExcludeDirsChange the next
+// pass read it as "deleted locally" and trashed it on the server — and a
+// local-only file under it as "deleted remotely" and removed it from disk.
+func TestUnexcludedFolderIsDownloadedNotTrashed(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads", "Notes"} })
+	f.fs.PutFile("Camera Uploads/photo1.jpg", "jpeg")
+	// The second excluded folder, Notes, exists only locally; its file was
+	// never uploaded while excluded.
+	f.writeLocal("Notes/todo.txt", "milk")
+	f.reconcile()
+	st := f.eng.State()
+	if !st.Folders["Camera Uploads"] || st.Entries["Notes/todo.txt"].RelPath == "" {
+		t.Fatal("setup: expected the excluded folder and file to be recorded in the index")
+	}
+
+	f.eng.QueueExcludeDirs(nil)
+	f.reconcile()
+
+	if !f.fs.Exists("Camera Uploads/photo1.jpg") {
+		t.Error("un-excluded folder was trashed on the server")
+	}
+	f.wantLocal("Camera Uploads/photo1.jpg", "jpeg")
+	f.wantLocal("Notes/todo.txt", "milk")
+	f.wantRemote("Notes/todo.txt", "milk")
+	if got := f.eng.State().ExcludeDirs; len(got) != 0 {
+		t.Errorf("state.ExcludeDirs = %v, want it updated to the new (empty) list", got)
+	}
+}
+
+// A pass records the exclude list it reconciled with in the state file, so a
+// change made while the app wasn't running is noticed (and the field brick-cli
+// writes there survives this app saving the state).
+func TestStateRecordsExcludeDirs(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Photos"} })
+	f.reconcile()
+	if got := f.eng.State().ExcludeDirs; !slices.Equal(got, []string{"Photos"}) {
+		t.Errorf("state.ExcludeDirs = %v, want [Photos]", got)
+	}
+}
+
 func TestTmpFilesIgnored(t *testing.T) {
 	f := newFixture(t, nil)
 	f.writeLocal("partial.bin"+TmpSuffix, "x")
@@ -754,4 +797,116 @@ func keys[V any](m map[string]V) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// A synced folder moved into an excluded one on the server must leave sync,
+// not be carried into the excluded folder locally, where it would sit as a
+// stale copy nothing ever updates again. Run both on a full pass and on an
+// incremental one (watcher live, remote delta patched in), whose file pass
+// only visits the rels the delta reports.
+func TestRemoteFolderMoveIntoExcludedFolderLeavesSync(t *testing.T) {
+	for _, watched := range []bool{false, true} {
+		t.Run(fmt.Sprintf("watched=%v", watched), func(t *testing.T) {
+			f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads"} })
+			if watched {
+				f.watched()
+			}
+			f.fs.PutFile("Photos/a.jpg", "A")
+			f.fs.PutFile("Photos/sub/b.jpg", "B")
+			f.fs.PutFile("Camera Uploads/c.jpg", "C")
+			f.reconcile()
+			f.reconcile() // converge, so the watched pass below may scope itself
+
+			f.fs.Move("Photos", "Camera Uploads/Photos")
+			if watched {
+				f.reconcileChanged()
+			} else {
+				f.reconcile()
+			}
+
+			for _, rel := range []string{"Photos", "Camera Uploads"} {
+				if f.localExists(rel) {
+					t.Errorf("%s exists locally, want it gone", rel)
+				}
+			}
+			for _, rel := range []string{"Camera Uploads/Photos/a.jpg", "Camera Uploads/Photos/sub/b.jpg"} {
+				if !f.fs.Exists(rel) {
+					t.Errorf("%s gone from the server, want the move left alone", rel)
+				}
+			}
+			if f.fs.Exists("Photos") {
+				t.Error("old folder recreated on the server")
+			}
+			if f.sink.has("move-folder:Camera Uploads/Photos") {
+				t.Errorf("move mirrored locally: %v", f.sink.kinds)
+			}
+		})
+	}
+}
+
+// The same for a single file.
+func TestRemoteFileMoveIntoExcludedFolderLeavesSync(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads"} })
+	f.fs.PutFile("a.jpg", "A")
+	f.fs.PutFile("Camera Uploads/c.jpg", "C")
+	f.reconcile()
+	f.fs.Move("a.jpg", "Camera Uploads/a.jpg")
+	f.reconcile()
+	if f.localExists("a.jpg") || f.localExists("Camera Uploads") {
+		t.Error("moved file still present locally")
+	}
+	if !f.fs.Exists("Camera Uploads/a.jpg") || f.fs.Exists("a.jpg") {
+		t.Error("server-side move not left as is")
+	}
+}
+
+// And the reverse: a folder moved out of an excluded one becomes synced, and
+// must be downloaded — including by an incremental pass, whose delta reports
+// only the moved folder's own row.
+func TestRemoteFolderMoveOutOfExcludedFolderDownloads(t *testing.T) {
+	f := newFixture(t, func(c *Config) { c.ExcludeDirs = []string{"Camera Uploads"} }).watched()
+	f.fs.PutFile("Camera Uploads/Trip/a.jpg", "A")
+	f.fs.PutFile("keep.txt", "k")
+	f.reconcile()
+	f.reconcile()
+
+	f.fs.Move("Camera Uploads/Trip", "Trip")
+	f.reconcileChanged()
+
+	f.wantLocal("Trip/a.jpg", "A")
+	if f.localExists("Camera Uploads") {
+		t.Error("excluded folder created locally")
+	}
+}
+
+// ExcludeAndRemove adopts the new list and removes the local copy at once,
+// and the next pass neither trashes the folder on the server nor downloads
+// it again. A folder the new list doesn't exclude is never removed.
+func TestExcludeAndRemove(t *testing.T) {
+	f := newFixture(t, nil)
+	f.fs.PutFile("Music/a.mp3", "a")
+	f.fs.PutFile("Work/b.txt", "b")
+	f.reconcile()
+
+	if err := f.eng.ExcludeAndRemove([]string{"Music"}, []string{"Music", "Work", "../escape"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.localExists("Music") {
+		t.Error("local copy of the excluded folder not removed")
+	}
+	f.wantLocal("Work/b.txt", "b")
+	if !f.sink.has("remove-folder:Music") {
+		t.Errorf("activity %v", f.sink.kinds)
+	}
+	if got := f.eng.State().ExcludeDirs; !slices.Equal(got, []string{"Music"}) {
+		t.Errorf("state.ExcludeDirs = %v", got)
+	}
+
+	f.reconcile()
+	if !f.fs.Exists("Music/a.mp3") {
+		t.Error("excluded folder trashed on the server")
+	}
+	if f.localExists("Music") {
+		t.Error("excluded folder downloaded again")
+	}
 }

@@ -148,10 +148,11 @@ export function SelectAccount(id: string): $CancellablePromise<void> {
 }
 
 /**
- * SetRemoteAccess saves the remote-file-access decision.
+ * SetRemoteAccess saves the remote-file-access decision and the root's
+ * access level.
  */
-export function SetRemoteAccess(enabled: boolean, root: string): $CancellablePromise<void> {
-    return $Call.ByID(2711039084, enabled, root);
+export function SetRemoteAccess(enabled: boolean, root: string, readOnly: boolean): $CancellablePromise<void> {
+    return $Call.ByID(2711039084, enabled, root, readOnly);
 }
 
 /**
@@ -167,6 +168,13 @@ export function SetStartAtLogin(on: boolean): $CancellablePromise<void> {
  */
 export function SetSyncScope(all: boolean, exclude: string[] | null): $CancellablePromise<void> {
     return $Call.ByID(3468232781, all, exclude);
+}
+
+/**
+ * SetSyncScopeExceptCameraUploads syncs every folder but Camera Uploads.
+ */
+export function SetSyncScopeExceptCameraUploads(): $CancellablePromise<void> {
+    return $Call.ByID(95309403);
 }
 
 /**

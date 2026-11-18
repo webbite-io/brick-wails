@@ -34,21 +34,26 @@ do not "re-sync" these away:
 | `auth.FetchOIDCConfig`, `GeneratePKCE`, `ExchangeCode`, `RefreshTokens` | `auth.go`: `fetchOIDCConfig`, `generatePKCE`, `exchangeCodeForToken`, `refreshAccessToken` | identical requests |
 | `auth.StartLogin` / `LoginSession.Wait` | `auth.go`: `runLogin` | no stdout; listener bound up front; account selection moved to `onboarding` |
 | `auth.TokenSource.Rotate`, `Client.Do` | `sync.go`: `tokenMu`, `rotateAccessToken`, `authedRequest`; `auth.go`: `authedGet/Post` | + re-reads config before refreshing (cross-process) |
-| `storage.Client` | `sync.go`: `storageClient` and its methods | identical endpoints |
+| `storage.Client` | `sync.go`: `storageClient` and its methods | identical endpoints; errors are `*storage.StatusError` (the CLI's `storageStatusError`) |
+| `storage` streaming and retries (`stream.go`, `retry.go`), `auth.Client.DoStream` | `transfer.go`: `getNode`, `downloadToFile`, `downloadToNewFile`, `streamGet`, `authedStreamRequest`, `progressReader`, `streamRequest`, `uploadStream`, `replaceStream`, `downloadForSync`; `transfer_retry.go` (incl. `withSingleAttempt`) | synced at `54eafd2`, plus sync streaming from `74558f4`; exported names (`RetryTransfer`, `TransientError`, `PlaceNoClobber`, …) |
 | `syncengine.SyncState`, `LoadState`, `StatePath` | `sync.go`: `SyncEntry`, `SyncState`, `loadSyncState`, `syncStatePath` | identical JSON; atomic save |
+| `syncengine.Engine.QueueExcludeDirs`, `reconcileExcludeDirsChange`, `pendingExcludeDirs` | `sync.go`: `queueExcludeDirs`, `reconcileExcludeDirsChange`, `pendingExcludeDirs` | synced at `54eafd2` |
+| `runner.excludeDirsSettings` | `sync.go`: `syncExcludeDirsSettings` | saves via `Store.Update` (read-modify-write) instead of `tokenMu` + `saveConfig`, for the account the session syncs |
+| `brickcfg.AgentRoot`, `TransferHistoryLimit` | `config.go`: `AgentRoot`, `TransferHistoryLimit` | synced at `54eafd2` |
 | `syncengine.Engine.ReconcileAll` and helpers (`reconcile.go`) | `sync.go`: `reconcileAll`, `buildRemoteTree`, `buildLocalTree`, `applyRemoteFolderMoves`, `applyRemoteFileMoves`, `rewritePrefix`, `pruneRemoteSubtree`, `reconcileFile`, `reconcileExcludedFile`, `applyFirstSyncConflict`, `keepBothFile`, `downloadFile`, `deleteRemoteFile`, `ensureRemoteFolder`, `uploadNewFile`, `replaceFile`, `verifyUnsyncedFileMatches`, `hashFileMD5` | **semantics must stay identical** — the reconcile matrix in `syncengine/engine_test.go` pins them |
 | `syncengine.Engine.DryRun`, `dryRunClassify` (`dryrun.go`) | `sync.go`: `runSyncDryRun`, `dryRunClassify` | classification identical; returns `[]Change` instead of printing, so the app can render it. The CLI's spinners and instance-lock-free framing have no counterpart here |
 | `syncengine.Engine.PollRemoteChanges`, `ForceReconcile`, `setCursor` | `sync.go`: `pollRemoteChanges`, `forceReconcile`, `setCursor` | |
 | `syncengine.Engine.fetchRemoteTree`, `applyRemoteDelta`, `rewriteRemotePrefix`, `buildRemoteIDIndex`, the `remoteTree*` cache fields | `sync.go`: `reconcileAll`'s `fetchRemote`, `applyRemoteDelta`, `rewriteRemotePrefix`, `buildRemoteIDIndex`, `remoteTreeCache` fields | reuses the last walk when a check-updates probe says nothing changed, and patches it from the delta when something did; `ForceReconcile` always bypasses it |
 | `syncengine.Engine.fetchLocalTree`, `applyLocalChanges`, `localScope`, the `localTree*` fields, `filesConverged` | `sync.go`: `reconcileAllImpl`'s `compareLocal`, `applyLocalChanges`, `markLocalChange`/`drainLocalChanges`, `localTree*`, `filesConverged` | patches the cached local tree from watcher-reported paths; see the divergences above |
+| `syncengine` sync log lines, `syncLogPrefix` | `logroute.go`: `syncLogPrefix`, `plainLogLine`; the `syncLogPrefix` lines in `sync.go` | synced at `ac0d76e`; written directly in their brick.log form ("Sync: Uploaded a.txt"), since there's no TUI to show the icon. The TUI-only parts (`plainLogWriter`, `logFileOnly`, `connectivity`) aren't ported: brick.log gets the same lines from both |
 | `syncengine.Engine.Run` (`loop.go`) | `sync.go`: `runSyncLoop` | no TUI/signals/detach; timings via `Options` (same defaults) |
 | `syncengine` status/activity/pause | `sync.go`: `setState` … `statusSnapshot`, `setPaused`, `checkInterrupted` | logging via `Sink` |
 | `lock` | `lock.go`, `lock_unix.go`, `lock_windows.go` | same file path → mutual exclusion with the CLI |
-| `agent` | `agent.go` | local API + tunnel verbatim (`localapi.go`) |
+| `agent` | `agent.go`, `agent_transfers.go`, `agent_batch.go`, `agent_download_batch.go`, `agent_client_batch.go`, `agent_settings.go` (and their tests) | synced at `54eafd2`, same file names; log lines go to `Options.Logf`, the tunnel starts from `Run(Options)`, `clientType` is `brick-desktop`, no `--agent-root` flag |
 | `onboarding.Flow` | `sync.go`: `prepareSync`, `ensureStorageSyncFolder`, `promptForSyncFolder`, `promptCreateFolder`, `promptConflictMode`, `runSyncScopeOnboarding`, `promptForRemoteControl`; `auth.go`: `ensureAuthenticated`, `selectAccount` | wizard copy mirrors the CLI prompts |
 
-Not ported (CLI-only): `tui.go`, `live.go`, `daemon_*.go`, `transfer.go`
-upload/download commands, update check, uninstall, restart, switch-accounts,
+Not ported (CLI-only): `tui.go`, `live.go`, `daemon_*.go`, `transfer.go`'s
+upload/download commands (its storage client methods are ported), update check, uninstall, restart, switch-accounts,
 selective-sync editing after onboarding.
 
 Gone from both: the local status/control API (server here, client + server in

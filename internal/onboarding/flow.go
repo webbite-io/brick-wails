@@ -80,11 +80,15 @@ type FolderChoice struct {
 
 // ScopeInfo is returned by Connect: whether to show the sync-scope step.
 type ScopeInfo struct {
-	ShowScope       bool     `json:"showScope"`
-	ShowRemote      bool     `json:"showRemote"`
-	TotalHuman      string   `json:"totalHuman"`
-	Folders         []string `json:"folders"`
-	AlreadyExcluded []string `json:"alreadyExcluded"`
+	ShowScope bool `json:"showScope"`
+	// HasCameraUploads is whether the account has a top-level Camera Uploads
+	// folder. Without one, it is left out of sync whatever the scope step
+	// picks, so the step has no separate "all but Camera Uploads" choice.
+	HasCameraUploads bool     `json:"hasCameraUploads"`
+	ShowRemote       bool     `json:"showRemote"`
+	TotalHuman       string   `json:"totalHuman"`
+	Folders          []string `json:"folders"`
+	AlreadyExcluded  []string `json:"alreadyExcluded"`
 }
 
 // Flow holds one onboarding session's in-memory decisions.
@@ -500,7 +504,14 @@ func (f *Flow) Connect(ctx context.Context) (*ScopeInfo, error) {
 	if !first {
 		return info, nil
 	}
-	top, total, err := sc.FolderSummary(ctx, root.ID)
+	top, err := sc.TopFolders(ctx, root.ID)
+	if err != nil {
+		return nil, err
+	}
+	// The calling user's quota usage stands in for the size of a full sync:
+	// summing every file instead would mean walking the whole tree. It counts
+	// trash too, so the step calls it approximate.
+	q, err := sc.Quota(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -508,7 +519,15 @@ func (f *Flow) Connect(ctx context.Context) (*ScopeInfo, error) {
 		info.Folders = append(info.Folders, n.Name)
 	}
 	info.ShowScope = len(top) > 0
-	info.TotalHuman = storage.HumanSize(total)
+	info.HasCameraUploads = slices.Contains(info.Folders, CameraUploadsFolder)
+	if !info.ShowScope {
+		// No scope step to ask in, but a future Camera Uploads folder is
+		// still left out, as SetSyncScope does when there is one.
+		if err := f.excludeCameraUploads(); err != nil {
+			return nil, err
+		}
+	}
+	info.TotalHuman = storage.HumanSize(q.CallingUser.UsedBytes)
 	if ac := cfg.ActiveAccount(); ac != nil {
 		info.AlreadyExcluded = append([]string{}, ac.ExcludeDirs...)
 	}
@@ -536,6 +555,12 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 			excl = append(excl, e)
 		}
 	}
+	picked := len(excl)
+	if !valid[CameraUploadsFolder] {
+		// Not on Brick yet: left out regardless, so it isn't synced by
+		// default once the first camera upload creates it.
+		excl = append(excl, CameraUploadsFolder)
+	}
 	if _, err := f.store.Update(func(c *brickcfg.Config) error {
 		ac := c.EnsureActiveAccount()
 		if ac == nil {
@@ -547,23 +572,76 @@ func (f *Flow) SetSyncScope(all bool, exclude []string) error {
 		return err
 	}
 	f.mu.Lock()
-	if all || len(excl) == 0 {
+	if picked == 0 {
 		f.done("Folders selected (all)")
 	} else {
-		f.done("Folders selected (%d of %d)", len(top)-len(excl), len(top))
+		f.done("Folders selected (%d of %d)", len(top)-picked, len(top))
 	}
 	f.mu.Unlock()
 	return nil
 }
 
+// CameraUploadsFolder is the top-level folder the sync-scope step leaves out
+// by default, since it tends to hold a lot of large files.
+const CameraUploadsFolder = "Camera Uploads"
+
+// SetSyncScopeExceptCameraUploads syncs every folder but Camera Uploads, like
+// brick-cli's default sync-scope choice. The folder is excluded even when it
+// doesn't exist yet, so it is still left out once the first camera upload
+// creates it.
+func (f *Flow) SetSyncScopeExceptCameraUploads() error {
+	if _, err := f.store.Update(func(c *brickcfg.Config) error {
+		ac := c.EnsureActiveAccount()
+		if ac == nil {
+			return errors.New("no account selected")
+		}
+		ac.ExcludeDirs = []string{CameraUploadsFolder}
+		return nil
+	}); err != nil {
+		return err
+	}
+	f.mu.Lock()
+	f.done("Folders selected (all except %s)", CameraUploadsFolder)
+	f.mu.Unlock()
+	return nil
+}
+
+// excludeCameraUploads adds Camera Uploads to the active account's
+// excludeDirs, keeping whatever else is already there.
+func (f *Flow) excludeCameraUploads() error {
+	_, err := f.store.Update(func(c *brickcfg.Config) error {
+		ac := c.EnsureActiveAccount()
+		if ac == nil {
+			return errors.New("no account selected")
+		}
+		if !slices.Contains(ac.ExcludeDirs, CameraUploadsFolder) {
+			ac.ExcludeDirs = append(ac.ExcludeDirs, CameraUploadsFolder)
+		}
+		return nil
+	})
+	return err
+}
+
 // SetRemoteAccess records the remote-file-access decision. When enabled,
-// root (empty = home) is added to agentRoots.
+// root (empty = home) is added to agentRoots, read-only (the CLI's default
+// access level).
 //
 // The wizard can be walked backwards, so this overwrites its own earlier
 // answer rather than adding to it: the root this session put in agentRoots is
 // dropped before the new one goes in, and declining turns remote control back
 // off. Roots configured elsewhere (the CLI, an earlier setup) are left alone.
 func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
+	return f.setRemoteAccess(enabled, root, true)
+}
+
+// SetRemoteAccessWithLevel is SetRemoteAccess with an explicit access level:
+// readOnly false lets remote control change files under root, like choosing
+// Read/Write in the CLI's onboarding.
+func (f *Flow) SetRemoteAccessWithLevel(enabled bool, root string, readOnly bool) error {
+	return f.setRemoteAccess(enabled, root, readOnly)
+}
+
+func (f *Flow) setRemoteAccess(enabled bool, root string, readOnly bool) error {
 	var abs string
 	if enabled {
 		if strings.TrimSpace(root) == "" {
@@ -577,16 +655,26 @@ func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
 			return fmt.Errorf("%s is not a folder", abs)
 		}
 	}
+	// Read-only stays unset so the entry is saved in the plain-path form.
+	var ro *bool
+	if !readOnly {
+		ro = new(bool)
+	}
 	f.mu.Lock()
 	prev := f.remoteRoot
 	f.mu.Unlock()
 	if _, err := f.store.Update(func(c *brickcfg.Config) error {
 		if prev != "" {
-			c.AgentRoots = slices.DeleteFunc(c.AgentRoots, func(r string) bool { return r == prev })
+			c.AgentRoots = slices.DeleteFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == prev })
 		}
 		c.RemoteControl = enabled
-		if enabled && !slices.Contains(c.AgentRoots, abs) {
-			c.AgentRoots = append(c.AgentRoots, abs)
+		if !enabled {
+			return nil
+		}
+		if i := slices.IndexFunc(c.AgentRoots, func(r brickcfg.AgentRoot) bool { return r.Path == abs }); i >= 0 {
+			c.AgentRoots[i].ReadOnly = ro
+		} else {
+			c.AgentRoots = append(c.AgentRoots, brickcfg.AgentRoot{Path: abs, ReadOnly: ro})
 		}
 		return nil
 	}); err != nil {
@@ -595,7 +683,11 @@ func (f *Flow) SetRemoteAccess(enabled bool, root string) error {
 	f.mu.Lock()
 	f.remoteRoot = abs
 	if enabled {
-		f.done("Remote file access enabled (root folder: %s)", brickcfg.DisplayPath(abs))
+		level := "read-only"
+		if !readOnly {
+			level = "read/write"
+		}
+		f.done("Remote file access enabled (root folder: %s, %s)", brickcfg.DisplayPath(abs), level)
 	}
 	f.mu.Unlock()
 	return nil

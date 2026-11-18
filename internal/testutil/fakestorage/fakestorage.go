@@ -1,12 +1,14 @@
 // Package fakestorage is an in-memory Storage API covering everything brick's
 // sync engine and remote agent call: resolve, children (paginated), folder
 // create (409 on duplicates), soft-delete (cascading), file
-// download/upload/replace with ETags, check-updates with a server clock and
+// download (with Range)/upload/replace with ETags, node lookup, check-updates with a server clock and
 // cursor pagination, quota, and client deregistration. Test helpers
 // manipulate the tree "server-side" (as another device or the webapp would).
 package fakestorage
 
 import (
+	"bytes"
+	"cmp"
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
@@ -72,6 +74,7 @@ type Server struct {
 	clock    int64
 	quota    int64
 	failNext map[string]int // "METHOD /suffix" prefix → remaining failures
+	failCode map[string]int // the status failNext answers with; 500 if unset
 
 	requests map[string]int
 }
@@ -100,6 +103,7 @@ func newServer(accountID string) *Server {
 		clock:     1000,
 		quota:     10 << 30,
 		failNext:  map[string]int{},
+		failCode:  map[string]int{},
 		requests:  map[string]int{},
 	}
 	s.nodes["root"] = &node{Node: Node{ID: "root", NodeType: "root"}}
@@ -297,6 +301,17 @@ func (s *Server) Read(path string) (string, bool) {
 	return string(n.data), true
 }
 
+// Data returns the content of the file node id.
+func (s *Server) Data(id string) ([]byte, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n, ok := s.nodes[id]
+	if !ok {
+		return nil, false
+	}
+	return n.data, true
+}
+
 // Exists reports whether a live node exists at path.
 func (s *Server) Exists(path string) bool {
 	s.mu.Lock()
@@ -342,8 +357,14 @@ func (s *Server) Paths() []string {
 // FailNext makes the next n requests whose "METHOD path-suffix" starts with
 // key fail with 500 (e.g. "GET /files/", "POST /files").
 func (s *Server) FailNext(key string, n int) {
+	s.FailNextWith(key, n, http.StatusInternalServerError)
+}
+
+// FailNextWith is FailNext answering with status code instead of 500.
+func (s *Server) FailNextWith(key string, n, code int) {
 	s.mu.Lock()
 	s.failNext[key] = n
+	s.failCode[key] = code
 	s.mu.Unlock()
 }
 
@@ -393,8 +414,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 	for k, n := range s.failNext {
 		if n > 0 && strings.HasPrefix(key, k) {
 			s.failNext[k] = n - 1
+			code := cmp.Or(s.failCode[k], http.StatusInternalServerError)
 			s.mu.Unlock()
-			http.Error(w, "injected failure", http.StatusInternalServerError)
+			http.Error(w, "injected failure", code)
 			return
 		}
 	}
@@ -459,6 +481,21 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, 200, map[string]any{"data": kids, "count": total})
 
+	case r.Method == "GET" && strings.HasPrefix(rest, "/nodes/"):
+		id := strings.TrimPrefix(rest, "/nodes/")
+		s.mu.Lock()
+		n, ok := s.nodes[id]
+		var out Node
+		if ok {
+			out = s.withPathLocked(n)
+		}
+		s.mu.Unlock()
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, 200, out)
+
 	case r.Method == "POST" && rest == "/nodes":
 		var body struct{ ParentID, Name string }
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -521,9 +558,9 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request) {
 		case "GET":
 			data, etag := n.data, n.Etag
 			s.mu.Unlock()
+			// ServeContent answers Range/If-Range, as the real API does.
 			w.Header().Set("ETag", `"`+etag+`"`)
-			w.WriteHeader(200)
-			_, _ = w.Write(data)
+			http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 		case "PUT":
 			s.mu.Unlock()
 			data, _ := io.ReadAll(r.Body)

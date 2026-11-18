@@ -35,7 +35,7 @@ export function needsWindow(step: string): boolean {
 // (o--o--o--o--o) instead of the numbered checklist brick-cli prints, which
 // cost too much vertical space here. Logging in is the first: it is already
 // behind the user when the wizard's own screens start, so its dot is green
-// from the sync-folder step on, and answering the last one (remote access)
+// from the sync-folder step on, and answering the last one (remote control)
 // leaves the whole bar green.
 export const WIZARD_STEPS = ["login", "folder", "conflict", "scope", "remote"] as const;
 
@@ -107,16 +107,35 @@ export const CONFLICT_OPTIONS: Option[] = [
   { value: "copy", label: "Clone duplicate files so nothing is lost." },
 ];
 
-export function scopeOptions(totalHuman: string): Option[] {
+// CAMERA_UPLOADS is the top-level folder the sync-scope step leaves out by
+// default, like brick-cli: it tends to hold a lot of large files.
+export const CAMERA_UPLOADS = "Camera Uploads";
+
+// totalHuman is the user's quota usage, which also counts trash, so it is
+// only roughly what a full sync downloads. Without a Camera Uploads folder on
+// Brick, the backend leaves one out whatever is picked, so leaving it out is
+// no separate choice.
+export function scopeOptions(totalHuman: string, hasCameraUploads = true): Option[] {
   return [
-    { value: "all", label: `Sync all folders from Brick (${totalHuman})` },
+    { value: "all", label: `Sync all folders from Brick (about ${totalHuman} used)` },
+    ...(hasCameraUploads ? [{ value: "allButCamera", label: `Sync all folders except "${CAMERA_UPLOADS}" from Brick` }] : []),
     { value: "pick", label: "Pick which folders to sync" },
   ];
 }
 
-export const REMOTE_OPTIONS: Option[] = [
-  { value: "yes", label: "Yes" },
-  { value: "no", label: "No" },
+// scopeChoice is the option the sync-scope step opens on: brick-cli's default
+// of everything but Camera Uploads (or just everything, when there is no
+// Camera Uploads folder to leave out), unless the account already leaves out
+// some other set of folders, which only the list can show.
+export function scopeChoice(excluded: string[], hasCameraUploads = true): string {
+  const others = excluded.filter((f) => f !== CAMERA_UPLOADS);
+  if (others.length > 0) return "pick";
+  return hasCameraUploads ? "allButCamera" : "all";
+}
+
+export const ACCESS_OPTIONS: Option[] = [
+  { value: "ro", label: "Read-Only" },
+  { value: "rw", label: "Read/Write" },
 ];
 
 export function remoteRootOptions(home: string, custom?: string): Option[] {
@@ -147,5 +166,20 @@ export function describeError(err: unknown): string {
       : err && typeof err === "object" && "message" in err
         ? String((err as { message: unknown }).message)
         : String(err);
-  return presentable(raw, GENERIC_ERROR);
+  return presentable(runtimeErrorMessage(raw) ?? raw, GENERIC_ERROR);
+}
+
+// runtimeErrorMessage unwraps the error a bound Go method returned. Wails
+// rejects the call with it as JSON — {"message": …, "kind": "RuntimeError"}
+// — and the message is the Go side's own sentence, written to be shown. The
+// other kinds (ReferenceError, TypeError) are the binding itself failing,
+// and stay out of the window.
+function runtimeErrorMessage(raw: string): string | undefined {
+  try {
+    const e = JSON.parse(raw) as { kind?: unknown; message?: unknown };
+    if (e?.kind === "RuntimeError" && typeof e.message === "string") return e.message;
+  } catch {
+    // not JSON: a plain message
+  }
+  return undefined;
 }

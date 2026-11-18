@@ -2,7 +2,7 @@
 // location, same schema) brick-cli uses, so a machine set up by either app
 // works in the other.
 //
-// Ported from brick-cli cmd/brick/config.go @ f3ef7bd. Differences from the
+// Ported from brick-cli cmd/brick/config.go @ 54eafd2. Differences from the
 // CLI, all deliberate:
 //   - Unknown keys (top-level and per-account) are preserved across a
 //     load/save round trip, so a field only one of the two apps knows about
@@ -58,13 +58,55 @@ type Config struct {
 
 	// AgentRoots are the directories remote control exposes (global, not
 	// per-account).
-	AgentRoots []string `yaml:"agentRoots,omitempty"`
+	AgentRoots []AgentRoot `yaml:"agentRoots,omitempty"`
 
 	// RemoteControl enables remote file access by default.
 	RemoteControl bool `yaml:"remoteControl,omitempty"`
 
+	// TransferHistoryLimit caps how many finished remote-control transfers
+	// GET /transfers reports for the running session. Unset (or <= 0) means
+	// the agent's default.
+	TransferHistoryLimit int `yaml:"transferHistoryLimit,omitempty"`
+
 	// Extra holds keys this app doesn't know about, written back verbatim.
 	Extra map[string]any `yaml:",inline"`
+}
+
+// AgentRoot is one agentRoots entry. It's written either as a plain path,
+// which is read-only, or as a mapping that sets readOnly explicitly:
+//
+//	agentRoots:
+//	  - /home/me/Documents
+//	  - path: /home/me/Shared
+//	    readOnly: false
+type AgentRoot struct {
+	Path string `yaml:"path"`
+	// ReadOnly, when unset or true, makes remote control reject every
+	// endpoint that would change anything under Path.
+	ReadOnly *bool `yaml:"readOnly,omitempty"`
+}
+
+// IsReadOnly reports whether remote control may only read under Path.
+func (r AgentRoot) IsReadOnly() bool { return r.ReadOnly == nil || *r.ReadOnly }
+
+// UnmarshalYAML accepts both the plain-path and the mapping form.
+func (r *AgentRoot) UnmarshalYAML(node *yaml.Node) error {
+	if node.Kind == yaml.ScalarNode {
+		*r = AgentRoot{Path: node.Value}
+		return nil
+	}
+	type plain AgentRoot // no methods, so Decode doesn't recurse back here
+	return node.Decode((*plain)(r))
+}
+
+// MarshalYAML keeps an entry with readOnly unset in the plain-path form, so
+// saving the config doesn't rewrite existing entries.
+func (r AgentRoot) MarshalYAML() (interface{}, error) {
+	if r.ReadOnly == nil {
+		return r.Path, nil
+	}
+	type plain AgentRoot
+	return plain(r), nil
 }
 
 // AccountConfig mirrors brick-cli's AccountConfig.

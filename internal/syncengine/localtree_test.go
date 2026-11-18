@@ -187,9 +187,10 @@ func TestPauseMidPassForcesTheNextScopedPassToFullScan(t *testing.T) {
 //
 // The two sides are given identical content, because that is what tells the
 // outcomes apart: seeing the local file, the pass confirms the two match by MD5
-// and transfers nothing (verifyUnsyncedFileMatches); missing it, the pass calls
-// the file remote-only and downloads it. Both leave the same bytes on disk, so
-// only the transfer distinguishes them.
+// and records it as synced without transferring anything
+// (verifyUnsyncedFileMatches); missing it, the pass calls the file remote-only
+// and downloads it. Both leave the same bytes on disk and a sync entry, so only
+// the transfer distinguishes them.
 func TestRemotePollWalksWhileLocalReportsArePending(t *testing.T) {
 	f := newFixture(t, nil).watched()
 	f.reconcile()
@@ -206,8 +207,8 @@ func TestRemotePollWalksWhileLocalReportsArePending(t *testing.T) {
 	if n := f.fs.Requests("GET /files/"); n != 0 {
 		t.Errorf("%d downloads, want 0: the local copy was already identical, but a stale cache hid it", n)
 	}
-	if !f.sink.has("verify:both.txt") {
-		t.Error("no verify for both.txt: the pass never saw the local copy at all")
+	if _, ok := f.eng.State().Entries["both.txt"]; !ok {
+		t.Error("both.txt has no sync entry: the pass never reconciled it at all")
 	}
 	// The report itself stays pending — coalescing is the debounce worker's job.
 	if !f.eng.hasPendingLocal() {

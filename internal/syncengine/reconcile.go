@@ -6,10 +6,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -20,7 +23,7 @@ import (
 
 // TmpSuffix marks in-progress downloads; the tree walk and watcher skip them
 // (see isIgnoredName).
-const TmpSuffix = ".brick-tmp"
+const TmpSuffix = storage.TmpSuffix
 
 // Ported 1:1 from brick-cli sync.go @ f3ef7bd: buildRemoteTree … recordUpload.
 
@@ -166,6 +169,19 @@ func (e *Engine) applyRemoteDelta(nodes []storage.Node) (affectedFiles []string)
 				e.rewriteRemotePrefix(oldRel, rel)
 				delete(e.remoteTreeFolders, oldRel)
 				delete(e.remoteTreeFolderID, oldRel)
+				if isExcludedPath(oldRel, e.excludeDirs) != isExcludedPath(rel, e.excludeDirs) {
+					// Moved into or out of an excluded folder: pass 0 never
+					// mirrors that locally (see applyRemoteFolderMoves), so
+					// the file pass must visit every file under both paths —
+					// to remove the local copies left at the old one, or to
+					// download the ones that just became synced at the new.
+					prefix := rel + "/"
+					for k := range e.remoteTreeFiles {
+						if strings.HasPrefix(k, prefix) {
+							affectedFiles = append(affectedFiles, k, oldRel+"/"+strings.TrimPrefix(k, prefix))
+						}
+					}
+				}
 			}
 			e.remoteTreeFolders[rel] = n
 			e.remoteTreeFolderID[rel] = n.ID
@@ -494,6 +510,14 @@ func (e *Engine) applyRemoteFolderMoves(remoteFolders map[string]storage.Node, l
 		if m.oldRel == m.newRel {
 			continue
 		}
+		if isExcludedPath(m.oldRel, e.excludeDirs) || isExcludedPath(m.newRel, e.excludeDirs) {
+			// Into an excluded folder: it's no longer synced, so let the
+			// normal passes treat the old path as deleted on the server
+			// rather than carry a local copy into a folder sync ignores. Out
+			// of one: there's no synced local copy to carry; the normal
+			// passes download it at the new path.
+			continue
+		}
 		if !localDirs[m.oldRel] || localDirs[m.newRel] {
 			continue
 		}
@@ -515,7 +539,7 @@ func (e *Engine) applyRemoteFolderMoves(remoteFolders map[string]storage.Node, l
 			}
 		}
 		e.moved.Add(1)
-		e.logf("→ moved %s to %s", m.oldRel, m.newRel)
+		e.logf(syncLogPrefix+"Moved %s to %s", m.oldRel, m.newRel)
 		e.publishActivity("move-folder", m.newRel)
 	}
 }
@@ -531,6 +555,9 @@ func (e *Engine) applyRemoteFileMoves(remoteFiles map[string]storage.Node, local
 		oldRel, ok := oldRelByID[node.ID]
 		if !ok || oldRel == newRel {
 			continue
+		}
+		if isExcludedPath(oldRel, e.excludeDirs) || isExcludedPath(newRel, e.excludeDirs) {
+			continue // as for folders; see applyRemoteFolderMoves
 		}
 		if _, stillLocal := localFiles[oldRel]; !stillLocal {
 			continue
@@ -557,7 +584,7 @@ func (e *Engine) applyRemoteFileMoves(remoteFiles map[string]storage.Node, local
 		entry.RemoteEtag = node.Etag
 		e.state.Entries[newRel] = entry
 		e.moved.Add(1)
-		e.logf("→ moved %s to %s", oldRel, newRel)
+		e.logf(syncLogPrefix+"Moved %s to %s", oldRel, newRel)
 		e.publishActivity("move", newRel)
 	}
 }
@@ -685,6 +712,11 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 		return err
 	}
 
+	if dirs := e.pendingExcludeDirs.Swap(nil); dirs != nil {
+		e.excludeDirs = *dirs
+	}
+	e.reconcileExcludeDirsChange()
+
 	// Whether the *previous* pass got through its file pass intact. Cleared the
 	// moment this one starts and set again only if this one does; see the file
 	// pass for why a scoped set of rels is only safe on top of a complete
@@ -760,7 +792,7 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 		handledDeletes[rel] = true
 		e.pruneRemoteSubtree(rel, remoteFolders, remoteFiles, folderID)
 		e.deleted.Add(1)
-		e.logf("🗑  trashed folder %s (deleted locally)", rel)
+		e.logf(syncLogPrefix+"Trashed folder %s (deleted locally)", rel)
 		e.publishActivity("trash-folder", rel)
 	}
 
@@ -897,7 +929,7 @@ func (e *Engine) reconcileAll(ctx context.Context, forceFullWalk bool, scope loc
 		}
 		delete(localDirs, rel)
 		e.deleted.Add(1)
-		e.logf("🗑  removed folder %s (deleted on server)", rel)
+		e.logf(syncLogPrefix+"Removed folder %s (deleted on server)", rel)
 		e.publishActivity("remove-folder", rel)
 	}
 
@@ -1015,6 +1047,104 @@ func isExcludedPath(rel string, excludeDirs []string) bool {
 	return false
 }
 
+// QueueExcludeDirs hands the engine a new excludeDirs list, which the next
+// reconcile pass adopts. The caller should then trigger a pass (Notify).
+func (e *Engine) QueueExcludeDirs(dirs []string) {
+	dirs = slices.Clone(dirs)
+	e.pendingExcludeDirs.Store(&dirs)
+}
+
+// ExcludeAndRemove adopts dirs as the excludeDirs list at once and deletes the
+// local copy of each folder in remove (slash-separated, relative to the sync
+// folder) — the tray's Selective Sync, brick-cli's `brick sync -s` for a
+// running engine. A folder in remove that dirs doesn't exclude is left alone.
+//
+// It runs under e.mu, between passes: a pass still working from the old list
+// would read the deleted folders as removed locally and trash them on the
+// server. A pass in flight is asked to unwind between files, so this waits at
+// most for the transfer under way; a follow-up pass is then triggered.
+func (e *Engine) ExcludeAndRemove(dirs, remove []string) error {
+	e.interrupts.Add(1)
+	e.mu.Lock()
+	e.interrupts.Add(-1)
+
+	e.pendingExcludeDirs.Store(nil) // superseded by dirs
+	e.excludeDirs = slices.Clone(dirs)
+	e.reconcileExcludeDirsChange()
+
+	var errs []error
+	for _, rel := range remove {
+		rel = strings.Trim(filepath.ToSlash(rel), "/")
+		if !filepath.IsLocal(filepath.FromSlash(rel)) || !isExcludedPath(rel, e.excludeDirs) {
+			continue
+		}
+		abs := filepath.Join(e.folder, filepath.FromSlash(rel))
+		if _, err := os.Lstat(abs); errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err := os.RemoveAll(abs); err != nil {
+			e.logf("remove excluded folder %s: %v", rel, err)
+			errs = append(errs, fmt.Errorf("could not remove %s: %w", rel, err))
+			continue
+		}
+		e.deleted.Add(1)
+		e.logf(syncLogPrefix+"Removed local copy of %s (excluded from sync)", rel)
+		e.publishActivity("remove-folder", rel)
+	}
+	e.saveStateLocked()
+	e.mu.Unlock()
+
+	e.Notify()
+	return errors.Join(errs...)
+}
+
+// reconcileExcludeDirsChange brings the sync index in line with an
+// excludeDirs change since it was last reconciled: one made mid-session via
+// PATCH /settings, or between runs by the setup wizard, brick-cli or a
+// config edit. Must be called with e.mu held, before anything reads the
+// index. Ported from brick-cli sync.go @ 54eafd2.
+//
+// While a folder is excluded the index keeps recording it: the folder pass
+// records the remote folder even though it's never created locally, and
+// reconcileExcludedFile records each file with whichever sides it exists on.
+// Once the folder is un-excluded, an entry for a folder or file missing
+// locally would read as "synced before, deleted locally since" and get
+// trashed on the server, and a file entry with no remote node as "deleted
+// remotely" and get removed locally. So those entries are dropped, leaving
+// the paths looking new, to be downloaded or uploaded instead. Entries for
+// files on both sides stay: they're current, and spare a re-transfer.
+//
+// Any change also forces the next file pass over every path, since an
+// un-exclude changes nothing an incremental pass would otherwise notice.
+func (e *Engine) reconcileExcludeDirsChange() {
+	prev := e.state.ExcludeDirs
+	if slices.Equal(prev, e.excludeDirs) {
+		return
+	}
+	e.state.ExcludeDirs = slices.Clone(e.excludeDirs)
+	e.filesConverged = false
+	e.localTreeValid = false
+
+	unexcluded := func(rel string) bool {
+		return isExcludedPath(rel, prev) && !isExcludedPath(rel, e.excludeDirs)
+	}
+	missingLocally := func(rel string) bool {
+		_, err := os.Lstat(filepath.Join(e.folder, filepath.FromSlash(rel)))
+		return errors.Is(err, fs.ErrNotExist)
+	}
+	for rel := range e.state.Folders {
+		if unexcluded(rel) && missingLocally(rel) {
+			delete(e.state.Folders, rel)
+			delete(e.state.FolderIDs, rel)
+		}
+	}
+	for rel, entry := range e.state.Entries {
+		if unexcluded(rel) && (entry.NodeID == "" || missingLocally(rel)) {
+			delete(e.state.Entries, rel)
+		}
+	}
+}
+
 // verifyUnsyncedFileMatches checks, for every file present on both sides with
 // no sync-state entry (the case reconcileFile would otherwise resolve by
 // blind transfer — per e.conflictMode on a true first sync, or "remote wins"
@@ -1092,7 +1222,7 @@ func (e *Engine) reconcileFile(ctx context.Context, rel string, remoteFiles map[
 			delete(localFiles, rel)
 			delete(e.state.Entries, rel)
 			e.deleted.Add(1)
-			e.logf("🗑  removed %s (deleted on server)", rel)
+			e.logf(syncLogPrefix+"Removed %s (deleted on server)", rel)
 			e.publishActivity("remove", rel)
 			return nil
 		}
@@ -1200,7 +1330,7 @@ func (e *Engine) keepBothFile(ctx context.Context, rel string, remoteNode storag
 	if err := e.uploadNewFile(ctx, copyRel, remoteFolders, folderID); err != nil {
 		return err
 	}
-	e.logf("⧉ kept both copies of %s (as %s)", rel, copyRel)
+	e.logf(syncLogPrefix+"Kept both copies of %s (as %s)", rel, copyRel)
 	e.publishActivity("keep-both", rel)
 	return nil
 }
@@ -1224,32 +1354,34 @@ func DupPath(rel string) string {
 // suppresses it, so our own download isn't mistaken for a local edit and echoed
 // back as an upload) — so without this the cache would not learn the file exists
 // until the next full walk.
+//
+// The file streams to disk rather than through memory, in one attempt: a
+// download that fails is left for the next pass, as before (see
+// storage.WithSingleAttempt).
 func (e *Engine) downloadFile(ctx context.Context, rel string, node storage.Node, localFiles map[string]int64, localDirs map[string]bool) error {
 	e.setInFlight(rel, "download")
 	defer e.clearInFlight()
 
-	data, etag, err := e.sc.Download(ctx, node.ID)
-	if err != nil {
-		return err
-	}
-	if etag == "" {
-		etag = node.Etag
-	}
 	abs := filepath.Join(e.folder, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(abs), 0o755); err != nil {
 		return err
 	}
 	e.markRecentlyWritten(abs)
-	if err := AtomicWrite(abs, data); err != nil {
+	got, err := e.sc.DownloadForSync(storage.WithSingleAttempt(ctx), node.ID, abs, node.SizeBytes)
+	if err != nil {
 		return err
 	}
-	localFiles[rel] = int64(len(data))
+	etag := got.ETag
+	if etag == "" {
+		etag = node.Etag
+	}
+	localFiles[rel] = got.Size
 	if parent := parentOf(rel); parent != "" {
 		localDirs[parent] = true
 	}
-	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: etag, LocalHash: hashBytes(data), LocalSize: int64(len(data)), SyncedAt: time.Now()}
+	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: etag, LocalHash: got.SHA256, LocalSize: got.Size, SyncedAt: time.Now()}
 	e.downloaded.Add(1)
-	e.logf("↓ downloaded %s", rel)
+	e.logf(syncLogPrefix+"Downloaded %s", rel)
 	e.publishActivity("download", rel)
 	return nil
 }
@@ -1260,7 +1392,7 @@ func (e *Engine) deleteRemoteFile(ctx context.Context, rel, nodeID string) error
 	}
 	delete(e.state.Entries, rel)
 	e.deleted.Add(1)
-	e.logf("🗑  trashed %s (deleted locally)", rel)
+	e.logf(syncLogPrefix+"Trashed %s (deleted locally)", rel)
 	e.publishActivity("trash", rel)
 	return nil
 }
@@ -1299,20 +1431,21 @@ func (e *Engine) uploadNewFile(ctx context.Context, rel string, remoteFolders ma
 	e.setInFlight(rel, "upload")
 	defer e.clearInFlight()
 
-	data, err := os.ReadFile(filepath.Join(e.folder, filepath.FromSlash(rel)))
+	body, size, err := openUpload(filepath.Join(e.folder, filepath.FromSlash(rel)))
 	if err != nil {
 		return err
 	}
+	defer body.Close()
 	parentID, err := e.ensureRemoteFolder(ctx, parentOf(rel), remoteFolders, folderID)
 	if err != nil {
 		return err
 	}
-	node, err := e.sc.Upload(ctx, parentID, baseName(rel), data)
+	node, err := e.sc.UploadStream(storage.WithSingleAttempt(ctx), parentID, baseName(rel), body, size, nil)
 	if err != nil {
 		return err
 	}
-	e.recordUpload(rel, node, data)
-	e.logf("↑ uploaded %s", rel)
+	e.recordUpload(rel, node, body)
+	e.logf(syncLogPrefix+"Uploaded %s", rel)
 	e.publishActivity("upload", rel)
 	return nil
 }
@@ -1321,44 +1454,76 @@ func (e *Engine) replaceFile(ctx context.Context, rel, nodeID string) error {
 	e.setInFlight(rel, "upload")
 	defer e.clearInFlight()
 
-	data, err := os.ReadFile(filepath.Join(e.folder, filepath.FromSlash(rel)))
+	body, size, err := openUpload(filepath.Join(e.folder, filepath.FromSlash(rel)))
 	if err != nil {
 		return err
 	}
-	node, err := e.sc.Replace(ctx, nodeID, data)
+	defer body.Close()
+	node, err := e.sc.ReplaceStream(storage.WithSingleAttempt(ctx), nodeID, body, size, nil)
 	if err != nil {
 		return err
 	}
-	e.recordUpload(rel, node, data)
-	e.logf("↑ uploaded %s (updated)", rel)
+	e.recordUpload(rel, node, body)
+	e.logf(syncLogPrefix+"Uploaded %s (updated)", rel)
 	e.publishActivity("update", rel)
 	return nil
 }
 
-func (e *Engine) recordUpload(rel string, node *storage.Node, data []byte) {
-	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: node.Etag, LocalHash: hashBytes(data), LocalSize: int64(len(data)), SyncedAt: time.Now()}
+func (e *Engine) recordUpload(rel string, node *storage.Node, sent *uploadBody) {
+	e.state.Entries[rel] = SyncEntry{RelPath: rel, NodeID: node.ID, RemoteEtag: node.Etag, LocalHash: sent.sum(), LocalSize: sent.n, SyncedAt: time.Now()}
 	e.uploaded.Add(1)
 }
 
+// uploadBody streams a file to the server, hashing what it reads so the sync
+// entry records exactly the bytes sent, not what the file holds by the time
+// the upload finishes. A resent request reads the body again from the start
+// (see auth.Client.DoStream), which starts the hash over.
+type uploadBody struct {
+	f *os.File
+	r *io.SectionReader // the file's first size bytes: what Content-Length promised
+	h hash.Hash
+	n int64
+}
+
+// openUpload opens path to be uploaded, returning its size.
+func openUpload(path string) (*uploadBody, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, 0, err
+	}
+	return &uploadBody{f: f, r: io.NewSectionReader(f, 0, fi.Size()), h: sha256.New()}, fi.Size(), nil
+}
+
+func (b *uploadBody) Read(p []byte) (int, error) {
+	n, err := b.r.Read(p)
+	b.h.Write(p[:n])
+	b.n += int64(n)
+	return n, err
+}
+
+func (b *uploadBody) Seek(offset int64, whence int) (int64, error) {
+	pos, err := b.r.Seek(offset, whence)
+	if err != nil {
+		return pos, err
+	}
+	if pos != 0 {
+		return pos, errors.New("upload body can only seek back to the start")
+	}
+	b.h.Reset()
+	b.n = 0
+	return 0, nil
+}
+
+func (b *uploadBody) Close() error { return b.f.Close() }
+
+func (b *uploadBody) sum() string { return hex.EncodeToString(b.h.Sum(nil)) }
+
 // --- helpers ---
-
-// AtomicWrite writes via a TmpSuffix temp file + rename.
-func AtomicWrite(path string, data []byte) error {
-	tmp := path + TmpSuffix
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
-}
-
-func hashBytes(data []byte) string {
-	h := sha256.Sum256(data)
-	return hex.EncodeToString(h[:])
-}
 
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)

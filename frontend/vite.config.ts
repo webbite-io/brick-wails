@@ -11,14 +11,20 @@ export default defineConfig({
   },
   plugins: [wails("./bindings")],
   build: {
-    // Three windows, three entry points: the tray popover (index.html), the
-    // startup status window (startup.html), and the update prompt
-    // (update.html, see main.go's "Update" window).
+    // One entry point per window: the tray popover (index.html), the startup
+    // status window (startup.html), the update prompt (update.html, see
+    // main.go's "Update" window), and the windows that remove and add a
+    // remote control folder (remove.html and add.html, main.go's
+    // "RemoveRoot" and "AddRoot"), and the Selective Sync window
+    // (selective.html, main.go's "SelectiveSync").
     rollupOptions: {
       input: {
         main: resolve(__dirname, "index.html"),
         startup: resolve(__dirname, "startup.html"),
         update: resolve(__dirname, "update.html"),
+        remove: resolve(__dirname, "remove.html"),
+        add: resolve(__dirname, "add.html"),
+        selective: resolve(__dirname, "selective.html"),
       },
     },
   },

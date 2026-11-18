@@ -1,0 +1,476 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io/fs"
+	"net/http"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"github.com/webbite-io/brick-wails/internal/storage"
+)
+
+// --- Batch upload: many local files to Drive, queued and run a few at a time ---
+//
+// POST /transfer/upload-batch takes local paths (files, or with recursive
+// folders too) and a destination parentId. The paths are resolved up front
+// into a list of unique, readable files; anything that can't be uploaded is
+// left out and reported in "skipped" rather than failing the request. With
+// dryRun the list and its total size are returned without uploading, so the
+// caller can e.g. check it against the quota first. Otherwise every file is
+// registered as a queued transfer under one batch and the request answers
+// 202 straight away; the agent's transfer queue then uploads them in order,
+// transferWorkers files at a time across all batches.
+//
+// A picked folder keeps its name: uploading ~/Photos recursively into
+// parentId puts its files under Photos/... there, creating the folders (or
+// reusing ones that already exist) as the files reach them. Empty folders
+// are not created.
+//
+// Progress: GET /transfers/{batchId} for the batch's summary, or
+// GET /transfers?batchId= for its files' records. DELETE /transfers/{batchId}
+// cancels what's left of it; DELETE /transfers/{id} cancels a single file.
+
+// maxBatchFiles caps how many files one batch upload may resolve to.
+const maxBatchFiles = 1000
+
+type uploadBatchReq struct {
+	Paths     []string `json:"paths"`
+	ParentID  string   `json:"parentId"`
+	Recursive bool     `json:"recursive"`
+	DryRun    bool     `json:"dryRun"`
+	BatchID   string   `json:"batchId"`
+}
+
+// batchFile is one file a batch upload resolved to.
+type batchFile struct {
+	LocalPath string `json:"localPath"`
+	RemoteDir string `json:"remoteDir,omitempty"` // folder path under parentId, "/"-separated
+	Name      string `json:"name"`
+	Size      int64  `json:"size"`
+}
+
+// batchSkip is a requested path, or a file found under one, left out of a
+// batch upload. Code is one of the API's error codes (not_found,
+// permission_denied, path_outside_roots, ...) or duplicate.
+type batchSkip struct {
+	Path    string `json:"path"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+var errTooManyBatchFiles = newAPIError(http.StatusBadRequest, "too_many_files",
+	fmt.Sprintf("A batch transfer can hold at most %d files.", maxBatchFiles))
+
+// batchResolver turns a batch upload's paths into its files.
+type batchResolver struct {
+	ctx       context.Context // the request's: walking stops if it goes away
+	a         *agentServer
+	recursive bool
+	seen      map[string]bool // real paths of the files taken so far
+	files     []batchFile
+	skipped   []batchSkip
+}
+
+func (a *agentServer) resolveBatch(ctx context.Context, paths []string, recursive bool) ([]batchFile, []batchSkip, error) {
+	br := &batchResolver{ctx: ctx, a: a, recursive: recursive, seen: map[string]bool{}}
+	for _, p := range paths {
+		if err := br.addPath(p); err != nil {
+			return nil, nil, err
+		}
+	}
+	return br.files, br.skipped, nil
+}
+
+func (br *batchResolver) skip(p, code, message string) {
+	br.skipped = append(br.skipped, batchSkip{Path: p, Code: code, Message: sentence(message)})
+}
+
+// skipErr records p as skipped for err, classified as writeOSError would.
+func (br *batchResolver) skipErr(p string, err error) {
+	var ae *apiError
+	switch {
+	case errors.As(err, &ae):
+		br.skip(p, ae.Code, ae.Message)
+	case os.IsNotExist(err):
+		br.skip(p, "not_found", err.Error())
+	case os.IsPermission(err):
+		br.skip(p, "permission_denied", err.Error())
+	default:
+		br.skip(p, "io_error", err.Error())
+	}
+}
+
+// addPath adds the file at requested path p, or (recursive) every file under
+// the folder at p. Only errTooManyBatchFiles and the request's cancellation
+// are returned; every other problem is recorded as a skip.
+func (br *batchResolver) addPath(p string) error {
+	if err := br.ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(p) == "" {
+		// resolveSafe would take this to mean the first root.
+		br.skip(p, "invalid_path", "Path is empty.")
+		return nil
+	}
+	abs, err := br.a.resolveSafe(p)
+	if err != nil {
+		br.skipErr(p, err)
+		return nil
+	}
+	info, err := os.Stat(abs)
+	if err != nil {
+		br.skipErr(abs, err)
+		return nil
+	}
+	if !info.IsDir() {
+		return br.addFile(abs, evalSafe(abs), "", info)
+	}
+	if !br.recursive {
+		br.skip(abs, "is_a_directory", "Path is a directory; set recursive to upload its contents.")
+		return nil
+	}
+	return br.addTree(abs)
+}
+
+// addTree adds every file under folder abs, under a remote folder of the
+// same name. Symlinks inside it are followed to files within the roots but
+// not into folders, which could loop.
+//
+// The walk starts from abs's real path and doesn't follow symlinks, so every
+// path it reaches is already real: only a symlink's own target needs
+// resolving, and only a symlink needs more than the lstat WalkDir did.
+func (br *batchResolver) addTree(abs string) error {
+	walkRoot := evalSafe(abs)
+	top := filepath.Base(abs)
+	return filepath.WalkDir(walkRoot, func(p string, d fs.DirEntry, err error) error {
+		if ctxErr := br.ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		if err != nil {
+			br.skipErr(p, err)
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+		real := p
+		var info os.FileInfo
+		if d.Type()&fs.ModeSymlink != 0 {
+			info, err = os.Stat(p) // follows the symlink
+			if err != nil {
+				br.skipErr(p, err)
+				return nil
+			}
+			if info.IsDir() {
+				br.skip(p, "symlinked_directory", "Symlinked folders are not followed.")
+				return nil
+			}
+			if _, ok := br.a.rootOf(p); !ok {
+				br.skip(p, "path_outside_roots", "Symlink points outside the allowed roots.")
+				return nil
+			}
+			real = evalSafe(p)
+		} else if info, err = d.Info(); err != nil {
+			br.skipErr(p, err)
+			return nil
+		}
+		rel, _ := filepath.Rel(walkRoot, filepath.Dir(p))
+		return br.addFile(p, real, path.Join(top, filepath.ToSlash(rel)), info)
+	})
+}
+
+// addFile adds the file at abs, whose real path is real (to go in
+// remoteDir), unless it was already added under another path or can't be
+// read.
+func (br *batchResolver) addFile(abs, real, remoteDir string, info os.FileInfo) error {
+	if !info.Mode().IsRegular() {
+		br.skip(abs, "not_a_regular_file", "Only regular files can be uploaded.")
+		return nil
+	}
+	if br.seen[real] {
+		br.skip(abs, "duplicate", "The file is already in this batch.")
+		return nil
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		br.skipErr(abs, err)
+		return nil
+	}
+	f.Close()
+	if len(br.files) == maxBatchFiles {
+		return errTooManyBatchFiles
+	}
+	br.seen[real] = true
+	br.files = append(br.files, batchFile{
+		LocalPath: abs, RemoteDir: remoteDir, Name: filepath.Base(abs), Size: info.Size(),
+	})
+	return nil
+}
+
+func (a *agentServer) handleUploadBatch(w http.ResponseWriter, r *http.Request) {
+	var req uploadBatchReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+		return
+	}
+	if len(req.Paths) == 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", "The paths field is required.")
+		return
+	}
+	if len(req.Paths) > maxBatchFiles {
+		writeErr(w, errTooManyBatchFiles)
+		return
+	}
+	if req.ParentID == "" && !req.DryRun {
+		writeError(w, http.StatusBadRequest, "invalid_request", "The parentId field is required.")
+		return
+	}
+
+	files, skipped, err := a.resolveBatch(r.Context(), req.Paths, req.Recursive)
+	if err != nil {
+		writeErr(w, err)
+		return
+	}
+	if req.DryRun {
+		var total int64
+		for _, f := range files {
+			total += f.Size
+		}
+		writeJSON(w, http.StatusOK, map[string]interface{}{
+			"dryRun": true, "fileCount": len(files), "totalBytes": total, "files": files, "skipped": skipped,
+		})
+		return
+	}
+	if len(files) == 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]interface{}{
+			"error":   map[string]string{"code": "no_files", "message": "None of the paths resolved to a file that can be uploaded."},
+			"skipped": skipped,
+		})
+		return
+	}
+
+	items := make([]queuedTransfer, len(files))
+	ctxs := make([]context.Context, len(files))
+	for i, f := range files {
+		ctx, cancel := context.WithCancel(a.ctx)
+		ctxs[i] = ctx
+		items[i] = queuedTransfer{
+			rec: transferRecord{
+				Direction: "upload", LocalPath: f.LocalPath, ParentID: req.ParentID,
+				Name: f.Name, RemoteDir: f.RemoteDir, BytesTotal: f.Size,
+			},
+			cancel: cancel,
+		}
+	}
+	batch, err := a.transfers.beginBatch(req.BatchID, transferBatch{Direction: "upload", ParentID: req.ParentID}, items)
+	if err != nil {
+		for _, it := range items {
+			it.cancel()
+		}
+		writeErr(w, err)
+		return
+	}
+
+	folders := &batchFolders{parentID: req.ParentID, ids: map[string]string{}}
+	jobs := make([]queuedJob, len(files))
+	transfers := make([]transferRecord, len(files))
+	for i, id := range batch.TransferIDs {
+		it := queuedUpload{id: id, file: files[i], ctx: ctxs[i], folders: folders}
+		jobs[i] = queuedJob{id: id, ctx: it.ctx, run: func() (*storage.Node, error) { return a.uploadBatchFile(it) }}
+		transfers[i], _ = a.transfers.get(id)
+	}
+	a.queue.push(jobs...)
+	writeJSON(w, http.StatusAccepted, map[string]interface{}{
+		"batch": batch, "transfers": transfers, "skipped": skipped,
+	})
+}
+
+// --- The transfer queue ---
+
+// queuedUpload is one batch upload file, as its queuedJob runs it.
+type queuedUpload struct {
+	id      string
+	file    batchFile
+	ctx     context.Context // cancelled by DELETE /transfers/{id} or brick shutting down
+	folders *batchFolders
+}
+
+// batchFolders maps a batch's remote folder paths to the ids of the folders
+// created (or found) for them. The queue's workers share it, and mu, held
+// while folders are created, keeps two of them from creating the same one.
+type batchFolders struct {
+	mu       sync.Mutex
+	parentID string
+	ids      map[string]string
+}
+
+// folder returns the id of folder dir ("a/b") under the batch's parentId,
+// creating any part of it that doesn't exist yet.
+func (bf *batchFolders) folder(ctx context.Context, sc *storage.Client, dir string) (string, error) {
+	bf.mu.Lock()
+	defer bf.mu.Unlock()
+	id := bf.parentID
+	if dir == "" {
+		return id, nil
+	}
+	prefix := ""
+	for _, name := range strings.Split(dir, "/") {
+		prefix = path.Join(prefix, name)
+		if known, ok := bf.ids[prefix]; ok {
+			id = known
+			continue
+		}
+		node, err := sc.CreateFolder(ctx, id, name)
+		if err != nil {
+			return "", fmt.Errorf("create folder %q: %w", prefix, err)
+		}
+		bf.ids[prefix] = node.ID
+		id = node.ID
+	}
+	return id, nil
+}
+
+// queuedJob is one batch file, upload or download, waiting its turn: run
+// transfers it, under ctx (cancelled by DELETE /transfers/{id} or brick
+// shutting down).
+type queuedJob struct {
+	id  string
+	ctx context.Context
+	run func() (*storage.Node, error)
+}
+
+// transferWorkers is how many batch files are transferred at once, across
+// all batches and whichever way they go: enough that the round trips around
+// each file (creating its folder, starting its request) overlap with other
+// files' bytes, few enough not to crowd the connection. A variable so tests
+// that need files to run one at a time can say so.
+var transferWorkers = 3
+
+// transferQueue holds batch files waiting to be transferred, oldest first.
+// runTransferQueue's workers take them from the front.
+type transferQueue struct {
+	mu    sync.Mutex
+	items []queuedJob
+	wake  chan struct{}
+}
+
+func newTransferQueue() *transferQueue {
+	return &transferQueue{wake: make(chan struct{}, 1)}
+}
+
+func (q *transferQueue) push(items ...queuedJob) {
+	q.mu.Lock()
+	q.items = append(q.items, items...)
+	q.mu.Unlock()
+	select {
+	case q.wake <- struct{}{}:
+	default:
+	}
+}
+
+// pop takes the oldest item. If more are left, it passes the wake-up on, as
+// push wakes only one of the workers waiting.
+func (q *transferQueue) pop() (queuedJob, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if len(q.items) == 0 {
+		return queuedJob{}, false
+	}
+	it := q.items[0]
+	q.items[0] = queuedJob{}
+	q.items = q.items[1:]
+	if len(q.items) > 0 {
+		select {
+		case q.wake <- struct{}{}:
+		default:
+		}
+	}
+	return it, true
+}
+
+// runTransferQueue transfers queued batch files, transferWorkers at a time,
+// until ctx (the session) ends, then marks whatever is still queued as
+// canceled.
+func (a *agentServer) runTransferQueue(ctx context.Context) {
+	var wg sync.WaitGroup
+	for range max(transferWorkers, 1) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.runTransferWorker(ctx)
+		}()
+	}
+	wg.Wait()
+	for it, ok := a.queue.pop(); ok; it, ok = a.queue.pop() {
+		a.transfers.finish(it.ctx, it.id, nil, it.ctx.Err())
+	}
+}
+
+// runTransferWorker transfers queued batch files one after another until ctx
+// ends.
+func (a *agentServer) runTransferWorker(ctx context.Context) {
+	for ctx.Err() == nil {
+		it, ok := a.queue.pop()
+		if !ok {
+			select {
+			case <-a.queue.wake:
+			case <-ctx.Done():
+			}
+			continue
+		}
+		a.runQueuedJob(it)
+	}
+}
+
+func (a *agentServer) runQueuedJob(it queuedJob) {
+	if !a.transfers.start(it.id) {
+		return // cancelled while it waited
+	}
+	node, err := it.run()
+	a.transfers.finish(it.ctx, it.id, node, err)
+}
+
+func (a *agentServer) uploadBatchFile(it queuedUpload) (*storage.Node, error) {
+	if err := it.ctx.Err(); err != nil {
+		return nil, err
+	}
+	ctx := a.transfers.retryContext(it.ctx, it.id)
+	// Creating the file's folders is retried like the upload itself, so a
+	// Storage API that is restarting just then doesn't fail the file.
+	var parentID string
+	err := storage.RetryTransfer(ctx, func(ctx context.Context, _ func()) (bool, error) {
+		var err error
+		parentID, err = it.folders.folder(ctx, a.sc, it.file.RemoteDir)
+		return false, err
+	})
+	if err != nil {
+		return nil, err
+	}
+	// The file may have changed, or gone, since the batch was queued, and a
+	// folder on its path may have been swapped for a symlink out of the roots.
+	if _, err := a.resolveSafe(it.file.LocalPath); err != nil {
+		return nil, err
+	}
+	f, info, err := openRegular(it.file.LocalPath)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	a.transfers.update(it.id, func(rec *transferRecord) {
+		rec.ParentID = parentID
+		rec.BytesTotal = info.Size()
+	})
+	return a.sc.UploadStream(ctx, parentID, it.file.Name, f, info.Size(), func(written int64) {
+		a.transfers.progress(it.id, written)
+	})
+}

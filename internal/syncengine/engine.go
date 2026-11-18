@@ -125,7 +125,13 @@ type Engine struct {
 	sink      Sink
 	opts      Options
 
+	// excludeDirs is guarded by e.mu; changed mid-session only via
+	// pendingExcludeDirs or ExcludeAndRemove.
 	excludeDirs []string
+	// pendingExcludeDirs holds an excludeDirs change made while the engine
+	// runs (remote control's PATCH /settings), for the next reconcile pass to
+	// adopt under e.mu. See QueueExcludeDirs.
+	pendingExcludeDirs atomic.Pointer[[]string]
 
 	// firstSync is true until the first reconcileAll pass *completes*.
 	// conflictMode ("device", "brick" or "copy") says how to resolve a file
@@ -223,8 +229,12 @@ type Engine struct {
 	recentMu        sync.Mutex
 	recentlyWritten map[string]time.Time
 
-	paused  atomic.Bool
-	trigger chan struct{}
+	paused atomic.Bool
+	// interrupts counts callers waiting to take e.mu between passes (see
+	// ExcludeAndRemove): while non-zero, a pass in flight unwinds between
+	// files as it does for a pause, without the user-visible pause.
+	interrupts atomic.Int32
+	trigger    chan struct{}
 
 	ctrlMu        sync.RWMutex
 	ctrlState     string
@@ -269,6 +279,12 @@ func New(cfg Config) *Engine {
 	e.ctrlState = "starting"
 	return e
 }
+
+// syncLogPrefix starts every log line about something the sync engine did,
+// the way "Remote Control: " starts every remote control one — the form
+// brick-cli writes the same lines to brick.log in ("Sync: Uploaded a.txt").
+// Its TUI shows them with an icon after the prefix, which brick.log leaves out.
+const syncLogPrefix = "Sync: "
 
 func (e *Engine) logf(format string, args ...any) { e.sink.Logf(format, args...) }
 
@@ -411,9 +427,9 @@ func (e *Engine) SetPaused(p bool) {
 		return
 	}
 	if p {
-		e.logf("⏸ sync paused")
+		e.logf(syncLogPrefix + "Paused")
 	} else {
-		e.logf("▶ sync resumed")
+		e.logf(syncLogPrefix + "Resumed")
 		e.Notify()
 	}
 	e.sink.StatusChanged()
@@ -431,7 +447,7 @@ func (e *Engine) checkInterrupted(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if e.paused.Load() {
+	if e.paused.Load() || e.interrupts.Load() > 0 {
 		return ErrPausedMidPass
 	}
 	return nil

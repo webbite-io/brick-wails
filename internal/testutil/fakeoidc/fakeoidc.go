@@ -1,7 +1,7 @@
 // Package fakeoidc is an in-memory stand-in for the Webbite accounts API as
 // brick uses it: OIDC discovery, the token endpoint (authorization_code with
 // PKCE verification, and single-use refresh tokens like the real server),
-// /oauth2/userinfo and /v1/accounts.
+// /oauth2/userinfo, /v1/accounts and /v1/accounts/{id}.
 package fakeoidc
 
 import (
@@ -345,6 +345,21 @@ func (s *Server) handler() http.Handler {
 		accts := s.accounts
 		s.mu.Unlock()
 		writeJSON(w, 200, map[string]any{"accounts": accts})
+	})
+	mux.HandleFunc("/v1/accounts/{id}", func(w http.ResponseWriter, r *http.Request) {
+		if !s.bearerOK(r) {
+			w.WriteHeader(401)
+			return
+		}
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		for _, a := range s.accounts {
+			if a.ID == r.PathValue("id") {
+				writeJSON(w, 200, map[string]any{"account": a})
+				return
+			}
+		}
+		w.WriteHeader(404)
 	})
 	return mux
 }

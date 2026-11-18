@@ -51,6 +51,8 @@ const (
 // load .env.local / .env.dev — the same rule brick-cli follows.
 var (
 	Version                 = "dev"
+	BuildTime               = "unknown"
+	GitCommit               = "unknown"
 	DefaultAPIURL           = ""
 	DefaultStorageAPIURL    = ""
 	DefaultOAuthClientID    = ""
@@ -146,16 +148,24 @@ func main() {
 	}
 
 	evs := &appEvents{logger: logger}
-	run := runner.New(runner.Config{Env: env, Store: store, Tokens: tokens, Version: Version, Events: evs})
+	run := runner.New(runner.Config{Env: env, Store: store, Tokens: tokens, Version: Version, BuildTime: BuildTime, GitCommit: GitCommit, Events: evs})
 	flow := onboarding.New(env, store, tokens)
 
 	var setupWindow *application.WebviewWindow
-	syncSvc := &SyncService{runner: run}
+	identity := &identityWatcher{store: store, client: auth.NewClient(tokens), logger: logger}
+	syncSvc := &SyncService{runner: run, identity: identity.current}
 	onbSvc := &OnboardingService{flow: flow, runner: run, loginStart: loginStart, window: func() *application.WebviewWindow { return setupWindow }}
 	// Bound on every platform, including macOS (where Sparkle takes its place)
 	// and Windows (where the Microsoft Store does), so the generated frontend
 	// bindings don't depend on the OS that generates them.
 	updSvc := &UpdateService{logger: logger, version: Version}
+	var removeWindow, addWindow *application.WebviewWindow
+	rcSvc := &RemoteControlService{
+		removeWindow: func() *application.WebviewWindow { return removeWindow },
+		addWindow:    func() *application.WebviewWindow { return addWindow },
+	}
+	var selectiveWindow *application.WebviewWindow
+	selSvc := &SelectiveSyncService{runner: run, window: func() *application.WebviewWindow { return selectiveWindow }}
 	updater := newAppUpdater(logger, updSvc)
 
 	app := application.New(application.Options{
@@ -165,6 +175,8 @@ func main() {
 			application.NewService(syncSvc),
 			application.NewService(onbSvc),
 			application.NewService(updSvc),
+			application.NewService(rcSvc),
+			application.NewService(selSvc),
 		},
 		Assets: application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 		Mac: application.MacOptions{
@@ -178,7 +190,7 @@ func main() {
 			run.Stop()
 		},
 	})
-	evs.app, syncSvc.app, onbSvc.app, updSvc.app = app, app, app, app
+	evs.app, syncSvc.app, onbSvc.app, updSvc.app, rcSvc.app, selSvc.app = app, app, app, app, app, app
 
 	// The popover is attached to the tray icon (Dropbox-style): hidden until
 	// the icon is clicked, no taskbar presence; closing it just hides it.
@@ -230,10 +242,65 @@ func main() {
 		e.Cancel()
 	})
 
+	// Asks before a remote control root's tray item "Remove…" takes it out
+	// (see frontend/src/remove.ts). Styled after the setup window, but sized
+	// to its one question and not resizable. Closing it is the same as Cancel.
+	removeWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "RemoveRoot",
+		Title:            "Webbite Brick",
+		Width:            420,
+		Height:           340,
+		DisableResize:    true,
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/remove.html",
+	})
+	removeWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		rcSvc.Cancel()
+		e.Cancel()
+	})
+	// Shares a new folder over remote control, from the tray's "New Shared
+	// Folder…" (see frontend/src/add.ts). The remove window's look, with a
+	// folder to pick and the setup wizard's access-level choice below.
+	addWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "AddRoot",
+		Title:            "Webbite Brick",
+		Width:            420,
+		Height:           480,
+		DisableResize:    true,
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/add.html",
+	})
+	addWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		rcSvc.CloseAdd()
+		e.Cancel()
+	})
+
+	// Updates which top-level folders are synced, from the tray's "Selective
+	// Sync…" (see frontend/src/selective.ts): the add window's look, at the
+	// setup window's size since the folder list can be long, and resizable
+	// upwards like it. Closing it is the same as Cancel.
+	selectiveWindow = app.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "SelectiveSync",
+		Title:            "Webbite Brick",
+		Width:            420,
+		Height:           680,
+		MinWidth:         420,
+		MinHeight:        680,
+		Hidden:           true,
+		BackgroundColour: application.NewRGB(24, 24, 27),
+		URL:              "/selective.html",
+	})
+	selectiveWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		selSvc.Close()
+		e.Cancel()
+	})
+
 	// On macOS, be in the Dock and Cmd-Tab while any window is open and
 	// tray-only otherwise. Sparkle's windows count too (setUpdaterUIOpen);
 	// the update window of the other platforms doesn't exist there.
-	trackAppSwitcher(app, popover, setupWindow)
+	trackAppSwitcher(app, popover, setupWindow, removeWindow, addWindow, selectiveWindow)
 	// On macOS, the app menu's About item opens Brick's own About window,
 	// which links to the website.
 	setupAboutWindow(app)
@@ -259,11 +326,23 @@ func main() {
 		}
 		return badged
 	}
+	// Padded after badging, so the dot shrinks along with the glyph.
+	pad := func(icon []byte) []byte {
+		if trayIconScale == 1 {
+			return icon
+		}
+		padded, err := trayicon.Pad(icon, trayIconScale)
+		if err != nil {
+			logger.Printf("tray icon: %v", err)
+			return icon
+		}
+		return padded
+	}
 	faces := func(icon []byte) trayIconSet {
 		return trayIconSet{
-			plain:  icon,
-			update: badge(icon, trayicon.UpdateBlue),
-			paused: badge(icon, trayicon.PausedYellow),
+			plain:  pad(icon),
+			update: pad(badge(icon, trayicon.UpdateBlue)),
+			paused: pad(badge(icon, trayicon.PausedYellow)),
 		}
 	}
 	lightIcons, darkIcons := faces(trayIconLight), faces(trayIconDark)
@@ -342,12 +421,40 @@ func main() {
 		}
 	})
 	loginStart.addMenuItem(menu)
-	menu.AddSeparator()
+	// The remote control section comes between menu and tail. Its items
+	// change with agentRoots, and Wails menus can't insert items in the
+	// middle, so the tray's menu is put together from the three parts again
+	// whenever they do.
+	remote := newRemoteControlMenu(store, logger, run.ReloadAgent)
+	remote.confirmRemove, remote.pickNewRoot = rcSvc.confirmRemove, rcSvc.pickNewRoot
+	rcSvc.remove, rcSvc.add, rcSvc.status = remote.removeRoot, remote.newRoot, remote.status
+	remote.onChange = func(s RemoteControlStatus) { app.Event.Emit("brick:remote-control", s) }
+	identity.onChange = func(id Identity) { app.Event.Emit("brick:identity", id) }
+	identity.refresh()
+	tail := app.NewMenu()
+	// Its own section, above the update item. Enabled once a sync folder is
+	// configured, as "Open Brick Folder" is (see updateTray).
+	selectiveItem := tail.Add("Selective Sync…")
+	selectiveItem.OnClick(func(*application.Context) { selSvc.open() })
+	tail.AddSeparator()
 	// Wired by updater.start below: Sparkle on macOS, the app's own check on
 	// Linux, and none on Windows, where the Microsoft Store updates the app.
-	updateItem := updater.addMenuItem(menu)
-	menu.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
-	tray.SetMenu(menu)
+	updateItem := updater.addMenuItem(tail)
+	tail.Add("Quit Brick").OnClick(func(*application.Context) { app.Quit() })
+	var layoutMu sync.Mutex
+	layoutMenu := func() {
+		layoutMu.Lock()
+		defer layoutMu.Unlock()
+		m := app.NewMenu()
+		m.Append(menu)
+		m.AddSeparator()
+		m.Append(remote.menu())
+		m.AddSeparator()
+		m.Append(tail)
+		tray.SetMenu(m)
+	}
+	remote.relayout = layoutMenu
+	layoutMenu()
 	tray.AttachWindow(popover).WindowOffset(4)
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
 		// Route the click to the menu, which is what both desktops expect of
@@ -379,6 +486,7 @@ func main() {
 		prev := lastState
 		lastState = s.State
 		openFolderItem.SetEnabled(s.Folder != "")
+		selectiveItem.SetEnabled(s.Folder != "")
 		needsSetup := true
 		switch s.State {
 		case runner.StateNotConfigured:
@@ -447,6 +555,11 @@ func main() {
 			select {
 			case <-t.C:
 				evs.Status(run.Status())
+				// Picks up agentRoots and remoteControl changed by the setup
+				// wizard or brick-cli.
+				remote.refresh(false)
+				// Fetches the account name and user email after a new login.
+				identity.refresh()
 			case <-app.Context().Done():
 				return
 			}

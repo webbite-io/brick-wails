@@ -207,15 +207,15 @@ func TestOpenInheritsLineCount(t *testing.T) {
 func TestTimestampWriterStampsLinesWithDashedDate(t *testing.T) {
 	var buf bytes.Buffer
 	lg := log.New(NewTimestampWriter(&buf), "UI: ", 0)
-	lg.Printf("▶ sync resumed")
+	lg.Printf("Sync: Resumed")
 
 	got := buf.String()
-	if !strings.HasSuffix(got, "UI: ▶ sync resumed\n") {
+	if !strings.HasSuffix(got, "UI: Sync: Resumed\n") {
 		t.Errorf("line = %q, want it to end with the tagged message", got)
 	}
-	stamp, _, ok := strings.Cut(strings.TrimSuffix(got, "UI: ▶ sync resumed\n"), " UI")
+	stamp, _, ok := strings.Cut(strings.TrimSuffix(got, "UI: Sync: Resumed\n"), " UI")
 	if !ok {
-		stamp = strings.TrimSpace(strings.TrimSuffix(got, "UI: ▶ sync resumed\n"))
+		stamp = strings.TrimSpace(strings.TrimSuffix(got, "UI: Sync: Resumed\n"))
 	}
 	if _, err := time.Parse(TimestampLayout, strings.TrimSpace(stamp)); err != nil {
 		t.Errorf("timestamp %q does not parse as %q: %v", stamp, TimestampLayout, err)

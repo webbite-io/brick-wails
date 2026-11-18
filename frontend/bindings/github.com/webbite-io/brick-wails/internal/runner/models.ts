@@ -6,6 +6,16 @@
 import * as syncengine$0 from "../syncengine/models.js";
 
 /**
+ * SelectiveSync is what the tray's Selective Sync window lists: the active
+ * account's top-level folders on Brick, and which of them are synced (every
+ * one not in excludeDirs).
+ */
+export interface SelectiveSync {
+    "folders": string[] | null;
+    "synced": string[] | null;
+}
+
+/**
  * Status is what the UI renders (engine status plus app-level state). JSON
  * shape is a superset of brick-cli's /v1/status.
  */
